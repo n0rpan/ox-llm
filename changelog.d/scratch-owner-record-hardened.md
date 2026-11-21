@@ -1,0 +1,1 @@
+- The sandbox scratch's `.oxa-owner` record, which sits in the session's `/tmp`, is opened on the host without following a symlink, without waiting for a writer and with a small size cap: a FIFO, a link or a long file left there is no record, so it can no longer hang or grow a session start.

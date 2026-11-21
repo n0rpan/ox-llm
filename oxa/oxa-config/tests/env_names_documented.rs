@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 
 /// Names that are read or set in non-test code but are not oxa configuration. Each has a reason.
 const ALLOWED: &[(&str, &str)] = &[
+    (
+        "CARGO_TARGET_DIR",
+        "toolchain: an owner-set target directory wins over the derived worker build cache",
+    ),
     ("HOME", "OS: the user's home directory"),
     ("PATH", "OS: executable search path, passed on to children"),
     ("USER", "OS: login name, for the report footer"),
@@ -67,6 +71,18 @@ const ALLOWED: &[(&str, &str)] = &[
     (
         "GIT_CONFIG_NOSYSTEM",
         "git: no system configuration in the sandbox",
+    ),
+    (
+        "GIT_CONFIG_COUNT",
+        "git: one child-only setting for authenticated HTTPS publication",
+    ),
+    (
+        "GIT_CONFIG_KEY_0",
+        "git: child-only github.com HTTP extra-header key",
+    ),
+    (
+        "GIT_CONFIG_VALUE_0",
+        "git: child-only authorization header, never in argv or on disk",
     ),
     ("GIT_CONFIG_SYSTEM", "git: pinned for committed-tree git runs"),
     ("GIT_INDEX_FILE", "git: private index for committed-tree git runs"),

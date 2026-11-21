@@ -2,6 +2,7 @@
 //! (issue #1489, design section 1.2, slice A2b). Codemode has no sub-group.
 
 use super::{d, Apply, Control, Descriptor, Group, Unit, WebEdit};
+use crate::schema::Kind;
 
 /// The Compaction entries, then the Codemode entries, in display order.
 pub const ENTRIES: &[Descriptor] = &[
@@ -12,6 +13,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Context profile",
         "Auto picks cloud for a cloud model. Cloud keeps a larger recent context and compacts later.",
     )
+    .key(Kind::Enum(&["auto", "local", "cloud"]), "\"auto\"")
     .choice(&[("auto", ""), ("local", ""), ("cloud", "")])
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -22,6 +24,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Auto-compaction",
         "Compact automatically; off keeps only the emergency compaction.",
     )
+    .key(Kind::Bool, "true")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -32,6 +35,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Compact at",
         "Context size that starts a compaction. Unset = the engine's point.",
     )
+    .key(Kind::Number, "null")
     .number(Unit::Tokens)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -42,6 +46,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Reserved room",
         "Room kept free for the summary and the next reply.",
     )
+    .key(Kind::Number, "16384")
     .number(Unit::Tokens)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -52,6 +57,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Recent context kept",
         "Recent context kept word for word after a compaction.",
     )
+    .key(Kind::Number, "4000")
     .number(Unit::Tokens)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -62,9 +68,11 @@ pub const ENTRIES: &[Descriptor] = &[
         "Per-model values",
         "Reserved room and recent context for one model.",
     )
+    .key(Kind::Object, "null")
     .control(Control::Raw)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    // L5 mid-run: unset = on.
     d(
         "oxa.compaction.midRun",
         Group::Compaction,
@@ -72,10 +80,12 @@ pub const ENTRIES: &[Descriptor] = &[
         "Compact mid-run",
         "Compact between tool steps when the context passes the point.",
     )
+    .key(Kind::Bool, "null")
     .toggle()
     .eff("true")
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    // L5: unset = on.
     d(
         "oxa.compaction.turnStart",
         Group::Compaction,
@@ -83,10 +93,12 @@ pub const ENTRIES: &[Descriptor] = &[
         "Compact before a prompt",
         "Compact first when the context is already above the point.",
     )
+    .key(Kind::Bool, "null")
     .toggle()
     .eff("true")
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    // V020-OPTIMIZE #7: unset = on.
     d(
         "oxa.compaction.idleSummary",
         Group::Compaction,
@@ -94,10 +106,12 @@ pub const ENTRIES: &[Descriptor] = &[
         "Summarise while idle",
         "Write the next summary in idle time so compaction is instant.",
     )
+    .key(Kind::Bool, "null")
     .toggle()
     .eff("true")
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    // V020-OPTIMIZE #7: soft length target of a summary in tokens; unset = 700; 0 = none.
     d(
         "oxa.compaction.summaryTarget",
         Group::Compaction,
@@ -105,6 +119,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Summary length",
         "Soft length target of a summary. 0 = no target.",
     )
+    .key(Kind::Number, "null")
     .number(Unit::Tokens)
     .eff("700")
     .zero("no target")
@@ -117,6 +132,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Branch summary budget",
         "Output budget of a branch summary.",
     )
+    .key(Kind::Number, "16384")
     .number(Unit::Tokens)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -127,9 +143,13 @@ pub const ENTRIES: &[Descriptor] = &[
         "Skip the branch question",
         "Do not ask \"summarise the branch?\".",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .apply(Apply::Now)
     .web(WebEdit::Edit),
+    // oxa: `codemode.enabled`, `codemode.toolSearch` and `codemode.maxWorkers` turn on the
+    // built-in codemode / tool-search hook sets and size the script pool (oxa-cli hooks.rs);
+    // pi activates them through `defaultTools`, which oxa honours as well.
     d(
         "codemode.enabled",
         Group::Codemode,
@@ -137,6 +157,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Codemode",
         "The codemode tool: the model writes a script that calls tools.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -147,6 +168,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Codemode only",
         "`only` hides every other tool while codemode is on.",
     )
+    .key(Kind::Enum(&["on", "only"]), "\"on\"")
     .choice(&[("on", ""), ("only", "")])
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -157,6 +179,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Tool search",
         "The tool_search and call_tool tools.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -167,6 +190,7 @@ pub const ENTRIES: &[Descriptor] = &[
         "Script workers",
         "Script workers alive at once. 0 = 2.",
     )
+    .key(Kind::Number, "0")
     .control(Control::Number)
     .zero("two workers")
     .apply(Apply::Reload)

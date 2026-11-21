@@ -12,6 +12,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Cloud budget and models",
         "Daily USD budget, subscription caps, cloud models and prices.",
     )
+    .key(Kind::Object, "{}")
     .control(Control::Fields)
     .apply(Apply::Reload)
     .web(WebEdit::ReadOnly)
@@ -143,10 +144,37 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Turn limit per run",
         "End a run after this many model replies. Unset or 0 = no limit.",
     )
+    .key(Kind::Number, "null")
     .number(Unit::Count)
     .zero("no limit")
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    d(
+        "oxa.onExceed",
+        Group::Budgets,
+        "Run limits",
+        "What happens when a budget is exceeded",
+        "Per budget: warn (show and record), pause (goals) or stop (refuse the call or block the goal).",
+    )
+    .key(Kind::Object, "{}")
+    .control(Control::Raw)
+    .apply(Apply::Reload)
+    .web(WebEdit::ReadOnly)
+    .advanced()
+    .user_only(),
+    d(
+        "oxa.run.wrapUpTokens",
+        Group::Budgets,
+        "Run limits",
+        "Wrap-up reply size",
+        "Output cap of the final turn when --max-time, --max-tokens or SIGTERM ends a run. Unset = the model's own output limit, at most 4096.",
+    )
+    .key(Kind::Number, "null")
+    .number(Unit::Tokens)
+    .apply(Apply::Reload)
+    .web(WebEdit::ReadOnly)
+    .advanced()
+    .user_only(),
 ];
 
 #[cfg(test)]

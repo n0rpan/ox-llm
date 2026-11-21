@@ -323,8 +323,8 @@ impl ProgressObserver for StatusWriter {
                 snapshot.between();
                 true
             }
-            Progress::Advanced | Progress::Prefix { .. } => false,
-            Progress::GoalControlCommitted { .. } => return,
+            Progress::Advanced | Progress::Prefix { .. } | Progress::FilesChanged { .. } => false,
+            Progress::GoalControlCommitted { .. } | Progress::WrapUp { .. } => return,
             Progress::GoalStatus { status, reason } => {
                 snapshot.goal_status = (status != "none").then_some(status);
                 snapshot.goal_reason = reason.map(|text| text.chars().take(256).collect());

@@ -3,10 +3,10 @@
 use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::Level;
 use oxa_sandbox::{
-    expand_home, is_home_itself, is_home_or_above, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE,
-    SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
+    expand_home, is_home_itself, is_home_or_above, parse_scratch_warn, Layout, LayoutInputs,
+    DEFAULT_SCRATCH_WARN, SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What stays protected in a home workspace (O-199), in the user's words.
 const HOME_PROTECTED_SUMMARY: &str = "the home folder itself, every dotfile and dot-folder (.bashrc, .profile, .config, .local/bin, .ssh, .oxa, ...) and ~/bin are read-only; keys and tokens are hidden; bash cannot create new top-level folders in ~, so create one with the file tools or outside oxa";
@@ -73,6 +73,69 @@ mod exe_tests {
     }
 }
 
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+    use oxa_config::dirs_from_env;
+    use oxa_fake::TestEnv;
+
+    fn env_value(l: &Layout, name: &str) -> Option<String> {
+        l.env.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn an_unattended_session_never_waits_at_a_credential_prompt() {
+        let env = TestEnv::new();
+        for unattended in [false, true] {
+            let mut owned = env.envs("http://127.0.0.1:9");
+            if unattended {
+                owned.push(("OXA_UNATTENDED".to_string(), "1".to_string()));
+            }
+            let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let e = Env::from_pairs(&pairs);
+            let dirs = dirs_from_env(&e, None).expect("dirs");
+            let l = layout(&e, &dirs, &env.work(), false, &mut Vec::new());
+            assert_eq!(
+                env_value(&l, "GIT_TERMINAL_PROMPT").as_deref(),
+                unattended.then_some("0")
+            );
+            assert_eq!(
+                env_value(&l, "GH_PROMPT_DISABLED").as_deref(),
+                unattended.then_some("1")
+            );
+        }
+    }
+}
+
+/// Expand a bind list from the user-only settings snapshot used to build the sandbox.
+pub(crate) fn configured_paths(user: &Settings, key: &str, home: &Path) -> Vec<std::path::PathBuf> {
+    user.list(key).iter().map(|raw| expand_home(raw, home)).collect()
+}
+
+/// Locations that cannot be trusted to supply the runner's token helper. Reuse the
+/// layout's implicit cache rules without creating a cache or mounting anything.
+pub(crate) fn worker_token_write_paths(user: &Settings, env: &Env, dirs: &Dirs) -> Vec<PathBuf> {
+    let mut writes = configured_paths(user, SETTING_WRITE_PATHS, &dirs.home);
+    let implicit = Layout::build(&LayoutInputs {
+        home: dirs.home.clone(),
+        agent_dir: Some(dirs.agent_dir.clone()),
+        env: env.pairs().to_vec(),
+        ..LayoutInputs::default()
+    });
+    writes.extend(implicit.write);
+    // Workers from other worktrees or repositories can also write here. Keep the
+    // namespace untrusted even if shared caching is currently disabled.
+    writes.push(crate::worker_cache::cache_root(user, &dirs.home, env));
+    let resolved: Vec<_> = writes
+        .iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .collect();
+    writes.extend(resolved);
+    writes.sort();
+    writes.dedup();
+    writes
+}
+
 pub(crate) fn layout(
     env: &Env,
     dirs: &Dirs,
@@ -81,12 +144,7 @@ pub(crate) fn layout(
     notices: &mut Vec<(Level, String)>,
 ) -> Layout {
     let user = Settings::load(dirs, cwd, false);
-    let paths = |key: &str| {
-        user.list(key)
-            .iter()
-            .map(|raw| expand_home(raw, &dirs.home))
-            .collect::<Vec<_>>()
-    };
+    let paths = |key| configured_paths(&user, key, &dirs.home);
     let resolved = cwd.canonicalize().ok();
     let home_root = is_home_or_above(cwd, &dirs.home)
         || resolved
@@ -101,7 +159,23 @@ pub(crate) fn layout(
     }
     let read_extra = paths(SETTING_READ_PATHS);
     let exe = std::env::current_exe().ok();
-    let write_extra = paths(SETTING_WRITE_PATHS);
+    let mut write_extra = paths(SETTING_WRITE_PATHS);
+    // #1541: a worker derives its own per-repository build cache: exactly one more writable
+    // path and `CARGO_TARGET_DIR` for it. Failure never blocks; the worker builds without it.
+    let mut cache_target = None;
+    match crate::worker_cache::derive(&user, &dirs.home, env, cwd) {
+        crate::worker_cache::Derived::Path(p) => {
+            write_extra.push(p.clone());
+            cache_target = Some(p);
+        }
+        crate::worker_cache::Derived::Failed(why) => notices.push((
+            Level::Warning,
+            format!(
+                "worker build cache is off for this run ({why}); builds use the workspace target directory"
+            ),
+        )),
+        crate::worker_cache::Derived::None => {}
+    }
     let mut roots: Vec<&Path> = vec![cwd];
     roots.extend(resolved.as_deref());
     roots.extend(write_extra.iter().map(|p| p.as_path()));
@@ -204,10 +278,57 @@ pub(crate) fn layout(
             ),
         ));
     }
+    if let Some(target) = cache_target {
+        built.env.retain(|(n, _)| n != "CARGO_TARGET_DIR");
+        built
+            .env
+            .push(("CARGO_TARGET_DIR".to_string(), target.display().to_string()));
+        built.env.sort();
+    }
     built.mask_runtime_ipc = true;
     built.sockets = listed_sockets(&paths(SETTING_SOCKETS), notices);
+    built.scratch_warn = match user
+        .string(SETTING_SCRATCH_WARN)
+        .map(|raw| parse_scratch_warn(&raw))
+    {
+        None => Some(DEFAULT_SCRATCH_WARN),
+        Some(Ok(limit)) => limit,
+        Some(Err(why)) => {
+            notices.push((Level::Warning, format!("{SETTING_SCRATCH_WARN} ignored: {why}")));
+            Some(DEFAULT_SCRATCH_WARN)
+        }
+    };
+    // #639: the git config keys ordinary git operations may change; a user-only list.
+    built.git_config_allow = Some(match user.get(SETTING_GIT_CONFIG_ALLOW) {
+        Some(_) => user.list(SETTING_GIT_CONFIG_ALLOW),
+        None => DEFAULT_GIT_CONFIG_ALLOW
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
+    });
+    // #1543: nobody can answer a credential prompt in an unattended run, so an expired
+    // credential fails at once with the 401 the worker reports instead of blocking.
+    if env.get("OXA_UNATTENDED").is_some() {
+        built
+            .env
+            .retain(|(n, _)| n != "GIT_TERMINAL_PROMPT" && n != "GH_PROMPT_DISABLED");
+        built
+            .env
+            .push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
+        built
+            .env
+            .push(("GH_PROMPT_DISABLED".to_string(), "1".to_string()));
+        built.env.sort();
+    }
     built
 }
+
+/// #639: the git config keys a sandboxed command may change (the rest is restored after it).
+const SETTING_GIT_CONFIG_ALLOW: &str = "oxa.sandbox.gitConfigAllow";
+const DEFAULT_GIT_CONFIG_ALLOW: &[&str] = &["branch.*", "user.*", "remote.*.fetch"];
+
+/// #486: the soft size limit of the session's `/tmp` scratch (a warning, never a block).
+const SETTING_SCRATCH_WARN: &str = "oxa.sandbox.scratchWarnSize";
 
 /// RP6: the owner's listed sockets that exist and are Unix sockets, canonical and sorted. Each
 /// one is named in a start notice that states the risk; a path that is not a socket is
@@ -271,6 +392,30 @@ mod tests {
         let e = Env::from_pairs(&pairs);
         let dirs = dirs_from_env(&e, None).expect("dirs");
         (e, dirs)
+    }
+
+    #[test]
+    fn scratch_warning_is_optional_and_an_invalid_size_keeps_the_default() {
+        let env = TestEnv::new();
+        let (e, dirs) = setup(&env);
+        for (value, limit, warnings) in [
+            (None, Some(20 << 30), 0),
+            (Some("512MiB"), Some(512 << 20), 0),
+            (Some("off"), None, 0),
+            (Some("not a size"), Some(20 << 30), 1),
+        ] {
+            if let Some(value) = value {
+                env.write(
+                    "home/.oxa/agent/settings.json",
+                    &format!(r#"{{"oxa":{{"sandbox":{{"scratchWarnSize":"{value}"}}}}}}"#),
+                );
+            }
+            let mut notices = Vec::new();
+            let built = layout(&e, &dirs, &env.work(), false, &mut notices);
+            assert_eq!(built.scratch_warn, limit, "{value:?}");
+            assert_eq!(notices.len(), warnings, "{value:?}: {notices:?}");
+            assert!(notices.iter().all(|(level, _)| *level == Level::Warning));
+        }
     }
 
     #[test]
@@ -567,5 +712,106 @@ mod tests {
         );
         let n = socket_notice(&[std::path::PathBuf::from("/run/app/x.sock")]);
         assert!(n.contains("/run/app/x.sock") && n.contains("bash can do"), "{n}");
+    }
+
+    fn worker_env(env: &TestEnv, extra: &[(&str, &str)]) -> (Env, Dirs) {
+        let mut owned = env.envs("http://127.0.0.1:9");
+        owned.push(("OXA_UNATTENDED".to_string(), "1".to_string()));
+        owned.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let e = Env::from_pairs(&pairs);
+        let dirs = dirs_from_env(&e, None).expect("dirs");
+        (e, dirs)
+    }
+
+    #[test]
+    fn runner_rejects_helpers_in_implicit_worker_write_mounts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let env = TestEnv::new();
+        std::fs::create_dir_all(env.work().join(".git")).unwrap();
+        let registry = env.home().join(".cargo/registry");
+        let sccache = env.home().join(".cache/custom-sccache");
+        for dir in [&registry, &sccache] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let (e, dirs) = worker_env(&env, &[("SCCACHE_DIR", sccache.to_str().unwrap())]);
+        let user = Settings::load(&dirs, &env.work(), false);
+        // The runner's policy is established before the worker creates the shared target.
+        let writes = worker_token_write_paths(&user, &e, &dirs);
+        let worker = layout(&e, &dirs, &env.work(), false, &mut Vec::new());
+        let target = PathBuf::from(target_of(&worker).expect("shared target"));
+        let owner_tools = env.home().join("owner-tools");
+        std::fs::create_dir_all(&owner_tools).unwrap();
+        for (dir, allowed) in [
+            (registry, false),
+            (sccache, false),
+            (target, false),
+            (owner_tools, true),
+        ] {
+            let path = dir.join("mint");
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let argv = [path.to_str().unwrap().to_owned()];
+            let helper = oxa_work::trusted_token_program(&argv, None, Some(&env.work()), &writes, None);
+            assert_eq!(helper.is_some(), allowed, "{}", path.display());
+        }
+    }
+
+    fn target_of(l: &Layout) -> Option<String> {
+        l.env
+            .iter()
+            .find(|(k, _)| k == "CARGO_TARGET_DIR")
+            .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn a_worker_gets_exactly_the_derived_cache_path_writable_and_as_cargo_target() {
+        let env = TestEnv::new();
+        std::fs::create_dir_all(env.work().join(".git")).unwrap();
+        let (e, dirs) = worker_env(&env, &[]);
+        let plain = layout(&setup(&env).0, &dirs, &env.work(), false, &mut Vec::new());
+        let mut notices = Vec::new();
+        let l = layout(&e, &dirs, &env.work(), false, &mut notices);
+        let target = std::path::PathBuf::from(target_of(&l).expect("cargo target"));
+        assert!(target.is_dir() && target.ends_with("cargo-target"), "{target:?}");
+        assert!(
+            l.write.iter().any(|w| target.starts_with(w) || w == &target),
+            "{:?}",
+            l.write
+        );
+        assert_eq!(l.write.len(), plain.write.len() + 1, "{:?}", l.write);
+        assert!(
+            !l.write.iter().any(|w| w == target.parent().unwrap()),
+            "no parent grant"
+        );
+        // A non-worker session gets nothing.
+        assert!(target_of(&plain).is_none());
+    }
+
+    #[test]
+    fn a_project_file_cannot_move_or_turn_off_the_cache_and_an_owner_target_wins() {
+        let env = TestEnv::new();
+        std::fs::create_dir_all(env.work().join(".git")).unwrap();
+        env.write(
+            "work/.oxa/settings.json",
+            r#"{"oxa":{"workers":{"sharedCache":false,"cacheDir":"/tmp/elsewhere"}}}"#,
+        );
+        let (e, dirs) = worker_env(&env, &[]);
+        let l = layout(&e, &dirs, &env.work(), false, &mut Vec::new());
+        let target = target_of(&l).expect("project file cannot turn it off");
+        assert!(!target.starts_with("/tmp/elsewhere"), "{target}");
+        // The owner's own CARGO_TARGET_DIR wins and adds no write path.
+        let (e, dirs) = worker_env(&env, &[("CARGO_TARGET_DIR", "/srv/own-target")]);
+        let l = layout(&e, &dirs, &env.work(), false, &mut Vec::new());
+        assert_eq!(target_of(&l).as_deref(), Some("/srv/own-target"));
+        // The user setting turns it off.
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"oxa":{"workers":{"sharedCache":false}}}"#,
+        );
+        let (e, dirs) = worker_env(&env, &[]);
+        let l = layout(&e, &dirs, &env.work(), false, &mut Vec::new());
+        assert!(target_of(&l).is_none());
     }
 }

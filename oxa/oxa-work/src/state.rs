@@ -176,6 +176,8 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         "lane",
         "lane_repairs",
         "checks",
+        "publish_receipt",
+        "packet",
     ];
     if keys.iter().any(|key| !record.contains_key(*key))
         || record
@@ -367,6 +369,8 @@ mod tests {
                 push_approved: false,
                 content_scan: None,
                 runner_owns_github: false,
+                github_token_command: Vec::new(),
+                github_token_write_paths: Vec::new(),
                 autonomy: Default::default(),
                 worker_github: Default::default(),
                 authority_now: None,

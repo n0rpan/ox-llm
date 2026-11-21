@@ -106,13 +106,151 @@ impl ShellConfig {
     }
 }
 
-/// Cheap heuristic: some line of the command ends with a background `&` (not `&&`), or the command uses `nohup`.
-pub(crate) fn looks_backgrounded(command: &str) -> bool {
-    let backgrounded_line = command.lines().any(|line| {
-        let t = line.trim_end();
-        t.ends_with('&') && !t.ends_with("&&")
-    });
-    backgrounded_line || command.split_whitespace().any(|w| w == "nohup")
+/// Whether part of the command runs detached from the call (#1146): an `&` control operator
+/// outside quotes anywhere in the command (not `&&`, `&>`, `>&`, `<&` or `|&`), or an unquoted
+/// `nohup`, `setsid` or `disown` word. A `#` that starts a word comments out the rest of the line.
+/// Heredoc bodies and `(( ... ))` arithmetic are data, not shell, and are skipped; `;;&` and `;&`
+/// (case fall-through) are not detached.
+pub(crate) fn detached_part(command: &str) -> bool {
+    let chars: Vec<char> = command.chars().collect();
+    let (mut single, mut double) = (false, false);
+    let mut word = String::new();
+    let mut word_quoted = false;
+    let ends_word = |word: &mut String, quoted: &mut bool| -> bool {
+        let hit = !*quoted && matches!(word.as_str(), "nohup" | "setsid" | "disown");
+        word.clear();
+        *quoted = false;
+        hit
+    };
+    // Heredoc delimiters opened on the current line: (delimiter, `<<-` strips leading tabs).
+    let mut heredocs: Vec<(String, bool)> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let prev = if i > 0 { Some(chars[i - 1]) } else { None };
+        if c == '\n' && !single && !double && !heredocs.is_empty() {
+            if ends_word(&mut word, &mut word_quoted) {
+                return true;
+            }
+            i += 1;
+            for (delim, strip) in std::mem::take(&mut heredocs) {
+                while i < chars.len() {
+                    let end = chars[i..]
+                        .iter()
+                        .position(|&x| x == '\n')
+                        .map_or(chars.len(), |n| i + n);
+                    let line: String = chars[i..end].iter().collect();
+                    let line = if strip {
+                        line.trim_start_matches('\t')
+                    } else {
+                        line.as_str()
+                    };
+                    i = (end + 1).min(chars.len());
+                    if line == delim {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if single {
+            single = c != '\'';
+            i += 1;
+            continue;
+        }
+        if double {
+            if c == '\\' {
+                i += 1;
+            } else if c == '"' {
+                double = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '\\' => {
+                word_quoted = true;
+                i += 1;
+            }
+            '\'' => {
+                single = true;
+                word_quoted = true;
+            }
+            '"' => {
+                double = true;
+                word_quoted = true;
+            }
+            '#' if word.is_empty() && !word_quoted => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) != Some(&'<') && prev != Some('<') => {
+                if ends_word(&mut word, &mut word_quoted) {
+                    return true;
+                }
+                i += 2;
+                let strip = chars.get(i) == Some(&'-');
+                if strip {
+                    i += 1;
+                }
+                while matches!(chars.get(i), Some(' ' | '\t')) {
+                    i += 1;
+                }
+                let mut delim = String::new();
+                while let Some(&d) = chars.get(i) {
+                    if d.is_whitespace() || matches!(d, ';' | '&' | '|' | '<' | '>' | '(' | ')') {
+                        break;
+                    }
+                    if !matches!(d, '\'' | '"' | '\\') {
+                        delim.push(d);
+                    }
+                    i += 1;
+                }
+                if !delim.is_empty() {
+                    heredocs.push((delim, strip));
+                }
+                continue;
+            }
+            '(' if chars.get(i + 1) == Some(&'(') => {
+                // `(( ... ))` / `$(( ... ))`: arithmetic, where `&` and `<<` are operators.
+                let mut depth = 0usize;
+                while i < chars.len() {
+                    match chars[i] {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            '&' => {
+                if ends_word(&mut word, &mut word_quoted) {
+                    return true;
+                }
+                let next = chars.get(i + 1).copied();
+                if next == Some('&') {
+                    i += 1;
+                } else if next != Some('>') && !matches!(prev, Some('>' | '<' | '|' | ';')) {
+                    return true;
+                }
+            }
+            c if c.is_whitespace() || matches!(c, ';' | '|' | '(' | ')' | '<' | '>' | '`') => {
+                if ends_word(&mut word, &mut word_quoted) {
+                    return true;
+                }
+            }
+            c => word.push(c),
+        }
+        i += 1;
+    }
+    ends_word(&mut word, &mut word_quoted)
 }
 
 impl Default for BashTool {
@@ -509,18 +647,23 @@ impl BashTool {
             env: cx.env.to_vec(),
         };
         match self.jobs.spawn_labeled(spec, label) {
-            Ok(id) => ToolOutput {
-                images: Vec::new(),
-                text: format!(
-                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}{}",
-                    self.jobs
-                        .over_limit_note()
-                        .map(|n| format!("\n{n}"))
-                        .unwrap_or_default()
-                ),
-                is_error: false,
-                ui: json!({ "job": id }),
-            },
+            Ok(id) => {
+                let note = self.jobs.over_limit_note();
+                let out = ToolOutput {
+                    images: Vec::new(),
+                    text: format!(
+                        "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}{}",
+                        note.as_ref().map(|n| format!("\n{n}")).unwrap_or_default()
+                    ),
+                    is_error: false,
+                    ui: json!({ "job": id }),
+                };
+                match note {
+                    Some(note) => out.exceeded("bashJobs", &note),
+                    None => out,
+                }
+            }
+            Err(e) if JobRegistry::refused(&e) => ToolOutput::error(e.clone()).exceeded("bashJobs", &e),
             Err(e) => ToolOutput::error(e),
         }
     }
@@ -584,7 +727,7 @@ impl BashTool {
                 // background tail before returning control to the caller.
                 let _ = self.jobs.bound_output(id);
                 let mut text = format!(
-                    "Command still running after {} (wall time); it was not stopped. It continues as background job {id}. Wait for it with bash {{\"job\": \"{id}\", \"wait_s\": 60}}, read its output with bash {{\"job\": \"{id}\"}}, or stop it with bash {{\"job\": \"{id}\", \"kill\": true}}.",
+                    "Command still running after {} (wall time); it was not stopped. It continues as background job {id}. Wait for it with bash {{\"job\": \"{id}\", \"wait_s\": 60}}, read its output with bash {{\"job\": \"{id}\"}}, or stop it with bash {{\"job\": \"{id}\", \"kill\": true}}. The job id is not a shell command; use the `job` argument shown above, not `command`.",
                     fmt_wall(started.elapsed())
                 );
                 if let Some(read) = last_read.filter(|r| !r.output.is_empty()) {
@@ -614,7 +757,7 @@ impl BashTool {
         if let Err(e) = self.sandbox(cx).check() {
             return ToolOutput::error(e.to_string());
         }
-        let backgrounded = looks_backgrounded(command);
+        let detached = detached_part(command);
         let raw_command = command;
         let command = match self.shell.command(command) {
             Ok(c) => c,
@@ -697,17 +840,35 @@ impl BashTool {
         } else {
             output
         };
-        // A trailing `&` or `nohup` means the shell's children were cut off at the end of the call.
-        let output = if backgrounded {
+        // #1540: a CI polling loop gets a note pointing at the native wait. It goes into the
+        // result text, so a failed poll (`gh` exits non-zero while checks are pending) carries it too.
+        let ci_note = cx
+            .tune
+            .ci_poll_hint
+            .then(|| crate::ci_poll::ci_poll_note(raw_command, &output, cx.tune.wait_tool))
+            .flatten();
+        let output = match &ci_note {
+            Some(note) if output.trim_end().is_empty() => format!("[{note}]"),
+            Some(note) => format!("{}\n\n[{note}]", output.trim_end()),
+            None => output,
+        };
+        // A detached part (`&`, `nohup`, `setsid`, `disown`): its output and exit status are not here.
+        let output = if detached {
             if output.is_empty() {
-                errors::BASH_BACKGROUND_STOPPED.to_string()
+                errors::BASH_DETACHED.to_string()
             } else {
-                format!("{output}\n\n{}", errors::BASH_BACKGROUND_STOPPED)
+                format!("{output}\n\n{}", errors::BASH_DETACHED)
             }
         } else {
             output
         };
         let mut ui = json!({ "exit": res.exit, "timedOut": res.timed_out });
+        if detached {
+            ui["detached"] = json!(true);
+        }
+        if ci_note.is_some() {
+            ui["ciPoll"] = json!(true);
+        }
         if res.unsandboxed {
             // Front ends warn on this; absent (not `false`) everywhere the OS sandbox ran.
             ui["unsandboxed"] = json!(true);
@@ -984,6 +1145,31 @@ echo '\''a'\'''"#
             }
             self.result.clone()
         }
+    }
+
+    /// `run_with` in workspace mode with the CI polling hint on or off (the `wait` tool is there).
+    fn run_hinted(sb: &Fake, args: Value, hint: bool) -> (ToolOutput, String) {
+        let cwd = Path::new("/work");
+        let env = vec![("OXA_SESSION_ID".to_string(), "s".to_string())];
+        let cancel = CancelToken::new();
+        let cx = ToolCtx {
+            checked: &[],
+            cwd,
+            spill_dir: cwd,
+            sandbox: sb,
+            mode: Mode::Workspace,
+            cancel: &cancel,
+            env: &env,
+            tune: oxa_proto::ToolTune {
+                ci_poll_hint: hint,
+                wait_tool: true,
+                ..Default::default()
+            },
+            hidden: None,
+        };
+        let mut streamed = String::new();
+        let out = BashTool::new().run(&args, &cx, &mut |t| streamed.push_str(t));
+        (out, streamed)
     }
 
     fn run_with(sb: &Fake, args: Value, mode: Mode, cancel: &CancelToken) -> (ToolOutput, String) {
@@ -1403,37 +1589,47 @@ echo '\''a'\'''"#
     }
 
     #[test]
-    fn backgrounded_commands_get_the_stopped_notice() {
-        assert!(looks_backgrounded("nohup ./server &"));
-        assert!(looks_backgrounded("sleep 100 & "));
-        assert!(looks_backgrounded("nohup make > log 2>&1"));
-        assert!(!looks_backgrounded("make && make test"));
-        assert!(!looks_backgrounded("echo done"));
-        // Issue #127's exact multi-line example, and a line-ending `&` without nohup.
-        assert!(looks_backgrounded("nohup bash x.sh >/dev/null 2>&1 &\nsleep 60"));
-        assert!(looks_backgrounded("./server >/dev/null 2>&1 &\nsleep 60"));
-        assert!(!looks_backgrounded("make 2>&1\necho done"));
-        assert!(!looks_backgrounded("echo a &&\nmake"));
+    fn a_detached_part_is_seen_and_reported() {
+        assert!(detached_part(
+            "cd /tmp/x && (sleep 5; echo hi > f) & sleep 1; touch f"
+        ));
+        assert!(detached_part("a & b"));
+        assert!(detached_part("nohup ./server &"));
+        assert!(detached_part("nohup make > log 2>&1"));
+        assert!(detached_part("setsid ./x"));
+        assert!(detached_part("./server >/dev/null 2>&1 &\nsleep 60"));
+        assert!(!detached_part("a && b"));
+        assert!(!detached_part("x 2>&1"));
+        assert!(!detached_part("cmd &> log"));
+        assert!(!detached_part("a |& b"));
+        assert!(!detached_part("echo 'a & b'"));
+        assert!(!detached_part("echo \"a & nohup\""));
+        assert!(!detached_part("make 2>&1\necho done # a & b"));
+        // Heredoc bodies are data, not shell.
+        assert!(!detached_part(
+            "cat > src/x.rs <<'EOF'\nfn f(s: &str, m: &mut u8) {}\nEOF"
+        ));
+        assert!(!detached_part("cat <<EOF\nit's a & b nohup\nEOF\necho done"));
+        assert!(!detached_part("cat <<-EOF\n\tx & y\n\tEOF"));
+        assert!(!detached_part("cat <<<'a & b'"));
+        assert!(detached_part("cat <<EOF\nplain\nEOF\nsleep 9 &"));
+        assert!(detached_part("cat <<EOF & \nbody\nEOF"));
+        // Arithmetic and case fall-through.
+        assert!(!detached_part("echo $(( a & b ))"));
+        assert!(!detached_part("case $x in a) y ;;& b) z ;; esac"));
 
         let sb = Fake::ok(b"started", Some(0));
         let (out, _) = run_with(
             &sb,
-            json!({"command": "nohup ./server &"}),
+            json!({"command": "cd /tmp/x && (sleep 5) & sleep 1"}),
             Mode::Workspace,
             &CancelToken::new(),
         );
+        assert_eq!(out.ui["detached"], json!(true), "{}", out.ui);
         assert!(
-            out.text.ends_with(descriptions::errors::BASH_BACKGROUND_STOPPED),
+            out.text.ends_with(descriptions::errors::BASH_DETACHED),
             "{}",
             out.text
-        );
-        // Conditional wording: a foreground `nohup make` must not be told its processes were stopped.
-        assert!(
-            descriptions::errors::BASH_BACKGROUND_STOPPED.starts_with(
-                "If this command started background processes (nohup or a trailing &), they were stopped when the call ended."
-            ),
-            "{}",
-            descriptions::errors::BASH_BACKGROUND_STOPPED
         );
         let (out, _) = run_with(
             &sb,
@@ -1441,7 +1637,8 @@ echo '\''a'\'''"#
             Mode::Workspace,
             &CancelToken::new(),
         );
-        assert!(!out.text.contains("stopped"), "{}", out.text);
+        assert!(out.ui.get("detached").is_none(), "{}", out.ui);
+        assert!(!out.text.contains("background"), "{}", out.text);
     }
 
     #[test]
@@ -1980,6 +2177,43 @@ echo '\''a'\'''"#
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+
+    /// #1540: the note is a hint on a result the command produced, shown for a failed poll
+    /// too; it neither changes the exit status nor makes a successful poll an error.
+    #[test]
+    fn ci_poll_note_warns_without_blocking() {
+        let sb = Fake::ok(b"All checks passed\n", Some(0));
+        let (res, _) = run_hinted(&sb, json!({"command": "gh pr checks 42 --watch"}), true);
+        assert_eq!(res.ui["ciPoll"], json!(true));
+        assert!(!res.is_error);
+        assert!(res.text.starts_with("All checks passed"), "{}", res.text);
+        assert!(res.text.contains(r#"{"kind":"ci""#), "{}", res.text);
+
+        // `gh pr checks` exits 8 while checks fail and 1 while they are pending: the note
+        // still reaches the model, and the failure itself is reported as before.
+        let sb = Fake::ok(b"some checks were not successful\n", Some(8));
+        let (res, _) = run_hinted(
+            &sb,
+            json!({"command": "for i in 1 2 3; do gh pr checks 42; sleep 60; done"}),
+            true,
+        );
+        assert!(res.is_error);
+        assert!(res.text.contains("Command exited with code 8"), "{}", res.text);
+        assert!(res.text.contains(r#"{"kind":"ci""#), "{}", res.text);
+
+        // An ordinary command keeps its exact text: no note, no new trailing lines.
+        let sb = Fake::ok(b"ok\n", Some(0));
+        let (res, _) = run_hinted(&sb, json!({"command": "gh run view 123 --log-failed"}), true);
+        assert!(!res.is_error);
+        assert_eq!(res.text, "ok\n");
+        assert!(res.ui.get("ciPoll").is_none());
+
+        // The owner switch off: a polling loop gets no note.
+        let sb = Fake::ok(b"pending\n", Some(0));
+        let (res, _) = run_hinted(&sb, json!({"command": "gh pr checks 42 --watch"}), false);
+        assert_eq!(res.text, "pending\n");
+        assert!(res.ui.get("ciPoll").is_none());
+    }
 }
 
 #[cfg(test)]
@@ -2267,6 +2501,73 @@ mod poll_tests {
             &mut |_| {},
         );
         assert!(read.text.contains("killed"), "unexpected kill result");
+    }
+
+    /// #2294: the timeout handoff keeps the job recoverable by naming the typed job
+    /// interface and saying the handle is not a shell command. Shell dispatch is unchanged:
+    /// a handle written as a `command` is still an exec call, and the typed `job` form reads
+    /// the job.
+    #[test]
+    fn timeout_handoff_names_the_typed_job_read() {
+        let jobs = Arc::new(JobRegistry::new());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
+            .with_sandbox(Arc::new(Slow { ms: 60_000 }));
+        let (handoff, _) = job_call(&tool, json!({"command": "sleep 99", "timeout": 1}));
+        assert_eq!(handoff.ui["movedToBackground"], json!(true));
+        assert_eq!(handoff.ui["job"], json!("job-1"));
+        // The handoff names the typed read, wait and stop forms, and says the handle is
+        // not a shell command.
+        assert!(
+            handoff.text.contains("bash {\"job\": \"job-1\"}"),
+            "{}",
+            handoff.text
+        );
+        assert!(handoff.text.contains("\"wait_s\": 60"), "{}", handoff.text);
+        assert!(handoff.text.contains("\"kill\": true"), "{}", handoff.text);
+        assert!(handoff.text.contains("not a shell command"), "{}", handoff.text);
+
+        let sb = Slow { ms: 0 };
+        let cancel = CancelToken::new();
+        let cx = ToolCtx {
+            checked: &[],
+            cwd: Path::new("/work"),
+            spill_dir: Path::new("/work"),
+            sandbox: &sb,
+            mode: Mode::Workspace,
+            cancel: &cancel,
+            env: &[],
+            tune: Default::default(),
+            hidden: None,
+        };
+
+        // Shell dispatch is unchanged: the handle written as a command still declares exec
+        // access and runs, and a command that merely mentions a handle runs too.
+        assert_eq!(
+            tool.access(&json!({"command": "job-1"}), &cx).unwrap(),
+            vec![Access::Exec {
+                command: "job-1".to_string(),
+                net: false
+            }]
+        );
+        let fast = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
+            .with_sandbox(Arc::new(Slow { ms: 0 }));
+        let (as_command, _) = job_call(&fast, json!({"command": "job-1"}));
+        assert_eq!(as_command.ui["exit"], json!(0));
+        assert!(as_command.ui.get("job").is_none(), "{}", as_command.ui);
+        let (echo, _) = job_call(&fast, json!({"command": "echo job-1"}));
+        assert_eq!(echo.ui["exit"], json!(0));
+        assert!(echo.ui.get("job").is_none(), "{}", echo.ui);
+
+        // The typed form the handoff names reads the job without running a shell.
+        let (read, streamed) = job_call(&tool, json!({"job": "job-1"}));
+        assert!(!read.is_error, "{}", read.text);
+        assert!(read.text.contains("Job job-1: running"), "{}", read.text);
+        assert_eq!(read.ui["job"], json!("job-1"));
+        assert!(streamed.is_empty(), "{streamed}");
+        assert_eq!(jobs.running(), 1);
+
+        let _ = tool.run(&json!({"job": "job-1", "kill": true}), &cx, &mut |_| {});
+        assert_eq!(jobs.running(), 0);
     }
 
     #[test]

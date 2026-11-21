@@ -1,0 +1,1 @@
+- A desk grant of a push is now bound to the source ref ids and origin's identity, re-read before the run (#2055). New user-only `oxa.approval.rootActions` names `sudo` commands oxa does not ask about, and a sudo password is typed into an oxa dialog and goes straight to sudo through `SUDO_ASKPASS` without reaching the model (#784).

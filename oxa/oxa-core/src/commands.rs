@@ -483,7 +483,7 @@ pub fn write_bug_report(
     let mut text = String::new();
     text.push_str("oxa bug report (local file; nothing was uploaded)\n");
     text.push_str(&format!("description: {}\n", redact(description)));
-    text.push_str(&format!("version: {}\n", env!("CARGO_PKG_VERSION")));
+    text.push_str(&format!("version: {}\n", oxa_proto::BUILD_VERSION));
     for f in facts {
         text.push_str(&redact(f));
         if !f.ends_with('\n') {

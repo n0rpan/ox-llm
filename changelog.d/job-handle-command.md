@@ -1,0 +1,1 @@
+- bash: the timeout-to-background handoff now says the job id is not a shell command and names the typed `job` forms to read, wait for or stop the job, so a handed-off job stays recoverable when the model misaddresses the handle. Shell dispatch is unchanged: a command that is exactly a job id still runs as a shell command.

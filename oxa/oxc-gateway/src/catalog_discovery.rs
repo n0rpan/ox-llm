@@ -1,7 +1,7 @@
 //! Provider lists are resolved at catalog startup or refresh, outside inference.
 use crate::{
     anthropic_client::{Client, Error},
-    catalog::Provider,
+    catalog::{self, Model, Provider},
     catalog_cache::Cache,
     pricing::Price,
     secrets::Key,
@@ -40,7 +40,8 @@ pub struct Status {
 pub struct Source {
     provider: Provider,
     base: String,
-    filename: &'static str,
+    filename: String,
+    named: Option<(Model, bool)>,
     /// Public, keyless catalog that fills the limits and prices a provider's own model list lacks.
     metadata_base: Option<String>,
 }
@@ -68,9 +69,74 @@ impl Source {
         Some(Self {
             provider,
             base: base.to_owned(),
-            filename,
+            filename: filename.into(),
+            named: None,
             metadata_base,
         })
+    }
+
+    /// Build one credential-bound source from user settings. No model-list field may change
+    /// the endpoint, protocol, billing class or key selector.
+    pub fn named(
+        name: &str,
+        provider: Provider,
+        base: &str,
+        key: &str,
+        subscription: bool,
+    ) -> Result<Self, catalog::Error> {
+        if !matches!(provider, Provider::OpenRouter | Provider::Anthropic) {
+            return Err(catalog::Error::InvalidModel);
+        }
+        let model = Model::new(name, provider, name, base, 1, 1)?.with_configured_route(name, name, key)?;
+        Ok(Self {
+            provider,
+            base: model.endpoint().as_str().into(),
+            filename: format!("named-{name}-{}-catalog-cache.json", provider.as_str()),
+            named: Some((model, subscription)),
+            metadata_base: Some(PUBLIC_METADATA_BASE.into()),
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        self.named
+            .as_ref()
+            .map_or(self.provider.as_str(), |(model, _)| model.info().id)
+    }
+
+    pub fn is_named(&self) -> bool {
+        self.named.is_some()
+    }
+
+    pub fn key_name(&self) -> &str {
+        self.named
+            .as_ref()
+            .map_or(self.provider.as_str(), |(model, _)| model.credential_name())
+    }
+
+    pub fn is_subscription(&self) -> bool {
+        self.provider == Provider::ChatGpt
+            || self.named.as_ref().is_some_and(|(_, subscription)| *subscription)
+    }
+
+    pub fn model(
+        &self,
+        alias: &str,
+        upstream: &str,
+        context: u32,
+        output: u32,
+    ) -> Result<Model, catalog::Error> {
+        match &self.named {
+            Some((model, _)) => model.for_offer(alias, upstream, context, output),
+            None => Model::new(alias, self.provider, upstream, &self.base, context, output),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_mock_base(mut self, base: &str) -> Self {
+        let (model, _) = self.named.as_mut().expect("named test source");
+        model.set_mock_base(base);
+        self.base = model.endpoint().as_str().into();
+        self
     }
 
     /// Point the public metadata lookup elsewhere, or off with `None`.
@@ -88,7 +154,7 @@ impl Source {
     }
 
     pub(crate) fn load(&self, directory: &Path, key: &Key) -> Option<(State, Vec<Offer>)> {
-        let (state, snapshot) = Cache::new(directory, self.filename).load(key, SystemTime::now())?;
+        let (state, snapshot) = Cache::new(directory, &self.filename).load(key, SystemTime::now())?;
         if snapshot["base"].as_str()? != self.base {
             return None;
         }
@@ -105,6 +171,13 @@ impl Source {
         plan: Option<Plan<'_>>,
     ) -> Result<Vec<Offer>, Error> {
         let rows: Vec<Value> = match self.provider {
+            Provider::OpenRouter if self.is_named() => crate::openrouter::Client::from_messages_transport(
+                &self.base, timeout, client,
+            )
+            .map_err(|error| error.error)?
+            .compatible_models(key)
+            .await
+            .map_err(|error| error.error)?,
             Provider::OpenRouter => crate::openrouter::Client::from_messages_transport(
                 &self.base, timeout, client,
             )
@@ -123,7 +196,7 @@ impl Source {
             })
             .collect(),
             Provider::Anthropic => client
-                .models(&self.base, key, timeout)
+                .models_at(&self.base, key, timeout, self.is_named())
                 .await?
                 .into_iter()
                 .map(|model| {
@@ -177,7 +250,7 @@ impl Source {
             return Err(Error::Protocol);
         }
         let offers = parse(&rows)?;
-        let _ = Cache::new(directory, self.filename).store(
+        let _ = Cache::new(directory, &self.filename).store(
             key,
             json!({"base": self.base, "data": rows}),
             SystemTime::now(),
@@ -209,6 +282,7 @@ impl Source {
         let (Some(base), Some(prefix)) = (
             &self.metadata_base,
             match self.provider {
+                _ if self.is_named() => Some(""),
                 Provider::OpenAi | Provider::ChatGpt => Some("openai/"),
                 Provider::Anthropic => Some("anthropic/"),
                 _ => None,
@@ -222,12 +296,23 @@ impl Source {
         let Ok(models) = public.public_models().await else {
             return;
         };
-        let by_id: std::collections::BTreeMap<String, &crate::openrouter::Model> = models
-            .iter()
-            .filter_map(|model| Some((normalized(model.id.strip_prefix(prefix)?), model)))
-            .collect();
+        let mut by_id = std::collections::BTreeMap::new();
+        for model in &models {
+            if let Some(id) = model.id.strip_prefix(prefix) {
+                by_id.insert(normalized(id), Some(model));
+                if self.is_named() {
+                    // Use a bare id only when the public catalog has one matching entry.
+                    if let Some((_, leaf)) = id.split_once('/') {
+                        by_id
+                            .entry(normalized(leaf))
+                            .and_modify(|entry| *entry = None)
+                            .or_insert(Some(model));
+                    }
+                }
+            }
+        }
         for row in rows {
-            let Some(model) = row["id"].as_str().and_then(|id| by_id.get(&normalized(id))) else {
+            let Some(Some(model)) = row["id"].as_str().and_then(|id| by_id.get(&normalized(id))) else {
                 continue;
             };
             let mut used = false;
@@ -242,7 +327,7 @@ impl Source {
             fill("context", Some(model.context_length));
             fill("output", model.max_completion_tokens);
             // A plan route is a subscription: it never carries a per-token price.
-            if row["pricing"].is_null() && self.provider != Provider::ChatGpt {
+            if row["pricing"].is_null() && !self.is_subscription() && !self.is_named() {
                 let prices = price_fields(model);
                 if !prices.is_empty() {
                     row["pricing"] = Value::Object(prices);
@@ -351,6 +436,10 @@ mod tests {
 
     /// One-shot local fake of the public catalog; it fails the test if a credential is sent.
     fn public_catalog(status: u16, body: &str) -> (String, thread::JoinHandle<()>) {
+        mock_catalog(status, body, None)
+    }
+
+    fn mock_catalog(status: u16, body: &str, key: Option<&'static str>) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/api/v1", listener.local_addr().unwrap());
         let body = body.to_owned();
@@ -368,7 +457,11 @@ mod tests {
                 request.starts_with("get /api/v1/models http/1.1\r\n"),
                 "{request}"
             );
-            assert!(!request.contains("authorization"), "{request}");
+            if let Some(key) = key {
+                assert!(request.contains(&format!("authorization: bearer {key}\r\n")));
+            } else {
+                assert!(!request.contains("authorization"));
+            }
             let _ = write!(
                 socket,
                 "HTTP/1.1 {status} Mock\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -376,6 +469,72 @@ mod tests {
             );
         });
         (base, task)
+    }
+
+    #[tokio::test]
+    async fn named_discovery_binds_cache_and_route_to_its_own_key_and_base() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let directory = std::env::temp_dir().join(format!("named-discovery-{}", std::process::id()));
+        let cache = directory.join("catalog");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::create_dir(&cache).unwrap();
+        let path = directory.join("keys.json");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap();
+        const KEY: &str = "synthetic-named-catalog";
+        write!(
+            file,
+            "{}",
+            json!({"demo-plan":KEY,"other-plan":"unrelated-fixture"})
+        )
+        .unwrap();
+        let key = crate::secrets::read(&path, "demo-plan").unwrap();
+        let other = crate::secrets::read(&path, "other-plan").unwrap();
+        let (base, task) = mock_catalog(
+            200,
+            r#"{"data":[{"id":"deepseek-v4-flash","base_url":"https://other.example.invalid"}]}"#,
+            Some(KEY),
+        );
+        let source = Source::named(
+            "demo",
+            Provider::OpenRouter,
+            "https://example.invalid/api/v1",
+            "demo-plan",
+            true,
+        )
+        .unwrap()
+        .with_mock_base(&base)
+        .with_metadata_base(None);
+        let fetched = source
+            .fetch(
+                &Client::new().unwrap(),
+                &key,
+                Duration::from_secs(2),
+                &cache,
+                None,
+            )
+            .await;
+        task.join().unwrap();
+        let offers = fetched.unwrap();
+        assert_eq!(offers[0].id, "deepseek-v4-flash");
+        let (state, cached) = source.load(&cache, &key).unwrap();
+        assert!(matches!(state, State::Fresh));
+        assert_eq!(cached[0].id, offers[0].id);
+        assert!(source.load(&cache, &other).is_none());
+        let model = source
+            .model("demo/deepseek-v4-flash", &offers[0].id, 4096, 1024)
+            .unwrap();
+        assert_eq!(model.endpoint().as_str(), source.base());
+        assert_eq!(model.credential_name(), "demo-plan");
+        assert!(source
+            .with_mock_base("http://127.0.0.1:1/other")
+            .load(&cache, &key)
+            .is_none());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     const CATALOG: &str = r#"{"data":[

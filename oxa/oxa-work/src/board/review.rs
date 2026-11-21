@@ -76,6 +76,9 @@ pub struct Facts<'a> {
     pub owner_approval_predecessors: &'a [&'a str],
     pub requested: &'a [RequestReceipt<'a>],
     pub approvals: &'a [Approval<'a>],
+    /// The connector refused the review requester after the newest trusted request
+    /// for this patch and has not reviewed since ([`requester_rejected`]).
+    pub requester_rejected: bool,
 }
 
 impl<'a> Facts<'a> {
@@ -91,6 +94,11 @@ pub enum Decision {
     ResolveFindings,
     AddRemoves,
     Wait,
+    /// The reviewer account refused the configured requester: nothing is re-sent under
+    /// that identity, and the owner must connect an account or change the requester.
+    RequesterRejected {
+        reviewer: Reviewer,
+    },
     Review {
         tier: Tier,
         request: Vec<Reviewer>,
@@ -233,6 +241,11 @@ impl Policy<'_> {
         {
             return Decision::AddRemoves;
         }
+        if facts.requester_rejected {
+            return Decision::RequesterRejected {
+                reviewer: Reviewer::Codex,
+            };
+        }
         let Some(patch_id) = facts.verified_patch_id() else {
             return Decision::Wait;
         };
@@ -330,6 +343,42 @@ const SUMMARY: &str = "<!-- codex-pull-request-review-summary -->";
 const STATE_PREFIX: &str = "<!-- codex-review-state:v1 ";
 const STATE_SUFFIX: &str = " -->";
 const MAX_STATE_BYTES: usize = 2048;
+
+/// The connector's refusal of an account it is not connected to, matched on a few stable
+/// lowercase phrases kept here. An unknown connector reply is not a refusal: it stays a wait.
+const REFUSAL_PHRASES: &[&str] = &[
+    "not connected",
+    "connect your",
+    "link your github",
+    "create a codex account",
+];
+
+/// Whether the connector account answered the newest trusted review request of this patch
+/// with its account-not-connected refusal and has posted no review summary since. Pass the
+/// connector account's own comments and the request time; either missing is `false`.
+pub fn requester_rejected(comments: Option<&[Comment<'_>]>, requested_at: Option<u64>) -> bool {
+    let (Some(comments), Some(since)) = (comments, requested_at) else {
+        return false;
+    };
+    let (mut refused, mut summary) = (None, None);
+    for comment in comments.iter().filter(|c| c.bot_id == Some(CONNECTOR_BOT_ID)) {
+        let Some(at) = comment.updated_at.filter(|at| *at >= since) else {
+            continue;
+        };
+        let slot = if comment.body.lines().next() == Some(SUMMARY) {
+            &mut summary
+        } else if REFUSAL_PHRASES
+            .iter()
+            .any(|phrase| comment.body.to_ascii_lowercase().contains(phrase))
+        {
+            &mut refused
+        } else {
+            continue;
+        };
+        *slot = (*slot).max(Some(at));
+    }
+    refused.is_some_and(|refused| summary.is_none_or(|summary| summary <= refused))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Findings {
@@ -488,5 +537,41 @@ fn review(value: &Value) -> Findings {
         (Some(true), _) => Findings::Unresolved,
         (Some(false), Some("completed")) => Findings::Clear,
         _ => Findings::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reply(bot: u64, at: u64, body: &str) -> Comment<'_> {
+        Comment {
+            bot_id: Some(bot),
+            updated_at: Some(at),
+            body,
+        }
+    }
+
+    #[test]
+    fn a_refusal_after_the_request_is_a_rejection_until_a_later_summary() {
+        let refusal = "To use Codex here, connect your ChatGPT account to GitHub.";
+        let summary = format!("{SUMMARY}\nreview");
+        let rejected = |comments: &[Comment<'_>], at| requester_rejected(Some(comments), at);
+        assert!(rejected(&[reply(CONNECTOR_BOT_ID, 20, refusal)], Some(10)));
+        // Before the request, from another account, or in an unknown wording: not a rejection.
+        assert!(!rejected(&[reply(CONNECTOR_BOT_ID, 5, refusal)], Some(10)));
+        assert!(!rejected(&[reply(1, 20, refusal)], Some(10)));
+        assert!(!rejected(
+            &[reply(CONNECTOR_BOT_ID, 20, "Working on it")],
+            Some(10)
+        ));
+        assert!(!rejected(&[reply(CONNECTOR_BOT_ID, 20, refusal)], None));
+        assert!(!requester_rejected(None, Some(10)));
+        // A review summary after the refusal means the reviewer did answer.
+        let later = [
+            reply(CONNECTOR_BOT_ID, 20, refusal),
+            reply(CONNECTOR_BOT_ID, 30, &summary),
+        ];
+        assert!(!rejected(&later, Some(10)));
     }
 }

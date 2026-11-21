@@ -1,0 +1,1 @@
+- The lane guard no longer hard-codes which paths the lane tests: `tools/ci/lane_coverage.json` is the one source for `lane_select.py` and for `oxa work`, read from the trusted base commit, and the workflow files must also match the base branch's own history.

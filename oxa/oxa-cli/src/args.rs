@@ -56,7 +56,8 @@ pub enum Subcommand {
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
     Config(Vec<String>),
-    /// `oxa models [--json]`: the words after `models`. Known words are never prompts (#1542).
+    /// `oxa models [--json] [search]`: the words after `models`. Known words are never
+    /// prompts (#1542).
     Models(Vec<String>),
     /// `oxa local add <model.gguf> ..`: the words after `local`.
     Local(Vec<String>),
@@ -148,6 +149,9 @@ pub struct Args {
     pub max_tokens: Option<u64>,
     /// `--usage-log FILE`: one JSONL record per model call (owner-only file, no message text).
     pub usage_log: Option<PathBuf>,
+    /// `--allowed-changed-files <list>`: the allowed changed-file set a task supplies; the
+    /// terminal record reports tool-observed extra files against it (#2297). Empty = no scope.
+    pub allowed_changed_files: Vec<String>,
     /// `--mode text|json|rpc`.
     pub mode: Option<ModeArg>,
     /// `--export <input> [output]`.
@@ -282,8 +286,12 @@ const COMMANDS: &[(&str, &str)] = &[
         "Read a saved session's current progress and stall signal",
     ),
     (
-        "oxa models [--json]",
-        "List the models the engine serves, as a table or as JSON",
+        "oxa cache <session-id|path> [--json]",
+        "Report saved prompt-cache evidence without contacting a model",
+    ),
+    (
+        "oxa models [--json] [search]",
+        "List the local and cloud models this install can serve, as a table or as JSON",
     ),
     (
         "oxa install <source> [-l]",
@@ -304,8 +312,12 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
     (
-        "oxa send <session-id> <text|->",
-        "Queue a session follow-up; use - to read the text from stdin",
+        "oxa send [--follow-up] <session-id> <text|-> [--wait SECONDS]",
+        "Steer a session at its next tool call (--follow-up queues it instead) and print a delivery receipt; - reads stdin; --wait exits 3 if not taken in time",
+    ),
+    (
+        "oxa send <session-id> --retry <message-id> | --withdraw <message-id>",
+        "Check a sent message again without sending it twice, or remove an undelivered one",
     ),
     (
         "oxa send <session-id> --approve <request-id> once|session|always|deny",
@@ -399,6 +411,10 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--usage-log <file>",
         "Write one JSONL record per model call (tokens, duration, model, turn) to FILE; owner-only, no message text",
+    ),
+    (
+        "--allowed-changed-files <list>",
+        "Comma-separated allowed changed-file set; the result reports tool-observed extra files against it (acceptance evidence, never a refusal)",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -705,11 +721,12 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
                 continue;
             }
         }
-        // These commands accept leading offline switches so their own guards
-        // can report the refusal. A prompt, another option or `--` ends that prefix.
+        // These commands accept leading offline switches so their own guards can report the
+        // refusal, and `models` so the catalog can report an offline cloud route. A prompt,
+        // another option or `--` ends that prefix.
         if !stop
             && (i == 1
-                || ((matches!(arg, "send" | "work" | "share")
+                || ((matches!(arg, "send" | "work" | "share" | "models")
                     || oxa_interactive::command_registry::parse_cli(&argv[i - 1..])
                         .is_some_and(|invocation| registry_owned(invocation.command.id)))
                     && argv[..i - 1].iter().all(|word| word == "--offline")))
@@ -837,6 +854,9 @@ fn parse_flag(
         }
         "--usage-log" => {
             a.usage_log = Some(PathBuf::from(value(argv, i, inline, flag, "a file path")?));
+        }
+        "--allowed-changed-files" => {
+            a.allowed_changed_files = list(&value(argv, i, inline, flag, "a comma-separated file list")?);
         }
         "--provider" => a.provider = Some(value(argv, i, inline, flag, "a provider name")?),
         "--model" => a.model = Some(value(argv, i, inline, flag, "a model pattern")?),
@@ -1139,6 +1159,14 @@ fn present_flags<'a>(flags: &[(bool, &'a str)]) -> Vec<&'a str> {
         .collect()
 }
 
+/// A registry command that `COMMANDS` already names is printed from that table once.
+fn listed_in_commands(path: &[&str]) -> bool {
+    path.len() == 1
+        && COMMANDS
+            .iter()
+            .any(|(left, _)| left.split_whitespace().nth(1) == Some(path[0]))
+}
+
 /// The `--help` text (cli.md's flag list with `oxa` names), followed by extension flags.
 pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
     let mut out = String::new();
@@ -1149,7 +1177,7 @@ pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
         out.push_str(&format!("  {left:<36}{desc}\n"));
     }
     for entry in oxa_interactive::command_registry::entries(oxa_interactive::command_registry::Surface::Cli)
-        .filter(|entry| registry_owned(entry.id))
+        .filter(|entry| registry_owned(entry.id) && !listed_in_commands(entry.path))
     {
         out.push_str(&format!("  oxa {:<32}{}\n", entry.path.join(" "), entry.summary));
     }

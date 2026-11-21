@@ -99,7 +99,7 @@ pub fn identity_facts(root: &Path, engine: Option<&dyn Engine>) -> IdentityFacts
         == Some("omarchy")
         || root.join("usr/share/omarchy").is_dir();
     IdentityFacts {
-        oxa_version: env!("CARGO_PKG_VERSION").to_string(),
+        oxa_version: oxa_proto::BUILD_VERSION.to_string(),
         machine,
         chip,
         memory_gib,

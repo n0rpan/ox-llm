@@ -859,9 +859,11 @@ fn picker_rig(env: TestEnv, opts: RigOpts) -> Rig {
     rig
 }
 
+/// The limits belong to the invocation: a `--max-time` that expires while a replacement session
+/// (`/new`, `/clone`) is current ends the run (interrupted, 130) without a model request.
 #[test]
-fn interactive_startup_deadline_does_not_follow_a_new_or_cloned_session() {
-    const STARTUP_LIMIT: Duration = Duration::from_secs(8);
+fn interactive_run_deadline_follows_a_new_or_cloned_session() {
+    const RUN_LIMIT: Duration = Duration::from_secs(8);
     for (command, notice) in [
         ("/new", "New session started"),
         ("/clone", "Cloned to new session"),
@@ -869,40 +871,35 @@ fn interactive_startup_deadline_does_not_follow_a_new_or_cloned_session() {
         let env = TestEnv::new();
         env.write(
             "home/.oxa/agent/settings.json",
-            r#"{"oxa":{"bootPreload":false,"subagent":{"enabled":true}}}"#,
-        );
-        env.write(
-            "home/.oxa/agent/agents/scout.md",
-            "---\nname: scout\ndescription: Looks around\ntools: read\n---\nYou are a scout.\n",
+            r#"{"oxa":{"bootPreload":false}}"#,
         );
         let mut rig = Rig::start_in(
             env,
             vec![
                 ScriptTurn::text("Initial response"),
-                ScriptTurn::tool(
-                    "delegate",
-                    "subagent",
-                    r#"{"agent":"scout","task":"Look around"}"#,
-                ),
-                ScriptTurn::text("Child response"),
-                ScriptTurn::text("Parent response"),
+                ScriptTurn::text("Must not be requested"),
             ],
             RigOpts {
-                args: vec!["--max-time".into(), STARTUP_LIMIT.as_secs().to_string()],
+                args: vec!["--max-time".into(), RUN_LIMIT.as_secs().to_string()],
                 ..RigOpts::default()
             },
         );
-        rig.prompt("Prime the startup session", "Initial response");
+        rig.prompt("Prime the first session", "Initial response");
         rig.slash(command);
         rig.pty.wait_for_text(notice).unwrap();
         // A deadline started before the first response has certainly expired by now.
-        std::thread::sleep(STARTUP_LIMIT);
-        rig.prompt("Delegate in the replacement", "Parent response");
-        assert!(
-            rig.generating().iter().any(|request| request.kind == "subagent"),
-            "{command} must not inherit the startup subagent deadline"
+        std::thread::sleep(RUN_LIMIT);
+        let status = rig.pty.wait_exit(Duration::from_secs(30)).unwrap();
+        assert_eq!(
+            status.code(),
+            Some(130),
+            "{command}: the limit ends the replacement session"
         );
-        rig.quit();
+        assert_eq!(
+            rig.generating().len(),
+            1,
+            "{command}: no model request after the deadline"
+        );
     }
 }
 
