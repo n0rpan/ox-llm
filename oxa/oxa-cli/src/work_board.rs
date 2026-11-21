@@ -52,6 +52,9 @@ pub(crate) struct Reader<'a> {
     optional: Cell<Option<&'static str>>,
     probed: Cell<bool>,
     deferred: RefCell<Vec<Deferral>>,
+    /// PRs held by a `Restricts:` line without `owner-accepted`, derived from the
+    /// body and labels the same snapshot already fetches (#2346). No extra read.
+    restricts_held: Vec<u64>,
 }
 
 /// The message of a read the reserve deferred; callers treat it as a recorded skip.
@@ -163,6 +166,7 @@ impl<'a> Reader<'a> {
             optional: Cell::new(None),
             probed: Cell::new(false),
             deferred: RefCell::new(Vec::new()),
+            restricts_held: Vec::new(),
         }
     }
 
@@ -588,6 +592,23 @@ pub(crate) fn check_outcome(check: &Value) -> Option<&str> {
     }
 }
 
+/// A PR is held for the owner when its body carries a `Restricts:` line and the
+/// `owner-accepted` label is absent (AGENTS.md, "Restrictions"). The line may be
+/// a bullet; a mention mid-line is not a restriction line. This is a display
+/// signal for the lead web stuck counts (#2346): it never gates a merge, and the
+/// merge-queue policy keeps its own authority.
+pub(crate) fn restricts_hold(body: &str, labels: &[&str]) -> bool {
+    let restricts = body.lines().any(|line| {
+        let line = line.trim_start();
+        let line = line
+            .strip_prefix("- ")
+            .or_else(|| line.strip_prefix("* "))
+            .unwrap_or(line);
+        line.starts_with("Restricts:")
+    });
+    restricts && !labels.contains(&"owner-accepted")
+}
+
 /// The required check contexts of one base ref: its classic protection plus active
 /// repository and organization rulesets. Shared by the PR snapshot and the main
 /// panels projection.
@@ -715,6 +736,23 @@ impl Reader<'_> {
                     }
                     _ => return Err(SnapshotError::from("invalid PR state")),
                 }
+                // The Restricts hold is a display signal from facts this query
+                // already carries; truncated labels cannot prove the absence of
+                // owner-accepted, so such a row is simply not flagged.
+                if let (Some(body), Some(number)) = (row["body"].as_str(), pr["number"].as_u64()) {
+                    let labels = &row["labels"];
+                    let names = labels["nodes"].as_array();
+                    let complete =
+                        labels["totalCount"].as_u64() == Some(names.map_or(0, |nodes| nodes.len()) as u64);
+                    if complete {
+                        let names: Vec<&str> = names
+                            .map(|nodes| nodes.iter().filter_map(|l| l["name"].as_str()).collect())
+                            .unwrap_or_default();
+                        if restricts_hold(body, &names) {
+                            self.restricts_held.push(number);
+                        }
+                    }
+                }
                 if let Some(connection) = over_page_limit(row, reviews) {
                     let (number, head) = identity(row)?;
                     return Ok(Err(Incomplete {
@@ -833,6 +871,7 @@ impl GitHub for Reader<'_> {
     fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.deadline.set(Instant::now() + Duration::from_secs(120));
         self.bytes.set(0);
+        self.restricts_held.clear();
         if let Some(quota) = &mut self.app_quota {
             *quota.get_mut() = GitHubQuotas::default();
         }
@@ -1026,6 +1065,7 @@ pub(crate) fn run(
                 (None, None)
             };
             reader.time_left().map_err(QueryError::message)?;
+            let restricts_held = std::mem::take(&mut reader.restricts_held);
             Ok(oxa_work::shadow::LandingSample {
                 board,
                 reviews,
@@ -1034,6 +1074,7 @@ pub(crate) fn run(
                 landing_main,
                 panels,
                 runs,
+                restricts_held: Some(restricts_held),
                 app_quota: reader
                     .app_quota
                     .as_ref()
@@ -1044,6 +1085,26 @@ pub(crate) fn run(
         std::thread::sleep,
     )?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod restricts_tests {
+    use super::restricts_hold;
+
+    #[test]
+    fn a_restricts_line_holds_until_the_owner_accepts() {
+        let body = "What and why.\n\nRestricts: a new refusal — reason — drawback\n";
+        assert!(restricts_hold(body, &[]));
+        assert!(restricts_hold(body, &["lead-web"]));
+        assert!(!restricts_hold(body, &["lead-web", "owner-accepted"]));
+        // Bullet and indented forms are the same line.
+        assert!(restricts_hold("- Restricts: x — y — z\n", &[]));
+        assert!(restricts_hold("  * Restricts: x — y — z\n", &[]));
+        // A mention inside prose is not a restriction line, and an empty body holds nothing.
+        assert!(!restricts_hold("See the Restricts: rule in AGENTS.md\n", &[]));
+        assert!(!restricts_hold("", &[]));
+        assert!(!restricts_hold("No restrictions here.\n", &["owner-accepted"]));
+    }
 }
 
 #[cfg(test)]

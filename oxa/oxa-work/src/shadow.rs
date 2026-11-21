@@ -81,6 +81,11 @@ struct Sample<'a> {
     app_quota: Option<AppQuota>,
     #[serde(skip_serializing_if = "<[Deferral]>::is_empty")]
     quota_deferred: &'a [Deferral],
+    /// PRs held by a `Restricts:` line without the owner's `owner-accepted` label,
+    /// derived by the Reader from the body and labels it already fetches (#2346).
+    /// `None`: this sample did not observe the signal; `Some([])`: none held.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restricts_held: Option<&'a [u64]>,
 }
 
 pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
@@ -462,6 +467,9 @@ pub struct LandingSample {
     pub runs: Option<Vec<Value>>,
     pub app_quota: Option<AppQuota>,
     pub quota_deferred: Vec<Deferral>,
+    /// PRs held by `Restricts:` without `owner-accepted`, from the same snapshot
+    /// as the board. `None` keeps the field absent: an unobserved signal.
+    pub restricts_held: Option<Vec<u64>>,
 }
 
 /// Persist the board and its projections in one owner-only sample.
@@ -484,6 +492,7 @@ pub fn run_with_landing(
             runs,
             app_quota,
             quota_deferred,
+            restricts_held,
         } = snapshot()?;
         let matched_queue_admissions = if landing.is_empty() {
             BTreeMap::new()
@@ -518,6 +527,7 @@ pub fn run_with_landing(
             runs: runs.as_deref(),
             app_quota,
             quota_deferred: &quota_deferred,
+            restricts_held: restricts_held.as_deref(),
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         // The Lead sample bound is fixed: the largest optional records degrade

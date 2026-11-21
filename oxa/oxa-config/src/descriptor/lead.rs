@@ -179,4 +179,18 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Restart)
     .web(WebEdit::Confirm)
     .widens("Changes which proxy's identity header is believed."),
+    // The merge target the lead web Home compares the last full hour against
+    // (#2346). A display goal: it never gates a merge or refuses a value.
+    d(
+        "oxa.lead.target.merges_per_hour",
+        Group::Lead,
+        "",
+        "Merge target",
+        "Merges per hour the lead web Home compares against.",
+    )
+    .key(Kind::Number, "10")
+    .number(Unit::Count)
+    .user_only()
+    .apply(Apply::Restart)
+    .web(WebEdit::Edit),
 ];

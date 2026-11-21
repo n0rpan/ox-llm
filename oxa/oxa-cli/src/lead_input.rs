@@ -62,6 +62,12 @@ pub struct Sample {
     pub review_rejected: Vec<u64>,
     /// Optional GitHub work the owner's App reserve kept back from this sample.
     pub quota_deferred: Vec<oxa_work::shadow::Deferral>,
+    /// Verified main merges observed across the complete Reader records in the
+    /// same tail (#2346): the throughput projection's only input, no new read.
+    pub merges: crate::lead_projection::MergeHistory,
+    /// PRs held by a `Restricts:` line without the `owner-accepted` label, as the
+    /// Reader recorded them. `None` when the record does not carry the field.
+    pub restricts_held: Option<Vec<u64>>,
 }
 
 /// Read the most recent complete Reader sample within the existing tail bound.
@@ -78,38 +84,146 @@ pub fn sample(path: &Path, uid: u32) -> Result<Sample> {
     file.take(length - start)
         .read_to_end(&mut tail)
         .map_err(|_| "cannot read board sample")?;
-    let mut end = tail
+    let end = tail
         .iter()
         .rposition(|b| *b == b'\n')
         .ok_or("no complete board sample")?;
-    loop {
-        let previous = tail[..end].iter().rposition(|b| *b == b'\n');
-        if previous.is_none() && start != 0 {
+    // Complete lines in order. A tail that starts mid-record drops its first
+    // partial line; the coverage of the merge history starts at the first whole one.
+    let offset = if start == 0 {
+        0
+    } else {
+        tail.iter().position(|b| *b == b'\n').map_or(end + 1, |p| p + 1)
+    };
+    let mut lines: Vec<&[u8]> = Vec::new();
+    let mut pos = offset;
+    while pos <= end {
+        let nl = tail[pos..=end]
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(end, |p| pos + p);
+        lines.push(&tail[pos..nl]);
+        pos = nl + 1;
+    }
+    // The latest complete Reader sample, with the same strict bounds as before:
+    // a malformed record at or after it refuses the read; publication rows are
+    // journal replays, never observations.
+    let mut latest = None;
+    for (index, line) in lines.iter().enumerate().rev() {
+        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
             return Err("board sample exceeds limit");
         }
-        let line = &tail[previous.map_or(0, |p| p + 1)..end];
-        let decoded = decode_board_sample(line)?;
+        let record: serde_json::Value = serde_json::from_slice(line).map_err(|_| "invalid board sample")?;
+        let decoded = decode_board_sample(&record)?;
         if !decoded.publication {
-            let record: serde_json::Value = serde_json::from_slice(line).unwrap_or(serde_json::Value::Null);
-            let (alarms, threads) = decode_alarms(&record, &decoded.board, decoded.board.observed_at);
-            return Ok(Sample {
-                board: decoded.board,
-                app_quota: decoded.app_quota,
-                alarms,
-                threads,
-                review_rejected: record["reviews"]
-                    .as_object()
-                    .into_iter()
-                    .flatten()
-                    .filter(|(_, plan)| plan["decision"].get("requester_rejected").is_some())
-                    .filter_map(|(number, _)| number.parse().ok())
-                    .collect(),
-                quota_deferred: serde_json::from_value(record["quota_deferred"].clone()).unwrap_or_default(),
+            latest = Some((index, record, decoded));
+            break;
+        }
+    }
+    let (index, record, decoded) = match latest {
+        Some(found) => found,
+        // The tail began mid-record and no whole Reader sample fits in it: the
+        // observation the page needs exceeds the retained window.
+        None if start != 0 => return Err("board sample exceeds limit"),
+        None => return Err("no Reader board sample"),
+    };
+    // Merge history from the same tail, one light parse per record and no new
+    // read. Older records degrade per record: a malformed or partial one is
+    // skipped for the history, never a refusal of the board the latest record
+    // carries. The row deserializer ignores the large board and landing subtrees
+    // without allocating them, so the history stays cheap on a full tail.
+    #[derive(serde::Deserialize)]
+    struct HistoryRow {
+        schema_version: u64,
+        observed_at: u64,
+        #[serde(default)]
+        landing_main: Option<String>,
+        #[serde(default)]
+        panels: Option<serde_json::Value>,
+        #[serde(default)]
+        landing_publication: Option<serde_json::Value>,
+        /// Presence of a board object, without allocating its subtree.
+        #[serde(default, deserialize_with = "board_object")]
+        board: bool,
+    }
+    fn board_object<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+        struct Present;
+        impl<'de> serde::de::Visitor<'de> for Present {
+            type Value = bool;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a board object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<bool, A::Error> {
+                while map
+                    .next_entry::<serde_json::IgnoredAny, serde_json::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(true)
+            }
+        }
+        deserializer.deserialize_any(Present)
+    }
+    let mut merges = crate::lead_projection::MergeHistory {
+        observed_at: decoded.board.observed_at,
+        ..crate::lead_projection::MergeHistory::default()
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for line in &lines[..=index] {
+        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
+            continue;
+        }
+        let Ok(row) = serde_json::from_slice::<HistoryRow>(line) else {
+            continue;
+        };
+        if row.schema_version != 1 || row.landing_publication.is_some() || !row.board {
+            continue;
+        }
+        if merges.covered_from.is_none() {
+            merges.covered_from = Some(row.observed_at);
+        }
+        let Some(head) = row.landing_main.as_deref() else {
+            continue;
+        };
+        merges.main_samples += 1;
+        let Some(panels) = row.panels.as_ref() else {
+            continue;
+        };
+        // Count a merge only when the record's own main head is the verified
+        // merge commit; the shared validator keeps its exact-match rules.
+        if panels["main"]["target"]["oid"].as_str() != Some(head) {
+            continue;
+        }
+        let Some(merged_at) = crate::lead_panels::verified_main_merge_time(panels) else {
+            continue;
+        };
+        if seen.insert(head.to_owned()) {
+            merges.merges.push(crate::lead_projection::Merge {
+                at: merged_at,
+                head: head.to_owned(),
             });
         }
-        // Publication rows carry a Board for journal replay, not a Reader observation.
-        end = previous.ok_or("no Reader board sample")?;
     }
+    merges.merges.sort_by_key(|merge| merge.at);
+    let (alarms, threads) = decode_alarms(&record, &decoded.board, decoded.board.observed_at);
+    Ok(Sample {
+        board: decoded.board,
+        app_quota: decoded.app_quota,
+        alarms,
+        threads,
+        review_rejected: record["reviews"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(_, plan)| plan["decision"].get("requester_rejected").is_some())
+            .filter_map(|(number, _)| number.parse().ok())
+            .collect(),
+        quota_deferred: serde_json::from_value(record["quota_deferred"].clone()).unwrap_or_default(),
+        merges,
+        restricts_held: record
+            .get("restricts_held")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rows| rows.iter().map(serde_json::Value::as_u64).collect()),
+    })
 }
 
 /// Read the most recent complete Reader sample's board and App quota.
@@ -267,11 +381,7 @@ fn decode_alarms(
     (alarms, threads)
 }
 
-fn decode_board_sample(line: &[u8]) -> Result<DecodedSample> {
-    if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
-        return Err("board sample exceeds limit");
-    }
-    let sample: serde_json::Value = serde_json::from_slice(line).map_err(|_| "invalid board sample")?;
+fn decode_board_sample(sample: &serde_json::Value) -> Result<DecodedSample> {
     if sample["schema_version"] != 1 {
         return Err("unsupported board sample version");
     }
@@ -480,6 +590,108 @@ mod tests {
         assert!(board(&path, uid).is_err());
         assert!(situation(&path, uid).is_err());
     }
+    #[test]
+    fn merge_history_comes_from_the_same_tail_and_counts_each_head_once() {
+        use serde_json::json;
+        let iso = |secs: u64| format!("{}Z", &oxa_session::iso_from_ms(secs * 1000)[..19]);
+        let head_a = "a".repeat(40);
+        let head_b = "b".repeat(40);
+        let record = |at: u64, head: &str, merged: Option<u64>| {
+            let mut rec = json!({
+                "schema_version": 1,
+                "observed_at": at,
+                "board": {"observed_at": at, "entries": []},
+                "landing_main": head,
+            });
+            if let Some(merged) = merged {
+                rec["panels"] = json!({
+                    "id": "example-repo",
+                    "main": {"target": {"oid": head, "associatedPullRequests": {
+                        "pageInfo": {"hasNextPage": false},
+                        "nodes": [{"repository": {"id": "example-repo"}, "baseRefName": "main",
+                                   "mergedAt": iso(merged), "mergeCommit": {"oid": head}}]
+                    }}},
+                });
+            }
+            rec
+        };
+        let env = TestEnv::new();
+        let lines = [
+            record(36_000, &head_a, Some(35_500)),
+            record(39_600, &head_a, Some(35_500)), // same head: not a second merge
+            record(43_200, &head_b, Some(42_700)),
+            record(46_800, &head_b, None), // panels absent: still a main sample
+        ];
+        let content = lines.iter().map(|rec| format!("{rec}\n")).collect::<String>();
+        let (path, uid) = fixture(&env, content.as_bytes());
+        let sample = sample(&path, uid).unwrap();
+        assert_eq!(sample.board.observed_at, 46_800);
+        assert_eq!(sample.merges.covered_from, Some(36_000));
+        assert_eq!(sample.merges.observed_at, 46_800);
+        assert_eq!(sample.merges.main_samples, 4);
+        assert_eq!(
+            sample.merges.merges,
+            vec![
+                crate::lead_projection::Merge {
+                    at: 35_500,
+                    head: head_a.clone()
+                },
+                crate::lead_projection::Merge {
+                    at: 42_700,
+                    head: head_b.clone()
+                },
+            ]
+        );
+        // A record whose panels name a different head is not a verified merge of it.
+        let mut mismatched = record(50_400, &head_a, Some(49_000));
+        mismatched["panels"]["main"]["target"]["oid"] = json!(head_b);
+        let content = format!("{content}{mismatched}\n");
+        fs::write(&path, &content).unwrap();
+        let sample = sample(&path, uid).unwrap();
+        assert_eq!(sample.merges.merges.len(), 2);
+        assert_eq!(sample.merges.main_samples, 5);
+    }
+
+    #[test]
+    fn history_skips_publication_and_malformed_older_records_without_refusing() {
+        let env = TestEnv::new();
+        let reader = br#"{"schema_version":1,"observed_at":20,"board":{"observed_at":20,"entries":[]},"landing_main":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+"#;
+        // An older malformed record never refuses the board the latest record carries.
+        let content = [b"broken older record\n".as_slice(), reader].concat();
+        let (path, uid) = fixture(&env, &content);
+        let sample = sample(&path, uid).unwrap();
+        assert_eq!(sample.board.observed_at, 20);
+        assert_eq!(sample.merges.covered_from, Some(20));
+        assert_eq!(sample.merges.main_samples, 1);
+        assert!(sample.merges.merges.is_empty());
+        // Publication rows are journal replays: no merge history from them.
+        let publication = br#"{"schema_version":1,"observed_at":30,"board":{"observed_at":30,"entries":[]},"landing_publication":{"step":"delivered"},"landing_main":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+"#;
+        fs::write(&path, [reader, publication].concat()).unwrap();
+        let sample = sample(&path, uid).unwrap();
+        assert_eq!(sample.board.observed_at, 20);
+        assert_eq!(sample.merges.main_samples, 1);
+    }
+
+    #[test]
+    fn restricts_held_is_observed_only_when_the_record_carries_it() {
+        let env = TestEnv::new();
+        let base = br#"{"schema_version":1,"observed_at":20,"board":{"observed_at":20,"entries":[]}}"#;
+        let (path, uid) = fixture(&env, &[base, b"\n"].concat());
+        assert_eq!(sample(&path, uid).unwrap().restricts_held, None);
+        let with_holds = format!("{base},\"restricts_held\":[7,9]}}\n");
+        fs::write(&path, &with_holds).unwrap();
+        assert_eq!(sample(&path, uid).unwrap().restricts_held, Some(vec![7, 9]));
+        let empty = format!("{base},\"restricts_held\":[]}}\n");
+        fs::write(&path, &empty).unwrap();
+        assert_eq!(sample(&path, uid).unwrap().restricts_held, Some(vec![]));
+        // A malformed list degrades this one source to unobserved, not a refusal.
+        let invalid = format!("{base},\"restricts_held\":[7,\"x\"]}}\n");
+        fs::write(&path, &invalid).unwrap();
+        assert_eq!(sample(&path, uid).unwrap().restricts_held, None);
+    }
+
     #[test]
     fn reads_existing_runner_wire_format_without_inventing_state() {
         let env = TestEnv::new();

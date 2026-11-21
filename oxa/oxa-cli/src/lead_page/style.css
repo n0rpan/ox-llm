@@ -101,6 +101,18 @@ ul.sessions{list-style:none;margin:8px 0;padding:0;display:grid;gap:8px}.session
 .home-decisions,.home-overview,.ask-cards>article{min-width:0}
 .home-work{border:1px solid var(--line);border-radius:var(--r);padding:14px;background:var(--surface);box-shadow:var(--shadow);margin-top:12px}
 .home-work>summary{min-height:44px;font-weight:600}.ask-cards{display:grid;gap:12px}.ask-cards>article{margin:0}
+/* Throughput and stuck work (#2346): one card, twelve hourly bars, four count tiles. */
+.work{padding:14px;margin-top:12px}
+.work h2{margin-top:16px}.work h2:first-child{margin-top:0}
+.work-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:6px 0 2px}
+.work-head .num{font-size:var(--t-num);font-weight:700;letter-spacing:-.02em;line-height:1.15}
+.bars{margin:8px 0 4px}.bars svg{display:block;width:100%;height:64px}
+.bars rect{fill:var(--accent)}
+.bars rect.unknown{fill:var(--raised);stroke:var(--line);stroke-dasharray:2 2}
+.bars line.target{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3}
+.work-tiles{margin-top:8px}
+.work-tiles .k,.work-tiles .v,.work-tiles .d{display:block}
+.work .say-why{margin:6px 0 0}
 nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;background:var(--surface);
   border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
 nav.tabs a{position:relative;flex:1;min-width:0;height:var(--nav-h);display:flex;flex-direction:column;
@@ -126,5 +138,6 @@ a.row:hover,a.tile:hover,.pages a:hover,.stale-notice a:hover,.top>a:hover,.filt
   nav.tabs svg{order:0}  nav.tabs a[aria-current=page]::before{top:50%;left:0;width:3px;height:36px;border-radius:0 3px 3px 0;transform:translateY(-50%)}
   nav.tabs a.rail-only{display:flex}  .badge{position:static;margin-left:auto}  .fab{display:none}
   .home-layout{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:24px;align-items:start}
+  .work-tiles{grid-template-columns:repeat(4,minmax(0,1fr))}
   .asks-layout .ask-cards{grid-template-columns:repeat(2,minmax(0,1fr))}  .filters{margin:0 0 12px;padding:2px 0}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto;transition:none!important}}
