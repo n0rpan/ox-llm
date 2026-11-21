@@ -848,6 +848,14 @@ fn run_inner(
             crate::exec::note_stored_images(st, &results, sink)?;
             // #2295: the next repair request (if any) carries this batch's verified files.
             artifacts = done.verified_artifacts(&st.cwd);
+            eprintln!(
+                "DEBUG-BATCH artifacts={} failed={} checked={} written={:?} done={:?}",
+                artifacts.is_some(),
+                done.failed_command,
+                done.proof.checked,
+                done.written,
+                st.settings.done_commands()
+            );
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;
