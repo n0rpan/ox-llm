@@ -796,7 +796,7 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
         repair.contains("change only what differs instead of rebuilding"),
         "{repair}"
     );
-    // The reply after the batch carries no line; the repair carries it once.
+    // Only the failed-check repair carries it: the reply after the batch does not.
     assert!(!last_user(&engine, 1).contains("Not re-derived"));
     assert_eq!(last_user(&engine, 2).matches("Not re-derived").count(), 1);
 }

@@ -205,9 +205,6 @@ fn run_inner(
     let mut idle_streak: u32 = 0;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
-    // #2295: the verified-artifact line the failed-check repair request carries, taken by that
-    // request. A run whose checks all passed has none here.
-    let mut artifacts: Option<String> = None;
     'turns: loop {
         if crate::goal::terminal(st) {
             return Ok(RunEnd::Stopped);
@@ -302,9 +299,7 @@ fn run_inner(
             snapshot_keep: false,
             // The contract (including repair feedback) belongs to this run, not the
             // persisted conversation. Repeat it for tool/continuation requests too.
-            // #2295: a verified-artifact line is the task of ONE request: it is taken here
-            // and sent again by no request.
-            extra: turn_extra(st, &mut artifacts, &schema_repaired),
+            extra: turn_extra(st, &schema_repaired),
             events: true,
             idem_key: String::new(),
         };
@@ -839,8 +834,6 @@ fn run_inner(
             done.note_artifacts(crate::done::checks_run(st));
             done.note_bash(st, &results);
             crate::exec::note_stored_images(st, &results, sink)?;
-            // #2295: the next repair request (if any) carries this batch's verified files.
-            artifacts = done.verified_artifacts(&st.cwd);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;
@@ -1640,15 +1633,12 @@ fn failure_why(e: &OxaError, got_data: bool) -> &'static str {
 }
 
 /// The messages sent after the wire for one request and never stored: the output schema
-/// contract (with its repair feedback) and, once, the verified-artifact line of this turn
-/// (#2295, `done.rs`), taken here so no later reply repeats it.
+/// contract (with its repair feedback).
 fn turn_extra(
     st: &SessionState,
-    artifacts: &mut Option<String>,
     schema_repaired: &Option<crate::output_schema::OutputValidationError>,
 ) -> Vec<WireMsg> {
-    let mut extra: Vec<WireMsg> = st
-        .output_schema
+    st.output_schema
         .as_ref()
         .map(|schema| {
             let instruction = if let Some(error) = schema_repaired {
@@ -1658,9 +1648,7 @@ fn turn_extra(
             };
             vec![WireMsg::user(format!("{instruction}\n{}", schema.value()))]
         })
-        .unwrap_or_default();
-    extra.extend(artifacts.take().map(WireMsg::user));
-    extra
+        .unwrap_or_default()
 }
 
 /// The placeholder of the assistant message a request is about to stream.
