@@ -306,7 +306,8 @@ The desktop app (`oxa-desk`) is built in small slices from [the build plan](oxa/
 - **CI:** the `desk` job of `checks` (`.github/workflows/desk.yml`) is the only compiler of `oxa/desk/`. It runs
   `desk check` (rustfmt, `tools/ci/desk_contract.py`, clippy with warnings denied) and `desk test` (nextest, and
   `oxa-desk --version` must print oxa's line) on hosted ARM runners; each writes its duration and its wait for a
-  runner to the job summary (`tools/ci/lane_queue.py --line`; no token on a PR from a fork). A change to `oxa/desk/`, `desk.yml` or `desk_contract.py` selects only this job, not
+  runner to the job summary (`tools/ci/lane_queue.py --line`; no token on a PR from a fork or in the merge queue).
+  A change to `oxa/desk/`, `desk.yml` or `desk_contract.py` selects only this job, not
   the oxa, engine, gateway or macOS jobs; `changelog.d/desk-*.md` selects nothing. A PR that changes only shared
   oxa crates does not run it; the full run on main does, and the main-push dedupe skips it only when the queue run
   at that commit ran it. `gate` covers the job, and a skip passes.

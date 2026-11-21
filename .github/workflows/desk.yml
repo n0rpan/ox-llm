@@ -126,9 +126,9 @@ jobs:
       - name: Duration and runner wait
         if: always()
         env:
-          # The script comes from the checkout, and on a PR from a fork that is the fork's file:
-          # such a run gets no token and asks the public API without one.
-          GH_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
+          # The script comes from the checkout. On a PR from a fork that is the fork's file, and a queue
+          # entry may carry one too: both get no token and ask the public API without one.
+          GH_TOKEN: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
         run: python3 -I tools/ci/lane_queue.py --line --job-name "desk check"
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         # Only main seeds caches: queue and PR refs cannot share theirs (see checks.yml).
@@ -197,9 +197,9 @@ jobs:
       - name: Duration and runner wait
         if: always()
         env:
-          # The script comes from the checkout, and on a PR from a fork that is the fork's file:
-          # such a run gets no token and asks the public API without one.
-          GH_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
+          # The script comes from the checkout. On a PR from a fork that is the fork's file, and a queue
+          # entry may carry one too: both get no token and ask the public API without one.
+          GH_TOKEN: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
         run: python3 -I tools/ci/lane_queue.py --line --job-name "desk test"
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         # Only main seeds caches: queue and PR refs cannot share theirs (see checks.yml).
