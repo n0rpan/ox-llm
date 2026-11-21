@@ -118,6 +118,7 @@ fn awaiting_publication(record: &Record) -> bool {
     crate::completed_execution(record.step)
         && !record
             .worker
+            .as_ref()
             .is_some_and(|worker| matches!(worker.outcome, crate::WorkerOutcome::Interrupted))
         && matches!(
             record.acceptance_outcome.unwrap_or(record.outcome),
