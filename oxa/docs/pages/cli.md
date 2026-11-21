@@ -128,6 +128,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa memory <list\|show\|rm>` | list the memory index, show one memory entry, or remove one entry and its index line, see [Memory commands](#memory-commands) |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
+| `oxa lead board <verb>` | show and edit the lead kanban board: lanes, goal, capacity, cards, undo and `--json`, see [Lead board](#lead-board) |
 | `oxa share serve --model ALIAS` | start the authenticated streaming OpenAI-compatible listener for explicitly selected native local models in a build with the `share` feature |
 | `oxa share key <add\|list\|revoke>` | owner-only guest key and daily limit management, in a build compiled with the `share` feature |
 
@@ -245,6 +246,56 @@ $ oxa mcp logout <name>
 - `--exposure` takes `codemode` (default), `deferred`, `direct` or `hidden`. See [mcp.md](mcp.md).
 - `list` connects to every enabled server and reports its state, transport and tools. `--json` prints the same as JSON.
 - `login` connects to the server and runs the OAuth sign-in. The default timeout is 300 seconds. `logout` deletes the stored credentials.
+
+### Lead board
+
+`oxa lead board` is the terminal front end of the lead kanban (the pull-based list of planned
+work the lead keeps full and workers take from). It is one typed board per repository, not the
+GitHub PR policy list of `oxa work board`. Every verb is one operation applied under a lock, so
+two terminals editing different cards both win, and a text edit carries the card revision: an
+edit written against an older revision is refused and both versions are shown. Each applied
+verb prints the sequence number of the operation; `undo` restores the previous state as long as
+nothing else has touched the card.
+
+```console
+$ oxa lead board                                   lanes with counts, capacity, goal and stuck
+$ oxa lead board list [--column C] [--json]         the cards in pull order
+$ oxa lead board show K41 [--json]
+$ oxa lead board add --title T [--done-when S] [--issue N] [--kind K] [--host H | --only H] [--needs arm64,ram-heavy] [--ready]
+$ oxa lead board add --from-json <path|->           a planning chunk: a JSON array of cards
+$ oxa lead board edit K41 [--title S] [--done-when S] [--kind K] [--host H] [--model M] [--issue N]
+$ oxa lead board move K41 <column> [--before K12 | --top]
+$ oxa lead board reorder K41 [--before K12 | --top]
+$ oxa lead board split K41 --from-json <path|->     the children array, each {title, done_when}
+$ oxa lead board stuck K41 [--cause C] [--detail S] | unstick K41 | note K41 --text S
+$ oxa lead board link K41 --pr N | rm K41 | undo [--seq N]
+$ oxa lead board capacity [HOST N [--paused]] [--pause HOST | --resume HOST]
+$ oxa lead board goal [--text S] [--measure SPEC] [--target N] [--clear]
+$ oxa lead board check M1 (--passed | --failed) --evidence S
+$ oxa lead board dispatch [start | pause]
+```
+
+A measure spec is `issues:N,N`, `merged-all`, `merged:K41` or `manual:TEXT`. Only a manual
+measure is ticked, with `check`, which records exactly the verdict you name: `--passed` or
+`--failed` is required, and a bare `check` is a usage error. Until the
+dispatcher lands, the GitHub measures read `unknown`, never a made-up number. Dispatch defaults
+to paused, and no verb starts a worker.
+
+Who may write never comes from the words or from JSON. A lead session may add, edit, split,
+reorder, move between Backlog and Ready, stick and unstick, link a PR and tick a manual measure,
+but not set capacity, the goal or dispatch, remove a card you created, or rank a card above one
+you placed. A worker may only `note` or `stuck` the card it was given in `OXA_BOARD_ITEM`. Every
+other write is the owner's, and it asks for your typed `yes` on the terminal before it changes
+anything (the same question `oxa wipe --all` asks): without a terminal, or with any other answer,
+nothing is applied. A process that lost the lead or worker markers inside a model's bash is
+therefore not the owner; the markers only ever narrow what oxa already granted the process.
+
+`--json` prints typed JSON: the whole board, an item, the items of a lane, the goal, the
+capacity map or `{"seq": N, "revision": N, "id": N}` for an applied operation. A card printed by
+`show --json` can be added again with `add --from-json`, which is what makes the format a
+round trip. The board lives in `<agent dir>/kanban/OWNER__REPO/` (owner-only, atomic writes,
+an operation log for undo); the repository is the github `origin` of the current directory, or
+`--repo OWNER/NAME`.
 
 ### Memory commands
 
@@ -442,6 +493,7 @@ These are set by oxa for its own child processes, or are test hooks. They are no
 - `OXA_CHILD_SOFT_TOKENS`: a parent may set the soft compaction limit of a subagent child; it overrides `oxa.compaction.softTokens`.
 - `OXA_CHILD_FORK`: a parent sets the path of the fork seed of a local subagent child (its frozen prefix and its conversation, in an owner-only file it deletes when the child is gone); the child continues that conversation instead of starting its own. See [tools.md](tools.md#subagent).
 - `OXA_WORKER_DEPTH`: oxa sets `1` in the environment of a lead worker session.
+- `OXA_BOARD_ITEM`: the kanban card (`K41`) a worker was dispatched for. With `OXA_WORKER_DEPTH` set, `oxa lead board` then lets that worker note or stick only that card.
 - `OXA_UNATTENDED`: oxa sets `1` in the environment of a worker it launches; the run counts as unattended and keeps the OS sandbox by default.
 - `OXA_WORK_INBOX`: `oxa work` sets `1` in a worker; the worker then watches its session inbox like a pursuing goal does, so `oxa send` reaches it at its next turn boundary (user setting `oxa.inbox.headless: false` turns it off).
 - `OXA_WORK_MODEL_DELEGATED`: `oxa work` sets `1` in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key.

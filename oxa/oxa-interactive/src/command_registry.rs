@@ -297,9 +297,16 @@ commands! {
         requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
     },
     LeadBoard {
-        path: &["lead", "board"], aliases: &[], summary: "Show the lead board",
+        path: &["lead", "board"], aliases: &[], summary: "Show and edit the lead kanban board",
         arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
-        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The slash menu has no board command"),
+            menu: Availability::Exception("The menu has no board command"),
+            web: Availability::Exception("Use the Board page in the lead web"),
+            desk: Availability::Exception("The desktop app has no board pane yet"),
+        },
+        requirements: NO_REQUIREMENTS,
     },
     LeadStatus {
         path: &["lead", "status"], aliases: &[], summary: "Show lead status",
@@ -657,8 +664,11 @@ mod tests {
             assert_eq!(declaration.path, *path);
             let input: Vec<_> = path.iter().map(|part| (*part).to_string()).collect();
             let in_menu = matches!(id, CommandId::Lead | CommandId::LeadServe);
-            let in_cli =
-                in_menu || matches!(id, CommandId::LeadChat | CommandId::LeadRun | CommandId::LeadAsks);
+            let in_cli = in_menu
+                || matches!(
+                    id,
+                    CommandId::LeadChat | CommandId::LeadRun | CommandId::LeadAsks | CommandId::LeadBoard
+                );
             assert_eq!(
                 parse_cli(&input).map(|invocation| invocation.command.id),
                 in_cli.then_some(*id)
@@ -670,6 +680,20 @@ mod tests {
                 assert_eq!(help(surface).contains(declaration.summary), shown);
             }
         }
+    }
+
+    #[test]
+    fn lead_board_is_declared_for_the_cli_surface() {
+        let input = words("lead board add --title T --ready");
+        let parsed = parse_cli(&input).expect("lead board resolves on the CLI");
+        assert_eq!(parsed.command.id, CommandId::LeadBoard);
+        assert_eq!(parsed.args, &input[2..]);
+        assert!(!parsed.help_requested);
+        assert!(dispatch_slash(&words("lead board")).is_none());
+        assert_eq!(
+            parse_cli(&words("lead")).expect("the lead chat").command.id,
+            CommandId::Lead
+        );
     }
 
     #[test]
@@ -733,7 +757,7 @@ mod tests {
     #[test]
     fn unavailable_child_does_not_resolve_as_the_available_lead_menu() {
         assert_eq!(parse_cli(&words("lead")).unwrap().command.id, CommandId::Lead);
-        assert!(parse_cli(&words("lead board")).is_none());
+        assert!(parse_cli(&words("lead status")).is_none());
         let input = words("lead chat status");
         let invocation = parse_cli(&input).unwrap();
         assert_eq!(invocation.command.id, CommandId::LeadChat);

@@ -292,6 +292,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "Report saved prompt-cache evidence without contacting a model",
     ),
     (
+        "oxa lead board <verb>",
+        "Show and edit the lead kanban board: lanes, goal, capacity, cards and undo (--json everywhere)",
+    ),
+    (
         "oxa models [--json] [search]",
         "List the local and cloud models this install can serve, as a table or as JSON",
     ),

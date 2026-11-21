@@ -272,6 +272,27 @@ const BASE: &[Entry] = &[
         example: "oxa work status --json",
     },
     Entry {
+        path: &["lead", "board"],
+        summary: "Show and edit the lead kanban board",
+        usage: &[
+            "oxa lead board [list] [--column C] [--json]",
+            "oxa lead board show K41 [--json]",
+            "oxa lead board add --title T [--done-when S] [--issue N] [--kind K] [--host H | --only H] [--needs arm64,ram-heavy] [--ready]",
+            "oxa lead board add --from-json <path|->",
+            "oxa lead board edit K41 [--title S] [--done-when S] [--kind K] [--host H] [--model M] [--issue N]",
+            "oxa lead board move K41 <column> [--before K12 | --top]",
+            "oxa lead board reorder K41 [--before K12 | --top]",
+            "oxa lead board split K41 --from-json <path|->",
+            "oxa lead board stuck K41 [--cause C] [--detail S] | unstick K41 | note K41 --text S",
+            "oxa lead board link K41 --pr N | rm K41 | undo [--seq N]",
+            "oxa lead board capacity [HOST N [--paused]] [--pause HOST | --resume HOST]",
+            "oxa lead board goal [--text S] [--measure SPEC] [--target N] [--clear]",
+            "oxa lead board check M1 [--passed | --failed] --evidence S",
+            "oxa lead board dispatch [start | pause]",
+        ],
+        example: "oxa lead board add --title Sync the docs --done-when cargo check is green --ready",
+    },
+    Entry {
         path: &["wipe"],
         summary: "Delete one session (or every session) and its spill files",
         usage: &[
