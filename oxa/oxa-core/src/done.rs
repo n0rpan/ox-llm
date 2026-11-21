@@ -46,6 +46,9 @@ pub(crate) struct DoneState {
     /// A check ran after the last image read. Before the image nudge only a recognizable
     /// passing check counts; after it any successful command does ([`Self::note_proof`]).
     image_checked: bool,
+    /// Distinct paths the run's successful `edit`/`write` calls named, in first-use order
+    /// (#2297). Tool-observed only; reported once at the end as acceptance evidence.
+    changed_paths: Vec<String>,
 }
 
 /// Whether the run changed files and no check has passed since the last change (B4a). Only
@@ -241,7 +244,17 @@ impl DoneState {
                 continue;
             }
             match res.tool_name.as_str() {
-                "edit" | "write" => self.proof.changed(),
+                "edit" | "write" => {
+                    self.proof.changed();
+                    if let Some(path) = serde_json::from_str::<serde_json::Value>(&call.args_raw)
+                        .ok()
+                        .and_then(|args| args.get("path").and_then(|p| p.as_str()).map(str::to_owned))
+                    {
+                        if !self.changed_paths.contains(&path) {
+                            self.changed_paths.push(path);
+                        }
+                    }
+                }
                 "read" => {
                     // An image read opens the cross-check fact again, even after a check.
                     if res.ui["imageRead"] == true || !res.msg.images.is_empty() {
@@ -434,6 +447,14 @@ pub(crate) fn record_end(
             level: Level::Warning,
             text,
         });
+    }
+    if !state.changed_paths.is_empty() {
+        crate::progress::notify(
+            st,
+            crate::Progress::FilesChanged {
+                paths: &state.changed_paths,
+            },
+        );
     }
     Ok(())
 }
