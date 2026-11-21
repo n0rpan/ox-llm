@@ -126,6 +126,9 @@ pub struct Stats {
 /// A running session.
 pub struct Session {
     pub(crate) st: SessionState,
+    /// #2295: the verified-artifact line for this turn's task (see [`crate::done`]): a field of
+    /// the session, not of [`Stats`], because it is one short `String` and never persisted.
+    pub(crate) verified_artifacts: Option<String>,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
     startup_limit: Option<Box<dyn Send>>,
@@ -316,6 +319,7 @@ impl Session {
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
         let session = Session {
             st,
+            verified_artifacts: None,
             preloaded: false,
             startup_limit: None,
         };
