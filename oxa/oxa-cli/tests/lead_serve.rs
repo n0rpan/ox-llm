@@ -1368,9 +1368,9 @@ fn chat_page_renders_the_session_as_messages_with_one_composer() {
         "{page}"
     );
     assert!(page.contains("<span class=lang>rust</span><pre><code>"), "{page}");
-    // Consecutive steps fold into one details labelled by their own names.
+    // The call and its result fold into one details labelled by their own names.
     assert_eq!(page.matches("<details class=tools").count(), 1, "{page}");
-    assert!(page.contains("steps · read, bash"), "{page}");
+    assert!(page.contains("2 steps · read +1, result"), "{page}");
     // Masking precedes markup: the credential never reaches the page.
     assert!(
         !page.contains("demo-secret-value") && !page.contains("sk-abcdefghij"),
