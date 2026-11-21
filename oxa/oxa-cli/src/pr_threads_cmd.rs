@@ -463,6 +463,20 @@ mod tests {
             std::fs::write(self.bin.join(name), doc.to_string()).unwrap();
         }
 
+        /// Make the `api graphql` branch exit with `code` after printing its page: `gh` exits 1 on
+        /// a GraphQL error while still printing the JSON error document on stdout.
+        fn graphql_exits(&self, code: i32) {
+            let gh = self.bin.join("gh");
+            std::fs::write(
+                &gh,
+                format!(
+                    "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\necho \"$@\" >> \"$dir/calls\"\nif [ \"$1 $2\" = \"api graphql\" ]; then\n  case \"$*\" in\n    *\"after=null\"*) cat \"$dir/page1.json\" ;;\n    *) cat \"$dir/page2.json\" ;;\n  esac\n  exit {code}\nelse\n  exit 2\nfi\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
         fn calls(&self) -> Option<String> {
             std::fs::read_to_string(self.bin.join("calls")).ok()
         }
@@ -699,6 +713,81 @@ mod tests {
         let e = f.collect(7).unwrap_err();
         assert_eq!(e.code, codes::IO);
         assert!(!e.message.contains(&token), "error text is scrubbed");
+    }
+
+    #[test]
+    fn graphql_errors_on_exit_one_surface_the_real_error_not_an_auth_hint() {
+        let f = Fake::new("gqlerr");
+        f.graphql_exits(1);
+        f.page(
+            "page1.json",
+            json!({"data": {"repository": null},
+                "errors": [{"message": "Could not resolve to a Repository with the name 'acme/widgets'."}]}),
+        );
+        let e = f.collect(7).unwrap_err();
+        assert!(e.message.contains("Could not resolve"), "{}", e.message);
+        assert!(!e.message.contains("gh auth status"), "{}", e.message);
+    }
+
+    #[test]
+    fn body_cut_flag_reflects_actual_truncation_not_a_literal_suffix() {
+        let f = Fake::new("cutflag");
+        let short = "this body literally ends with [cut]";
+        let long = "x".repeat(BODY_CHARS + 50);
+        f.page(
+            "page1.json",
+            page(
+                json!([thread_node(
+                    "PRRT_kwDOABC123",
+                    false,
+                    json!([
+                        comment_node("PRRC_kwDOXYZ789", 1, short),
+                        comment_node("PRRC_kwDOXYZ790", 2, &long)
+                    ]),
+                    false
+                )]),
+                false,
+                None,
+            ),
+        );
+        let r = f.collect(7).unwrap();
+        let cs = &r.threads[0].comments;
+        assert!(!cs[0].body_cut, "a short body ending ' [cut]' is not truncated");
+        assert!(cs[1].body_cut, "an over-cap body is truncated");
+    }
+
+    #[test]
+    fn a_standard_base64_cursor_with_plus_and_slash_paginates() {
+        let f = Fake::new("cursor64");
+        f.page(
+            "page1.json",
+            page(
+                json!([thread_node(
+                    "PRRT_kwDOABC123",
+                    false,
+                    json!([comment_node("PRRC_kwDOXYZ789", 1, "first")]),
+                    false
+                )]),
+                true,
+                Some("Y3Vyc29y+abc/def=="),
+            ),
+        );
+        f.page(
+            "page2.json",
+            page(
+                json!([thread_node(
+                    "PRRT_kwDOABC124",
+                    false,
+                    json!([comment_node("PRRC_kwDOXYZ790", 2, "second")]),
+                    false
+                )]),
+                false,
+                None,
+            ),
+        );
+        let r = f.collect(7).unwrap();
+        assert!(!r.incomplete, "{:?}", r.incomplete_reason);
+        assert_eq!(r.threads.len(), 2);
     }
 
     #[test]
