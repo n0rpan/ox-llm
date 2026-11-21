@@ -45,6 +45,7 @@ The ox suite ships as one release: `oxa` (the agent), and `oxe` with `oxe-server
 Each release on the project's Releases page attaches, for each architecture:
 
 - `ox-llm-<version>-linux-aarch64.tar.gz` and `ox-llm-<version>-linux-x86_64.tar.gz`;
+- from the next release on, `ox-llm-<version>-macos-arm64.tar.gz` (`usr/bin/oxa` only, Apple silicon);
 - `SHA256SUMS`, an SBOM (`.sbom.cdx.json`) and build provenance.
 
 Download the archive for your machine and `SHA256SUMS` from the same release, then check them:
@@ -104,7 +105,7 @@ Use the dev build to try what is on `main`. Use the stable release for everythin
 
 ### macOS
 
-`tools/lab/dev-update-macos.sh` installs the native Apple silicon dev asset to the same place under your home directory. It needs `gh` (`brew install gh`) and verifies both the versioned checksum and build provenance before switching builds. The macOS build is best effort: if it fails, Linux still publishes and the macOS asset is absent until a later successful `main` build.
+`tools/lab/dev-update-macos.sh` installs the native Apple silicon dev asset to the same place under your home directory. It needs `gh` (`brew install gh`) and verifies both the versioned checksum and build provenance before switching builds. The macOS dev build is best effort: if it fails, Linux still publishes, the macOS asset is absent until a later successful `main` build, and a p1 issue tracks the breakage. Stable releases require the macOS archive.
 
 On macOS there is no local engine and no OS sandbox. Read [modes.md](modes.md#macos) before the first run.
 

@@ -178,7 +178,8 @@ Persistent user data created during actual use is not removed by pacman.
 3. Perform any desired Snapdragon hardware/model qualification separately.
 4. Inspect the existing tag-triggered `release.yml` and its protected `release`
    environment before creating a tag: creating a `v*` tag currently invokes that
-   publishing workflow, whose asset set differs from this CPU bundle. Decide and
+   publishing workflow, whose asset set differs from this CPU bundle (it also builds
+   the required `ox-llm-<tag>-macos-arm64.tar.gz` through `macos.yml`). Decide and
    review which publishing workflow/assets are intended before proceeding.
 5. Only the owner, in a separate explicitly approved publishing session, creates
    the version tag and real release or uploads a package. Require the protected

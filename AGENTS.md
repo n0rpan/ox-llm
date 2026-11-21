@@ -143,8 +143,11 @@ code, tests, CI and docs; the owner validates on hardware.
   If either history exceeds that bound, the review defers before reserving quota or requesting a
   provider token; an incomplete history must never authorize another review.
 - **Dev publishing:** the rolling dev release requires both reproducible Linux archives. Its native
-  macOS arm64 archive is best effort and may be absent without blocking Linux publication. Every
-  archive that is published is included in the versioned checksum file and build provenance.
+  macOS arm64 archive is best effort and may be absent without blocking Linux publication; a failed
+  main-push macOS build opens (or comments on) the p1 issue "macOS dev build broken on main", and
+  the next green one closes it. Every archive that is published is included in the versioned
+  checksum file and build provenance. A stable release (`release.yml`) requires the macOS arm64
+  archive: a failed macOS build fails the release.
 - **Memory store:** the memory store's `memory/` directory is owner-only (`0700`), and every entry,
   generated index and lock file is owner-only (`0600`). A save must tighten an existing directory
   with looser permissions before writing; review changes against this upgrade behaviour as well as
@@ -336,12 +339,14 @@ Once a PR against main is open for the branch, a push no longer starts `lane` (i
 `lane pr check`, finds the PR and skips the rest): the PR's `checks` run covers the same commit, so
 wait on that run (`gh run list --branch <branch> --workflow checks`, then `gh run watch`). A branch
 without a PR, and `gh workflow run lane`, still run `lane`. CodeQL runs on pushes to main, weekly and
-on dispatch only. The macOS arm64 `oxa-cli` build (`macos.yml`) is part of the required `gate`: the
-`checks` workflow calls it as its `macos` job on ready PRs and in the merge queue whenever the
-classifier selects `oxa` (oxa Rust code, `oxa/Cargo.lock`, `packaging/`, workflows), and the gate
-fails if it ran and failed. `macos.yml` itself runs on manual dispatch only: the commit a main push
-carries is the one the queue built, so a main push does not build macOS again. It costs macOS
-runner minutes on every PR that touches Rust.
+on dispatch only. The macOS arm64 `oxa-cli` build (`macos.yml`, about 90 minutes) runs as the
+`checks` workflow's `macos` job only on ready PRs whose change the classifier marks `macos`
+(`packaging/macos/`, `macos.yml`, `dev-build.yml`, `oxa/Cargo.toml`, `oxa/Cargo.lock`, any path naming
+macos or darwin, and the oxa files with macOS-only code listed in `MACOS_FILES` in
+`tools/ci/paths.py`; add a file there when it gains macOS-only code). The gate fails if it ran and
+failed and passes when it was skipped. It never runs in the merge queue. `dev-build.yml` builds
+macOS after every push to main and opens a p1 issue when that build breaks; `release.yml` requires
+it. `macos.yml` itself runs on manual dispatch only.
 A main push whose commit already has a green merge-queue `checks` run skips that workflow's jobs
 (`tools/ci/queue_covered.py`), except the classifier and the scans; a push that changed a
 dependency cache key still runs, because main is what seeds the `<prefix>main` caches.

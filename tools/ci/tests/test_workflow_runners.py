@@ -151,9 +151,11 @@ class WorkflowRunners(unittest.TestCase):
         checks = (WORKFLOWS / 'checks.yml').read_text()
         block = checks[checks.index('\n  macos:\n'):checks.index('\n  oxa-nightly-arm:')]
         self.assertIn('uses: ./.github/workflows/macos.yml', block)
-        self.assertIn("needs.changes.outputs.oxa == 'true'", block)
-        self.assertIn("github.event_name == 'merge_group'", block)
+        # Ready PRs that touch macOS-relevant paths only; dev-build.yml covers every main push.
+        self.assertIn("needs.changes.outputs.macos == 'true'", block)
+        self.assertIn("github.event.pull_request.draft == false", block)
         self.assertIn("github.event_name == 'pull_request'", block)
+        self.assertNotIn("'merge_group'", block)
         self.assertNotIn("'push'", block)
 
     def test_lane_skips_branches_with_an_open_pr(self):
