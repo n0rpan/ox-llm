@@ -235,6 +235,33 @@ the pages did not read before. The server no longer makes its own partial read.
   16-connection pool and per-write deadline. The one-shot `/events` route and the
   polling fallback remain for listeners without the route.
 
+## Transport: one request for a repeat page
+
+The stylesheet and the script are served at URLs that name their bytes:
+`/a/<first eight hex digits of SHA-256>/style.css` and `/a/<sha8>/live.js`. The
+document links them there, so a repeat visit reuses the browser's copy without a
+request (`Cache-Control: public, max-age=31536000, immutable`); a new build changes
+the digest and therefore the URL, so a cached asset is never a stale one. These two
+files are the only shared, cacheable answers: they hold no page data, identity or
+session, and a page is still `no-store`.
+
+A page or a `?fragment=1` answer carries an `ETag` of its exact bytes. A browser that
+sends the same `ETag` back in `If-None-Match` gets `304 Not Modified` with no body and
+the same CSP, referrer, `nosniff` and `no-store` headers. An unchanged page therefore
+costs one revalidated request. The `ETag` is compared only after the request is
+authorized: a refused request never learns whether a page changed, and gets no
+validator. A `*` or a weak tag never answers `304` for a page, because the bytes, not
+the page's identity, are what the client needs to hold. Each asset representation
+(raw or gzip) has its own validator, so a `304` never names bytes the client does not
+have.
+
+Pages, fragments and assets are gzipped (`flate2`, level 6) when the request's
+`Accept-Encoding` allows it and the result is smaller; the raw bytes are served
+otherwise, and a body that would grow is never compressed. Home is about 1.7 KB on the
+wire and the two assets about 6.4 KB together, against roughly 22 KB uncompressed.
+The compression happens per response for a page and once at start for an asset. The
+one-shot `/events` route and the live stream are not compressed.
+
 ## Synthetic fixture frames
 
 Six synthetic frames under `oxa/oxa-cli/tests/fixtures/lead/` drive the real service in
