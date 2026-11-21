@@ -62,6 +62,8 @@ impl Page {
             return Some((Self::BoardQuery(Query::parse(query)?), fragment));
         }
         if let Some(query) = path.strip_prefix("/chat?") {
+            // `fragment=1` is peeled above only when it ends the path.
+            let query = query.strip_suffix("&fragment=1").unwrap_or(query);
             return Some((chat_request(query)?, fragment));
         }
         if path == "/chat" {

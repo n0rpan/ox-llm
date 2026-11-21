@@ -118,7 +118,13 @@ pub(super) fn blocks(text: &str) -> Vec<String> {
                 depth = depth.saturating_sub(1);
                 match tag {
                     TagEnd::Paragraph => {
-                        current.push_str("</p>");
+                        // A tight list item's text may not be its own paragraph: close one
+                        // only where one was opened.
+                        if current.ends_with("<p>") {
+                            current.truncate(current.len() - 3);
+                        } else {
+                            current.push_str("</p>");
+                        }
                         if depth == 0 {
                             blocks.push(std::mem::take(&mut current));
                         }

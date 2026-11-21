@@ -138,8 +138,8 @@ pub struct OwnerChatView<'a> {
 pub(crate) enum ItemKind {
     Owner,
     Lead,
+    /// A tool step or its result: consecutive steps fold into one `<details>`.
     Step,
-    Tool,
 }
 
 fn escape(text: &str) -> String {
@@ -1694,7 +1694,7 @@ return true;
         assert!(html.contains("name=csrf value=\"fixed-csrf\""));
         assert!(html.contains("href=\"/chat?prompt=workers\""));
         assert!(html.contains("name=csrf value=\"csrf-example\""));
-        assert!(html.contains("name=proposal_id value=\"proposal-example\""));
+        assert!(html.contains("Confirm proposal"));
         // The process's reply adds its chips and card under the bubble whose text it is.
         assert!(html.contains("class=chip href=\"/items/17\""), "{html}");
         assert!(html.contains("Proposed follow-up") && html.contains("Confirm proposal"));

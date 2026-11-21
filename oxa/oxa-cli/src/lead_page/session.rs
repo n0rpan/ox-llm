@@ -205,12 +205,13 @@ fn entry_item(entry: &Entry, ctx: &ScrubCtx) -> Option<Item> {
                     if more > 0 {
                         row.name = format!("{} +{more}", row.name);
                     }
+                    // A step is a line and a shell command; any other tool's own text
+                    // stays inside its row, so it always folds with its run.
                     match shell_command(&call.args_raw) {
                         Some(command) if call.name == "bash" => {
                             row.detail = command_text(ctx, &command);
                         }
                         _ => {
-                            row.kind = ItemKind::Tool;
                             row.detail = argument_hint(&call.args_raw)
                                 .map_or_else(String::new, |hint| snippet(ctx, &hint));
                         }
@@ -222,7 +223,7 @@ fn entry_item(entry: &Entry, ctx: &ScrubCtx) -> Option<Item> {
                 }
                 None => match wire.role {
                     Role::Tool => {
-                        row.kind = ItemKind::Tool;
+                        row.name = "result".into();
                         row.detail = quoted(ctx, text);
                         row.failed = tool.as_ref().is_some_and(|meta| meta.is_error);
                     }
@@ -285,10 +286,9 @@ pub(crate) fn thread_items(entries: &[Entry], ctx: &ScrubCtx) -> Vec<Item> {
         .collect()
 }
 
-/// A row that stands alone instead of folding: a bubble, or a step worth its own row
-/// because it carries text of its own or failed.
+/// A row that stands alone instead of folding: a bubble or a note. Every step folds.
 fn standalone(item: &Item) -> bool {
-    item.kind != ItemKind::Step && (!item.detail.is_empty() || item.failed)
+    item.kind != ItemKind::Step
 }
 
 /// The tool run a row belongs to: consecutive folding steps.
@@ -296,7 +296,7 @@ fn fold(rows: &[Item]) -> Vec<Vec<&Item>> {
     let mut groups: Vec<Vec<&Item>> = Vec::new();
     let mut run: Vec<&Item> = Vec::new();
     for row in rows {
-        if row.kind == ItemKind::Step && !standalone(row) {
+        if row.kind == ItemKind::Step {
             run.push(row);
             continue;
         }
@@ -437,7 +437,7 @@ pub(crate) fn render_thread(
 ) {
     for group in &fold(rows) {
         let first = group[0];
-        if first.kind == ItemKind::Step && !standalone(first) {
+        if first.kind == ItemKind::Step {
             let failed = if group.iter().any(|row| row.failed) {
                 " data-failed=1"
             } else {
@@ -452,24 +452,6 @@ pub(crate) fn render_thread(
             for row in group {
                 step_html(html, row);
             }
-            html.push_str("</details>");
-            continue;
-        }
-        if first.kind == ItemKind::Tool {
-            let _ = write!(
-                html,
-                "<details class=\"tools step{}\"{}{}><summary><b>{}</b> {}</summary>",
-                if first.failed { " bad" } else { "" },
-                if first.failed { " data-failed=1" } else { "" },
-                format!(" data-key=\"f{}\"", escape(&first.id)),
-                escape(&first.name),
-                if first.detail.is_empty() {
-                    "step".to_owned()
-                } else {
-                    first.detail.clone()
-                }
-            );
-            step_html(html, first);
             html.push_str("</details>");
             continue;
         }
@@ -666,9 +648,9 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<a href=\"/items/17\">#17</a>"), "{html}");
-        // The consecutive tool rows fold into one details labelled by their own names.
-        assert_eq!(html.matches("<details class=tools").count(), 2, "{html}");
-        assert!(html.contains("read, bash, edit"), "{html}");
+        // Every step of the run folds into one details labelled by their own names.
+        assert_eq!(html.matches("<details class=tools").count(), 1, "{html}");
+        assert!(html.contains("bash +1, result, read, bash, edit"), "{html}");
         assert!(html.contains("data-failed=1"), "{html}");
         // A step that carries its own text shows the masked text and a Copy button.
         assert!(html.contains("oxa/src/fixture.rs</span>"), "{html}");
