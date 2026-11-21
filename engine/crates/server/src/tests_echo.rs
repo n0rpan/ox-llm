@@ -2398,9 +2398,8 @@ async fn continuity_four_turns_reuse_the_previous_prompt() {
     // the tokens this request fed (no splice: every history turn is a miss), and where they
     // first differ from the live state. The divergence is the edited reply's own text: past the
     // first opener and its framed assistant turn, inside the reply, and at nothing before it.
-    let (_, tk, _) = call(
+    let tk = post(
         &s,
-        "POST",
         "/apply-template",
         json!({"messages": edited, "chat_template_kwargs": {"enable_thinking": false, "preserve_thinking": true}}),
     )
