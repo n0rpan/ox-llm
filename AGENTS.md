@@ -453,6 +453,7 @@ read its result; they never launch builds or tests.
 **How to review**
 
 - **Power is the default; restrictions need the owner (owner 2026-11-21).** Any change that makes oxa less powerful (a new refusal, prompt, cap, fail-closed path, narrower default, or a removed capability) needs the owner's explicit acceptance. Its PR body carries one line per restriction: `Restricts: <what> — <why> — <drawback for the user>`, and the PR merges only after the owner accepts it with the `owner-accepted` label. This holds for review findings too: a finding that asks for such a change states the same three things, and outside the block list it is a P3 suggestion, never a blocker.
+- **Judgement over rules (owner 2026-11-21).** oxa should behave like a senior engineer, not a compliance tool. Where a guard is really needed outside the block list, the answer is judgement: a clean-context second model that reviews the risky step (#2336), a self-review before "done", or one longer deliberation, not a new refusal, prompt or cap. Review findings propose that kind of guard instead of a rule.
 - **Security severity is calibrated to a power tool** (owner 2026-11-21, `docs/threat-model.md` "Risk we accept").
   P0/P1 security is only the block list: a secret leaving the machine or reaching the model, logs or session files; a
   remote party (network, LAN guest, fork PR, provider stream) gaining code execution, credentials or spend; metered
