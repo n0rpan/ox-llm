@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(
             facts.stuck,
             Some(vec![
-                "host-a idle".to_owned(),
+                "host host-a idle".to_owned(),
                 "task t1 stalled".to_owned(),
                 "task t2 blocked (ci)".to_owned(),
             ])
