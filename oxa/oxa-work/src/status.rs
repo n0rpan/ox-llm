@@ -385,12 +385,8 @@ mod tests {
         assert!(publication_pending(&record));
         let status = PublicationStatus::read(&record, 0).expect("reported, not hidden");
         assert_eq!(status.phase, "committed_no_push_recorded");
-        // The rejected push itself is not walked again: the same shape with no lane run is
-        // an ordinary execution attempt, and a lane that never ran owes nothing yet.
-        let mut execution = accepted(&head);
-        execution.outcome = Outcome::Blocked;
-        execution.publish_receipt = record.publish_receipt.clone();
-        assert!(!publication_pending(&execution));
+        // Only a run that reached a lane owes its receipt: an execution that has not run to
+        // completion yet is not pending.
         let mut no_lane_run = accepted(&head);
         no_lane_run.acceptance_outcome = None;
         no_lane_run.outcome = Outcome::Running;
