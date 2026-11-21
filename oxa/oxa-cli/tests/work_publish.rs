@@ -1380,48 +1380,45 @@ fn status_distinguishes_a_saved_commit_from_a_push_without_a_pr_receipt() {
     assert!(status().get("publication").is_none());
 }
 
-/// The `oxa work` exit status for a saved task, composed by the CLI itself after a refused run.
-fn work_exit(env: &TestEnv, path: &str, args: &[&str]) -> (serde_json::Value, i32) {
-    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
-        .args(args)
-        .current_dir(env.work().join("project"))
-        .env_clear()
-        .envs(env.envs("http://127.0.0.1:1"))
-        .env("PATH", path)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.code().is_some_and(|code| code >= 0),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    (
-        serde_json::from_slice(&output.stdout).unwrap(),
-        output.status.code().unwrap(),
-    )
-}
-
 #[test]
 fn a_publish_refused_before_its_push_keeps_the_saved_head_pending() {
     let env = TestEnv::new();
     setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let path = configure(&env);
-    // Offline refuses before any `gh` call or push, so the accepted head has no receipt.
-    let (refused, _) = work_exit(&env, &path, &["--offline", "work", "../tasks.json", "--publish"]);
+    // Offline refuses the publication before any `gh` call or push: the accepted head keeps
+    // no receipt, and the result says so instead of reporting success (#2304).
+    let refused = run_args(
+        &env,
+        edits(),
+        &["--offline", "work", "../tasks.json", "--publish"],
+        Some(path.clone()),
+    );
     assert_eq!(refused["outcome"], "blocked", "{refused}");
+    assert!(
+        refused["detail"].as_str().unwrap().contains("offline"),
+        "{refused}"
+    );
     assert!(!env.home().join("gh-calls").exists());
+    assert!(!env.home().join("push-calls").exists());
 
-    // Reading the refused task back still reports the owed publication, not success.
-    let (listed, code) = work_exit(&env, &path, &["work", "../tasks.json"]);
-    assert_eq!(listed["outcome"], "publication_pending", "{listed}");
-    assert_eq!(code, 3, "{listed}");
-    let status = work_exit(&env, &path, &["work", "status"]).0;
-    let text = status.to_string();
+    let head = refused["head_sha"].as_str().unwrap().to_owned();
+    let listed = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "status"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    let text = String::from_utf8(listed.stdout).unwrap();
+    assert!(text.contains(&head), "{text}");
     assert!(text.contains("committed_no_push_recorded"), "{text}");
 
-    // Online, the same saved work publishes without replaying the agent.
+    // The owed publication is not a refusal: the next explicit publish resumes from the same
+    // saved head without replaying the worker.
     let published = run_args(&env, vec![], &["work", "../tasks.json", "--publish"], Some(path));
     assert_eq!(published["outcome"], "done", "{published}");
+    assert_eq!(published["head_sha"], refused["head_sha"], "{published}");
 }
 
 #[test]
