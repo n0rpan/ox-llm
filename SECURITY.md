@@ -8,6 +8,8 @@ Read `docs/threat-model.md` first. Report a finding only if this change weakens 
 
 **Risk calibration (owner 2026-11-21):** read "Risk we accept" in `docs/threat-model.md` before rating. Only its block list is high severity. Attacks that need code already running as the owner (same-UID ptrace, hard links, races, a hostile script in a trusted writable repo), shell obfuscation that reaches only what the mode allows anyway, anything in yolo beyond its two hard refusals, and theoretical chains are P3 hardening at most, never high severity. oxa is powerful by design; flag real exposure, not every theoretical path. Do not ask for new refusals, prompts, caps or fail-closed behaviour outside the block list.
 
+**Power is the default; restrictions need the owner (owner 2026-11-21).** Any change that makes oxa less powerful (a new refusal, prompt, cap, fail-closed path, narrower default, or a removed capability) needs the owner's explicit acceptance. Its PR body carries one line per restriction: `Restricts: <what> — <why> — <drawback for the user>`, and the PR merges only after the owner accepts it with the `owner-accepted` label. This holds for review findings too: a finding that asks for such a change states the same three things, and outside the block list it is a P3 suggestion, never a blocker.
+
 Treat as **high** severity:
 - a secret (API key, ChatGPT token, OpenCode/GitHub token, share key) printed, logged, stored outside its 0600 store, sent to the wrong host, or reachable by model tools;
 - a project file able to change user-only settings or enable a feature flag;

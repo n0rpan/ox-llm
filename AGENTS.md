@@ -376,6 +376,7 @@ gh run view <run-id> --log-failed | tail -100
 Owner decision for the early stage, until v0.3:
 
 - **Required checks** are green at the exact head. This always applies.
+- **Restrictions:** a PR with a `Restricts:` line merges only with the owner's `owner-accepted` label.
 - **Review:** the latest Codex review on the exact head decides. Only P0/P1 findings and an open security review
   block. A security finding is P0/P1 only when it hits the block list in `docs/threat-model.md`. P2/P3 findings become follow-up issues and are fixed forward on main. Only threads opened on
   the current head count. Never bulk-resolve review threads.
@@ -443,6 +444,7 @@ read its result; they never launch builds or tests.
 
 **How to review**
 
+- **Power is the default; restrictions need the owner (owner 2026-11-21).** Any change that makes oxa less powerful (a new refusal, prompt, cap, fail-closed path, narrower default, or a removed capability) needs the owner's explicit acceptance. Its PR body carries one line per restriction: `Restricts: <what> — <why> — <drawback for the user>`, and the PR merges only after the owner accepts it with the `owner-accepted` label. This holds for review findings too: a finding that asks for such a change states the same three things, and outside the block list it is a P3 suggestion, never a blocker.
 - **Security severity is calibrated to a power tool** (owner 2026-11-21, `docs/threat-model.md` "Risk we accept").
   P0/P1 security is only the block list: a secret leaving the machine or reaching the model, logs or session files; a
   remote party (network, LAN guest, fork PR, provider stream) gaining code execution, credentials or spend; metered

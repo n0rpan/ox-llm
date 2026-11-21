@@ -25,6 +25,8 @@ So these are **not** P0/P1 and never block a merge (at most P3 hardening, filed 
 
 What still blocks (P0/P1): a secret leaving the machine or landing in model context, logs or session files; a remote party (network, LAN guest, fork PR, provider stream) gaining code execution, credentials or spend; metered money spent past the reservation, ledger or a configured cap; an untrusted project changing user-only settings; data loss or an OS-breaking wipe under default settings; offline mode using the network.
 
+**Power is the default; restrictions need the owner (owner 2026-11-21).** Any change that makes oxa less powerful (a new refusal, prompt, cap, fail-closed path, narrower default, or a removed capability) needs the owner's explicit acceptance. Its PR body carries one line per restriction: `Restricts: <what> — <why> — <drawback for the user>`, and the PR merges only after the owner accepts it with the `owner-accepted` label. This holds for review findings too: a finding that asks for such a change states the same three things, and outside the block list it is a P3 suggestion, never a blocker.
+
 ## Trust boundaries (must hold)
 These are the block list above, spelled out. Anything else is hardening (P3 at most).
 1. **Secrets never leave their store:** never printed, logged, put in prompts, tool output, session files, telemetry, test fixtures, CI logs or error messages; redaction covers streamed text and decoded tool arguments.
