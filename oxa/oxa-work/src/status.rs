@@ -35,7 +35,7 @@ pub struct PublicationStatus {
 
 impl PublicationStatus {
     fn read(record: &Record, now_ms: u64) -> Option<Self> {
-        let (phase, disposition) = phase(record, !awaiting_publication(record))?;
+        let (phase, disposition) = phase(record, !owed_verdict(record))?;
         Some(Self {
             phase,
             age_secs: age_secs(record, now_ms),
