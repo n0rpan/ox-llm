@@ -1491,11 +1491,16 @@ fn prepare(
         .as_deref()
         .map(crate::usage_log::UsageLog::create)
         .transpose()?;
-    let result_facts = Arc::new(
-        crate::result_facts::ResultFacts::new(status.clone())
-            .with_billing(cloud_diagnostics.clone())
-            .with_usage_log(usage_log),
-    );
+    let mut result_facts = crate::result_facts::ResultFacts::new(status.clone())
+        .with_billing(cloud_diagnostics.clone())
+        .with_usage_log(usage_log);
+    // #2297: only a task that explicitly supplies an allowed changed-file set gets the
+    // tool-observed changed-file evidence; every other run keeps the unavailable record.
+    if !a.allowed_changed_files.is_empty() {
+        result_facts =
+            result_facts.with_changed_file_scope(cwd.to_path_buf(), a.allowed_changed_files.clone());
+    }
+    let result_facts = Arc::new(result_facts);
     let built = Built {
         lead: a.lead,
         status,
