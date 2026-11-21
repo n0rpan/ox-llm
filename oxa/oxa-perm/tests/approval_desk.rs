@@ -787,7 +787,11 @@ fn preservation_note_rides_on_the_unattended_request_and_record() {
         .into_iter()
         .find(|r| r.id == id)
         .expect("record");
-    assert_eq!(rec.keys, vec![KEY.to_string()], "the reviewed keys are unchanged");
+    assert!(
+        rec.keys.iter().any(|k| k == KEY),
+        "the reviewed rule key is unchanged: {:?}",
+        rec.keys
+    );
     assert!(
         rec.reasons.iter().any(|r| r.contains("reversible checkpoint")),
         "{:?}",

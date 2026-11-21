@@ -297,9 +297,12 @@ fn preservation_note_is_additive_and_leaves_authority_unchanged() {
         Decision::Allow
     );
 
-    // Clearing the requirement removes the note again.
-    noted.set_preservation(None);
-    assert_eq!(noted.danger_ask(&exec(DANGEROUS), cwd())[0].1, plain[0].1);
+    // Clearing the requirement removes the note again (a fresh policy: the granted one
+    // above no longer asks at all).
+    let mut fresh = policy(Vec::new(), Autonomy::Standard);
+    fresh.set_preservation(Some(requirement));
+    fresh.set_preservation(None);
+    assert_eq!(fresh.danger_ask(&exec(DANGEROUS), cwd())[0].1, plain[0].1);
 }
 
 /// #2292: the other destructive rules and the owner's own `cmd:` rules (how `git
