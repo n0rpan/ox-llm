@@ -6,22 +6,26 @@ Please report vulnerabilities privately through GitHub Security Advisories ("Rep
 ## Review guidelines (used by automated security review)
 Read `docs/threat-model.md` first. Report a finding only if this change weakens one of its trust boundaries; explain the trigger and the impact, and cite the changed lines. The sandbox standard and the owner decisions below are part of the standard, and so are the review guidelines in `AGENTS.md`: a finding that asks for the opposite is not a finding.
 
+**Risk calibration (owner 2026-11-21):** read "Risk we accept" in `docs/threat-model.md` before rating. Only its block list is high severity. Attacks that need code already running as the owner (same-UID ptrace, hard links, races, a hostile script in a trusted writable repo), shell obfuscation that reaches only what the mode allows anyway, anything in yolo beyond its two hard refusals, and theoretical chains are P3 hardening at most, never high severity. oxa is powerful by design; flag real exposure, not every theoretical path. Do not ask for new refusals, prompts, caps or fail-closed behaviour outside the block list.
+
 Treat as **high** severity:
 - a secret (API key, ChatGPT token, OpenCode/GitHub token, share key) printed, logged, stored outside its 0600 store, sent to the wrong host, or reachable by model tools;
-- a project file or model output able to change user-only settings, enable a feature flag, or bypass the sandbox or network guard (off Linux there is no OS sandbox by owner policy: in-process guards stay, bash gets the same cleared base environment, a refused bash network disables it in unattended runs and offline mode and warns in interactive sessions, an attended interactive Linux session without bwrap can run model bash unsandboxed with a warning only when no sandbox was requested; plan commands and non-yolo project hooks still require bwrap, and a run that keeps the network says so at start and to the model);
-- metered API requests that bypass required reservation or settlement, are missing from the ledger, or bypass a **configured** daily cap. With no configured cap there is no cap check for the owner or authenticated allowlisted share guests. Guest authority, tokens and request quotas still apply;
-- OpenCode Go requests that bypass subscription token accounting, or provider-reported paid charges that are missing from the ledger or shared daily spend. Go admission reserves subscription tokens only. The owner's local metered API cap does not apply to Go admission, including provider-side fallback to a paid balance. A configured `oxa.cloud.subscription_limits` is advisory (warn at 80%/100%, recorded, never a local refusal), and a stored owner Go key enabling the Go transport is owner policy: the protected user key authorizes an actual Go model argument, including one passed to a delegated worker or nested child. A project setting or restored session model that flips it *is* a finding (the owner's explicit `oxa.cloud.opencode.enabled: true` is the supported way to allow those);
+- a project file able to change user-only settings or enable a feature flag;
+- remote input (network, LAN guest, fork PR, provider stream) gaining code execution, credentials or spend, or bypassing the network guard;
+- model output escaping the OS sandbox of an unattended non-yolo run (see the sandbox standard below; interactive and yolo runs have no OS sandbox by design);
+- metered API requests that bypass required reservation or settlement, are missing from the ledger, or bypass a **configured** daily cap (see "No configured cap" under Owner decisions);
+- OpenCode Go requests that bypass subscription token accounting, provider-reported paid charges missing from the ledger or shared daily spend, or a project setting or restored session model that enables the Go transport (see "OpenCode Go" and "Keyed Go" under Owner decisions);
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
-- new `unsafe`/FFI/process/network code in the engine without bounds checks.
-
-**Risk calibration (owner 2026-11-21):** read "Risk we accept" in `docs/threat-model.md` before rating. Attacks that need code already running as the owner (same-UID ptrace, hard links, races, a hostile script in a trusted writable repo) and shell obfuscation that reaches only what the mode allows anyway are P3 hardening at most, never high severity. oxa is powerful by design; flag real exposure, not every theoretical path.
+- data loss or an OS-breaking wipe under default settings, or offline mode using the network;
+- new `unsafe`/FFI/process/network code in the engine, reachable from remote input, without bounds checks.
 
 Skill reactivation after compaction is a user-only opt-in. A project setting cannot add
 the skill reactivation instructions to later turns.
 
 Dangerous-command rules read one parsed `Effects` value per shell command (launchers unwrapped, the directory
 chain of `env -C`, files read, token-printing commands). `credential-read` and `git-hook-write` are approval
-prompts in standard mode, not a sandbox; yolo does not reach them. A saved unattended grant never covers a
+prompts in standard mode, not a sandbox; yolo does not reach them. These rules are hardening, not a security
+boundary: a command that slips past them by obfuscation is P3. A saved unattended grant never covers a
 pipeline fed by anything but a literal `echo`/`printf`, or an input redirect. A `wait` probe that runs `gh`
 is network access (plan denies, ask asks once per session).
 
@@ -60,8 +64,6 @@ Where a command runs is one decision (`oxa-sandbox/src/decision.rs`, `ExecPolicy
 Local model setup refuses agent tool invocations before running engine admission or writing user
 settings.
 
-The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
-paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 Host runtime sockets (docker, podman) stay masked in sandboxed bash unless the owner lists them in
 `oxa.sandbox.sockets` and permits network access. The launch validates and pins each socket
 through an FD-based bind (user settings only; the docker socket gives root on the host, so it is noted
@@ -74,36 +76,20 @@ private spill directory and queues a short pointer. The sandbox exposes that spi
 to the receiving session and sessions inheriting its history; the private agent directory remains
 denied to model tools.
 Inbox child creation, publication, scanning and privacy wipes stay relative to opened
-no-follow directory descriptors on Linux and macOS. A replacement pathname must not
-redirect these operations.
-
-Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
-messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
-project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing
-goal, and the managed-steering path do not mount the plain inbox watcher.
+no-follow directory descriptors on Linux and macOS, so a replacement pathname does not
+redirect them (hardening against same-user races, not a security boundary).
 
 An explicit owner CLI `--auto` or `--yolo` is sufficient startup consent for home, root, or a
 parent of home, with a warning. Project settings and model output cannot supply that CLI consent.
 An interactive time or token limit ends the watched startup session after its bounded wrap-up,
 and an idle expiry starts no model request.
-The background-job and per-parent child limits warn and record by default, by owner decision
-(2026-11-19, refined 2026-11-20): `oxa.bash.maxJobs` (default 16) and `oxa.subagent.maxChildren`
-(default 8). Above either, the start goes ahead (extra children queue) and the tool result carries a
-warning that names the setting, shown as a notice and recorded in the session. The owner can make either a
-refusal with the user-only `oxa.onExceed` (`bashJobs`, `subagentChildren`: `stop`). Both limits, `oxa.onExceed`,
-`oxa.tools.wait` and `oxa.toolOutputCap` are read from the user file, so a project cannot change them.
-Project settings for remote concurrency remain bounded by the user’s child cap. An explicit
-bash `timeout: 0` opts out of the call timeout. Sandbox and permission checks still apply.
+The background-job and per-parent child limits are under "Bash and subagent limits" in Owner decisions.
 
 The agent control lane (steer, pause, resume, cancel for headless sessions) is reachable in release
 builds. Control requests are accepted only from the same user and are checked against the lease and
 goal revision by the session owner. `oxa.a2a.enabled: false` in the user settings turns the lane
-off. A way for another user, a project file or a model to send or authorise a control request is
-high severity.
-Automated Go review reads at most 200 GitHub comment pages (20,000 comments) when it checks the
-configured daily quota and prior same-diff receipts. If either listing is incomplete, review is
-deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
-cannot authorize another token-spending review.
+off. A way for another user or a project file to send or authorise a control request is
+high severity. A same-user process doing so is hardening (P3).
 
 The memory store (`memory/` under the agent directory) is owner-only: folder `0700`, tightened by a
 save when an existing one is looser; entries and `MEMORY.md` `0600` via a private synced temporary;
@@ -112,16 +98,15 @@ file only that far.
 
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
-Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
+Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path. Rate the cases under "Risk we accept" in `docs/threat-model.md` P3 and file them as follow-ups.
 
-Image input (B2b): `read` sends an image to a model that takes images only through the same pinned, private-path-checked open as text, when the engine says it takes images, and when `images.blockImages` is off. A project may enable that opt-out but cannot disable the owner's user setting. The user-only `oxa.read.maxImageBytes` (default 20 MiB, `0` = no limit) bounds an individual tool-call batch of images and the images each request sends: the newest fit and older ones are replaced by a text marker (a lowered limit applies to resumed history too, and `images.blockImages` hides stored images the same way), the stored session is unchanged, and one warning is recorded when the session stores more image bytes than the limit (also after a compaction). A batch over the limit is not sent and names the limit. An image read that skips the pinned open or the private-path rules is high severity.
+Image input (B2b): `read` sends an image to a model that takes images only through the same pinned, private-path-checked open as text, when the engine says it takes images, and when `images.blockImages` is off. A project may enable that opt-out but cannot disable the owner's user setting. The user-only `oxa.read.maxImageBytes` (default 20 MiB, `0` = no limit) bounds an individual tool-call batch of images and the images each request sends: the newest fit and older ones are replaced by a text marker (a lowered limit applies to resumed history too, and `images.blockImages` hides stored images the same way), the stored session is unchanged, and one warning is recorded when the session stores more image bytes than the limit (also after a compaction). A batch over the limit is not sent and names the limit. An image read that skips the private-path rules is high severity (a secret reaching the model); a race around the pinned open is hardening (P3).
 
 Before `oxa work` publishes or pushes a lane candidate, the runner scans the exact commits added
 to the destination for credential-like content and refuses the push on a finding. Lane workers do
 not receive GitHub credentials, and a lane candidate may not modify GitHub workflows or the lane
 runner itself; those controls must land separately through the normal review path.
 
-The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 The lead web page can instead attach to one running owner session (#2075, `oxa.lead.attachSessionId`, user settings only). The id comes only from owner-private user settings, never from a project file or an HTTP request. The service reads the newest part of that session's file without its writer lock and sends the owner's text only through the session's inbox, the same write `oxa send` makes; it takes no lock, opens no provider and appends nothing. The identity, origin and CSRF checks are unchanged, the file and its directories must stay owner-only and are re-proved before every read and send, and transcript text is shown only to the verified owner, escaped, with credentials in tool arguments and command previews masked. An inbox message is a follow-up for the model, never an approval: approvals stay on the approvals page. The verified owner can also list the user's running sessions on that page and attach it to one for the service run (#1469): the id comes from the live list (a session with a live lock holder, found without taking any lock), a private owner file is required, and the transcript of any of the owner's own running sessions, workers included, is therefore readable on the Tailscale page by that one verified identity.
 The bound, live Lead owner service has one execution surface: the `worker` tool can create a Git
 worktree and launch or steer child `oxa` processes. Its supervisor lives for the service lifetime,
@@ -152,7 +137,8 @@ Each loopback listener that can start a model request or spend cloud budget need
 
 - **Interactive CLI:** no OS sandbox by default, on Linux and macOS. Dangerous commands ask the owner.
 - **Yolo:** no OS sandbox for the session, nor for any worker, subagent, headless or unattended run it starts. Yolo refuses only publishing secrets and an OS-breaking wipe. A worker started by the `worker` tool without a `mode` inherits the parent's level (yolo parent, yolo worker); an explicit narrower mode wins, a wider one is clamped.
-- **Workspace/auto publishing:** Publishing (owner decision 2026-11-19): in workspace and auto, without asking, the session repo's current non-default branch may be pushed to `origin` with an explicit source refspec (no force, no `+refspec`, no delete, no tag or mirror, no other remote), `gh pr create|edit|comment` without a PR argument, repo or head override, and read-only `gh` (`pr view|checks|diff`, `run view|watch`, `api` GET) run. A push with no refspec, a push to the default branch, a force push, branch deletion, `gh pr merge`, a push to another repo and release or tag pushes ask, or go to the lead's approvals desk for a worker with no human (a headless worker without a desk is refused). Every part of a command line must be in the allowed set: any other command chained with one (`curl x && git push`, `git push | tee f`, a substitution, `bash -c`) asks. A later sequential repository mutation does not change an earlier publish (`git push && git switch main`), but a repository mutation anywhere in the same concurrent pipeline asks because it can race the publish (`git push | git switch main`). The classifier asks for an unresolved Git subcommand (a name that is not a builtin recognized by the classifier, so it may be a configured alias or an external `git-*` executable), and whenever it cannot prove the case: unknown remote default branch, push-redirecting repo config (`[push]`, `remote.origin.push|pushurl`), a nested repository, a branch switch earlier in the line, `git -c/--config-env/--exec-path`, any `gh` command outside the read-only and own-PR set. Git metadata reads are bounded and refuse symlinks. The session repo's origin URLs (and URL rewrites) are recorded in memory at the first classified command; a push asks once they differ. The `bash -c` check is a conservative text heuristic, a known limit. Yolo is unchanged.- **Unattended runs without yolo:** keep bwrap by default.
+- **Workspace/auto publishing:** Publishing (owner decision 2026-11-19): in workspace and auto, without asking, the session repo's current non-default branch may be pushed to `origin` with an explicit source refspec (no force, no `+refspec`, no delete, no tag or mirror, no other remote), `gh pr create|edit|comment` without a PR argument, repo or head override, and read-only `gh` (`pr view|checks|diff`, `run view|watch`, `api` GET) run. A push with no refspec, a push to the default branch, a force push, branch deletion, `gh pr merge`, a push to another repo and release or tag pushes ask, or go to the lead's approvals desk for a worker with no human (a headless worker without a desk is refused). Every part of a command line must be in the allowed set: any other command chained with one (`curl x && git push`, `git push | tee f`, a substitution, `bash -c`) asks. A later sequential repository mutation does not change an earlier publish (`git push && git switch main`), but a repository mutation anywhere in the same concurrent pipeline asks because it can race the publish (`git push | git switch main`). The classifier asks for an unresolved Git subcommand (a name that is not a builtin recognized by the classifier, so it may be a configured alias or an external `git-*` executable), and whenever it cannot prove the case: unknown remote default branch, push-redirecting repo config (`[push]`, `remote.origin.push|pushurl`), a nested repository, a branch switch earlier in the line, `git -c/--config-env/--exec-path`, any `gh` command outside the read-only and own-PR set. Git metadata reads are bounded and refuse symlinks. The session repo's origin URLs (and URL rewrites) are recorded in memory at the first classified command; a push asks once they differ. The `bash -c` check is a conservative text heuristic, a known limit. Yolo is unchanged. The publish floor is hardening, not a security boundary: a push that slips past it by obfuscation is P3; the publication scan for secrets is what blocks.
+- **Unattended runs without yolo:** keep bwrap by default.
 - **Script filenames:** In a direct shell invocation such as `sh scripts/git-push.sh`, a literal script filename is not inline `git push` text. Normal mode permissions still apply. The publish floor still checks the remaining command line, and dangerous-command checks are unchanged.
 - **In-process guards in every mode:** secret masking, private-path denials, user-only settings, offline mode.
 - **Sandbox scratch usage:** Measure through no-follow directory handles with entry, time and open-directory budgets. Stop sampling on command cancellation. A partial estimate can warn but never block a command.
@@ -198,15 +184,10 @@ Limits warn and record by default, and the owner chooses a harder action, by own
 A pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429, 5xx) waits without a model request and then sends the same request again, by owner decision (#1448): `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts out) is the only control, and there is no attempt cap. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown. A finding that asks for an attempt cap, a default-off switch or a new terminal exception is not a finding; it is answered here.
 An extension's `oxa.exec` with a `cwd` outside the session directory asks like any other access outside the project (a write when the command is writable, a read otherwise), by owner decision (2026-11-19, the v0.2.0 gap from the post-merge audit): the directory is mounted into the sandbox, so it needs the same approval as a file write there. Headless without an approver is refused; yolo never asks; a `cwd` inside the session directory is unchanged. A finding that asks for a silent mount, or for a block in yolo, is answered here.
 
-Board evidence limits degrade only the affected pull request. A connection that cannot be read
-completely produces a visible, ineligible row and cannot trigger review, landing, or refill actions;
-the other rows remain usable. An over-page merge queue retains its observed entries, while every
-unobserved pull request has unknown queue state and cannot trigger a queue action.
-
 A provider key opens the native cloud gateway by owner decision (#1823 follow-up, 2026-11-19): an OpenRouter, OpenAI or Anthropic key in the owner's protected key file (or a ChatGPT sign-in) enables the in-process gateway and model discovery without `oxa.engine.inProcessCloud` or `oxa.cloud.discover_models`, and an explicit owner value (`false` opts out) always wins. There is no built-in model table: the model list is fetched live from each keyed provider with the owner's key, and limits and prices the provider does not list come from OpenRouter's public catalog (`GET https://openrouter.ai/api/v1/models`), a keyless request that sends no key and no user data, used only for a provider's default endpoint and never when the owner points discovery at a proxy; the last successful fetch is cached on disk, an unknown limit gets a conservative default and an unknown price is recorded as uncertain spend, never a refusal. An owner entry under `oxa.cloud.models` always wins. This is still user-only: the decision reads the user layer and the key store, a project file or a restored session can never enable a provider, raise a limit or change the transport, and offline mode refuses. The ChatGPT plan's model list follows the same rule (owner-approved 2026-11-19): with a sign-in present, the gateway sends one `GET <chatgpt base>/models?client_version=...` with the existing ChatGPT bearer token and account header (the request the Codex CLI makes), through the same locked refresh path as a chat request, only to the ChatGPT base the route already uses; the token is never logged, only model ids and context windows are read from the reply, a reply that echoes a credential is refused, and the request is pinned to the account the cache key was derived from (a different sign-in is refused unsent), a `401 token_expired` refreshes once through the locked path and retries once (a second failure falls back to the cache), the cache is bound to the account and keeps no token, and an owner's own `oxa.cloud.models` ChatGPT route is kept even when the list omits it. ChatGPT `oxa.cloud.subscription_limits` are advisory like Go's: unset means no check, a configured value warns at 80% and 100% and is recorded, and nothing is refused locally for it (`subscription_limits_not_configured` is gone). A finding that asks for an explicit enable switch, a required cap for a plan route or a refusal on a crossed advisory limit is not a finding; it is answered here.
 Limits are owner settings that warn and record. A finding that asks for a default block, a built-in cap or a second consent question is answered here. These decisions bind code review too; `AGENTS.md` points here instead of repeating them.
 
-- **Off Linux** there is no OS sandbox. In-process guards stay, bash gets the same cleared base environment, a refused bash network disables it, and a run that keeps the network says so at start and to the model.
+- **Off Linux** there is no OS sandbox. In-process guards stay, bash gets the same cleared base environment, a refused bash network disables bash in unattended runs and offline mode and warns in interactive sessions, and a run that keeps the network says so at start and to the model. An attended interactive Linux session without bwrap runs model bash unsandboxed with a warning when no sandbox was requested; plan commands and non-yolo project hooks still require bwrap.
 - **No configured cap, no cap check,** for the owner and for authenticated allowlisted share guests. Guest authority, tokens and request quotas still apply.
 - **OpenCode Go** admission reserves subscription tokens only, including when the provider falls back to its paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission, not to Go admission. Provider-reported Go charges are recorded in the ledger and included in the shared daily spend. A configured `oxa.cloud.subscription_limits` is advisory: it warns at 80% and 100% and is recorded, and it is never a local refusal.
 - **Keyed Go:** a Go key in the owner's own secrets file enables the Go subscription transport for the owner's own model choice, with `oxa.cloud.opencode.enabled: false` as the opt-out. Transport selection stays user-only: the protected user key authorizes an actual Go model argument, including one passed to a delegated `oxa work` worker or nested child. No project-selected or restored model enables it without an explicit `oxa.cloud.opencode.enabled: true`; a local alias owns a request only on an exact match, and a model scope enables Go only when it names a Go model.
@@ -222,7 +203,7 @@ Limits are owner settings that warn and record. A finding that asks for a defaul
 - **Repeat guard** (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. `oxa.maxTurns` is the configured cap against loops the guard cannot see.
 - **Board evidence limits** degrade only the affected pull request. A connection that cannot be read completely produces a visible, ineligible row and cannot trigger review, landing, or refill actions; the other rows remain usable, and the limit is logged. An over-page merge queue retains its observed entries, while every unobserved pull request has unknown queue state and cannot trigger a queue action.
 - **Report dedupe is one consent** (#1448): opting into `oxa.reportIssue.semanticDedupe` is the owner's consent to send the scrubbed report, a public source excerpt and candidate summaries to the configured model and to search the repository for matching issues, so the post asks one question: the final preview. New issues are limited to one per task. The per-worker daily count is the owner setting `oxa.reportIssue.dailyNew`: unset means no check, and at or over a configured cap the preview warns, the ledger records it and the owner's yes still posts.
-Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
+Intentional removals must be stated in the PR body with a `Removes:` line. Flag silent deletion of a check that protects the block list as high; silent deletion of a hardening guard is P3.
 
 The rolling dev release always requires its reproducible Linux artifacts. Its native macOS arm64
 archive is best effort, so a failed macOS build cannot suppress the Linux release. When the macOS
@@ -239,15 +220,14 @@ require the peer to be the same user and the unique ancestor running the same ox
 Clients authenticate the connection before sending the question; unknown or ambiguous identities
 cannot approve. In yolo the broker answers yes, without changing publication scans or credentials.
 The question is shown as the requesting process's text, not an oxa instruction.
-A confirmation that a model-run command can satisfy without the broker is high. A broker answer
-derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
+A broker answer derived from tool, file, web or agent-inbox text is high. A socket readable by another
+user is high. A model-run command that fakes the broker (its own listener or socket) is hardening, P3.
 The broker's state machine, bounds and records do not depend on the extension host pump. A request is a structured, length-prefixed frame (title and body fields); an over-limit length is refused unread with a `reason` (`too_large`, `not_servable`, `closed`, `busy_limit`, `bad_request`). The session thread's `serve` picks a request, creates its per-dialog cancel ticket and marks it shown in one step under the broker's lock, so a typed yes that arrives before the UI has registered the dialog is neither lost nor able to dismiss another dialog. In yolo a request is answered at once, keeps no pending state and leaves a compact record (hash, size, first title line, a count for identical consecutive requests), never the text; a dialog or typed answer keeps the full text, which the owner paced. A finding that asks for yolo to retain every request body is answered here.
 The broker bounds what a request can hold in the oxa process before accepting it for confirmation:
 its size, the time to deliver it and the connections served at once (owner-configurable, generous
-defaults: 8 MiB, 60 s, 64). An unbounded buffer, read or thread per request is high. Inside the
-Linux sandbox the broker socket is mounted only where bwrap denies nested user namespaces
-(`--disable-userns`), so a command cannot stack a fake listener over the trusted mount point; a
-broker mount without that denial is high. Publishing hands `gh` the approved bytes through a sealed
+defaults: 8 MiB, 60 s, 64). Inside the Linux sandbox the broker socket is mounted only where bwrap
+denies nested user namespaces (`--disable-userns`), so a command cannot stack a fake listener over
+the trusted mount point. A missing bound or a mount without that denial is hardening, P3. Publishing hands `gh` the approved bytes through a sealed
 descriptor (`--body-file /dev/fd/N`), never a pathname a command could swap after the yes.
 
 Lane-push approval, `oxa work --publish` and `--report-problems` use this broker when a session
