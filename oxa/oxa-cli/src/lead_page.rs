@@ -60,6 +60,10 @@ pub struct View<'a> {
     /// True when the board shown is a retained last-good value, not a fresh read (#2342).
     pub board_retained: bool,
     pub situation: Option<&'a Snapshot>,
+    /// The owner's configured per-host worker capacity (#2369), read live from the
+    /// user settings. `None` when the settings cannot be read (shown unavailable);
+    /// an empty map means the owner stated no capacity.
+    pub capacity: Option<&'a crate::lead::capacity::Capacity>,
     /// The Lead session's workers from its registry and their status files. An error is
     /// an explicit state: no workers recorded, or a registry that was refused.
     pub workers: Option<&'a Result<Vec<crate::workers::tool::Binding>, crate::workers::tool::BindingsError>>,
@@ -352,7 +356,9 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
                 let (cause, next) = board_gap(view);
                 say_why(&mut html, "Board", cause, next, None, now);
             }
-            html.push_str("</section><details class=home-work><summary>Observed work</summary>");
+            html.push_str("</section>");
+            capacity(&mut html, view);
+            html.push_str("<details class=home-work><summary>Observed work</summary>");
             board(&mut html, view, now, Query::default());
             workers(&mut html, view, now);
             queue(&mut html, view, now);
@@ -369,7 +375,10 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             board(&mut html, view, now, query);
             queue(&mut html, view, now);
         }
-        Page::Workers => workers(&mut html, view, now),
+        Page::Workers => {
+            capacity(&mut html, view);
+            workers(&mut html, view, now);
+        }
         Page::Asks => {
             html.push_str("<div class=asks-layout>");
             asks(&mut html, view, now);
@@ -662,6 +671,54 @@ fn binding_row(html: &mut String, binding: &crate::workers::tool::Binding) {
         escape(&state),
         age
     );
+}
+
+fn capacity(html: &mut String, view: &View<'_>) {
+    html.push_str("<section id=capacity><h2>Capacity</h2>");
+    let Some(configured) = view.capacity else {
+        html.push_str("<p>Capacity unavailable. The owner's user settings could not be read.</p></section>");
+        return;
+    };
+    let facts = crate::lead::capacity::derive(configured, view.board, view.situation);
+    if facts.hosts.is_empty() {
+        html.push_str("<p>No per-host capacity configured. Set <code>oxa.lead.capacity</code> in user settings, for example <code>{\"host-a\": 6}</code>.</p>");
+    } else {
+        html.push_str("<p class=muted>running workers / configured capacity</p><ul>");
+        for row in &facts.hosts {
+            let used = row.used.map_or("unknown".to_owned(), |n| n.to_string());
+            let cap = row.capacity.map_or("unknown".to_owned(), |n| n.to_string());
+            let _ = write!(html, "<li>{} {used}/{cap}</li>", escape(&row.host));
+        }
+        html.push_str("</ul>");
+        if configured.is_empty() {
+            html.push_str("<p class=muted>Observed use only; no per-host capacity is configured.</p>");
+        }
+    }
+    if configured.ignored() > 0 {
+        let _ = write!(
+            html,
+            "<p class=muted>{} capacity entries could not be read and were ignored.</p>",
+            configured.ignored()
+        );
+    }
+    match facts.ready {
+        Some(n) => {
+            let _ = write!(html, "<p>Ready: {n} items</p>");
+        }
+        None => html.push_str("<p>Ready depth unavailable. No board observation reached this page.</p>"),
+    }
+    match &facts.stuck {
+        Some(list) if list.is_empty() => html.push_str("<p>Stuck: none reported.</p>"),
+        Some(list) => {
+            html.push_str("<p>Stuck:</p><ul>");
+            for label in list {
+                let _ = write!(html, "<li>{}</li>", escape(label));
+            }
+            html.push_str("</ul>");
+        }
+        None => html.push_str("<p>Stuck work unavailable. No runner observation reached this page.</p>"),
+    }
+    html.push_str("</section>");
 }
 
 fn workers(html: &mut String, view: &View<'_>, now: u64) {
@@ -1065,6 +1122,94 @@ mod tests {
             100,
         );
         assert!(!invalid.contains(&u64::MAX.to_string()));
+    }
+
+    #[test]
+    fn capacity_section_shows_configured_and_observed_truth() {
+        use crate::lead::capacity::Capacity;
+        use oxa_proto::work::{Running, TaskStep};
+        let running = |task: &str, host: &str| Running {
+            task: task.into(),
+            host: host.into(),
+            branch: format!("agent/{task}"),
+            worktree: format!("~/project/{task}"),
+            session_id: None,
+            step: TaskStep::Worker,
+        };
+        let situation = Snapshot {
+            as_of_seq: 1,
+            at_ms: 1_000,
+            standing_revision: 1,
+            goal: None,
+            running: vec![
+                running("t1", "host-a"),
+                running("t2", "host-a"),
+                running("t3", "<b>host"),
+            ],
+            local_accepted: Vec::new(),
+            published: Vec::new(),
+            landed: Vec::new(),
+            blocked: Vec::new(),
+            asks: Vec::new(),
+            incidents: Vec::new(),
+            history_truncated: false,
+        };
+        let board = Board {
+            observed_at: 1,
+            entries: vec![Entry {
+                number: 1,
+                head: "synthetic-head".into(),
+                release_pinned: false,
+                action: Action::Ready,
+                lease: None,
+                attempts_today: 0,
+                eligible: true,
+                evidence_incomplete: None,
+            }],
+        };
+        let capacity = Capacity::parse(Some(&serde_json::json!({"host-a": 6})));
+        let view = View {
+            board: Some(&board),
+            situation: Some(&situation),
+            capacity: Some(&capacity),
+            ..Default::default()
+        };
+        for page in [Page::Home, Page::Workers] {
+            let html = content_for(page, &view, 100);
+            assert!(html.contains("id=capacity"), "{page:?}");
+            assert!(html.contains("host-a 2/6"), "{page:?}");
+            // An observed but unconfigured host keeps an unknown capacity, and its
+            // name is escaped rather than rendered as markup.
+            assert!(html.contains("&lt;b&gt;host 1/unknown"), "{page:?}");
+            assert!(!html.contains("<b>host"), "{page:?}");
+            assert!(html.contains("Ready: 1 items"), "{page:?}");
+            assert!(html.contains("Stuck: none reported."), "{page:?}");
+        }
+    }
+
+    #[test]
+    fn capacity_unknown_states_are_explicit() {
+        use crate::lead::capacity::Capacity;
+        // No capacity source at all: unavailable, not "not configured".
+        let html = content_for(Page::Workers, &View::default(), 100);
+        assert!(html.contains("Capacity unavailable"));
+        // Configured but no situation or board: use and ready stay unknown, never zero.
+        let capacity = Capacity::parse(Some(&serde_json::json!({"host-a": 6})));
+        let view = View {
+            capacity: Some(&capacity),
+            ..Default::default()
+        };
+        let html = content_for(Page::Workers, &view, 100);
+        assert!(html.contains("host-a unknown/6"));
+        assert!(html.contains("Ready depth unavailable"));
+        assert!(html.contains("Stuck work unavailable"));
+        // An empty configuration with no observation offers the set-it hint.
+        let empty = Capacity::default();
+        let view = View {
+            capacity: Some(&empty),
+            ..Default::default()
+        };
+        assert!(content_for(Page::Workers, &view, 100).contains("No per-host capacity configured"));
     }
 
     fn owner_goal_fixture() -> (oxa_session::Goal, oxa_session::SessionRef) {

@@ -1,14 +1,15 @@
 //! Project trust policy after a positive trust decision. Folder trust reports changes;
 //! content trust keeps the existing explicit re-approval path.
-use oxa_config::{Dirs, Env, Keymap, Settings};
-use oxa_interactive::{ask_trust_interactive, TrustChoice};
+use oxa_config::{Dirs, Settings};
+use oxa_interactive::TrustChoice;
 use oxa_perm::{Approval, TrustStore};
 use oxa_proto::{Level, OxaError};
 
 use std::{io::Write, path::Path};
 
 pub(crate) struct Check<'a> {
-    pub env: &'a Env,
+    /// Z05: the front end's trust question (`Frontend::ask_trust`), for changed project files.
+    pub ask: &'a mut dyn FnMut(&str, &[String]) -> Result<Option<TrustChoice>, OxaError>,
     pub dirs: &'a Dirs,
     pub cwd: &'a Path,
     pub store: &'a mut TrustStore,
@@ -65,8 +66,7 @@ pub(crate) fn check(c: Check<'_>) -> Result<bool, OxaError> {
                 c.notices.push((Level::Warning, not_loaded_text(c.cwd, &lines)));
                 return Ok(false);
             }
-            let (keymap, _) = Keymap::load(c.dirs);
-            let choice = ask_trust_interactive(c.env.pairs(), &keymap, &c.cwd.display().to_string(), &lines)?;
+            let choice = (c.ask)(&c.cwd.display().to_string(), &lines)?;
             match choice {
                 Some(TrustChoice::Trust) => {
                     c.store.save(&file, c.cwd, true)?;
