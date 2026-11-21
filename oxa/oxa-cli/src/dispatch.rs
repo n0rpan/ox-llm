@@ -1739,8 +1739,13 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
         interactive: false,
         has_gated: !gated.is_empty(),
     }) == TrustOutcome::Trusted;
-    let trusted = if trusted && !gated.is_empty() {
-        if user.project_trust_requires_content() {
+    let content = user.project_trust_requires_content();
+    // Like a start, help records the first content snapshot of a default-trusted empty
+    // project under the owner's content opt-in: resources a later repository update adds
+    // are then changed content, not the first approved baseline.
+    let via_default = saved.is_none() && default == DefaultTrust::Trust;
+    let trusted = if trusted && (!gated.is_empty() || (content && via_default)) {
+        if content {
             a.approve == Some(true)
                 || match store.check_content(&trust_file, cwd) {
                     Ok(oxa_perm::Approval::Matches | oxa_perm::Approval::NoRecord) => true,
