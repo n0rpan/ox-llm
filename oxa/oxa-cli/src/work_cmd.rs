@@ -241,18 +241,19 @@ pub(crate) fn run(
                         row.liveness
                     )
                     .map_err(|e| e.to_string())?;
+                    // The marker follows the outcome, so it prints even when the row has no
+                    // publication phase to show (an accepted head with nothing saved yet).
+                    if row.record.outcome == oxa_work::Outcome::PublicationPending {
+                        writeln!(out, "  {} pending publication, not done", row.record.branch)
+                            .map_err(|e| e.to_string())?;
+                    }
                     if let Some(publication) = row.publication {
                         let age = publication
                             .age_secs
                             .map_or_else(|| "age unknown".to_owned(), |s| format!("{s}s since save"));
-                        let pending = if row.record.outcome == oxa_work::Outcome::PublicationPending {
-                            " (pending publication, not done)"
-                        } else {
-                            ""
-                        };
                         writeln!(
                             out,
-                            "  {} {}: {}{pending} ({age}). {}",
+                            "  {} {}: {} ({age}). {}",
                             row.record.branch,
                             row.record.head_sha.as_deref().unwrap_or_default(),
                             publication.phase,
