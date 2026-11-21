@@ -47,7 +47,6 @@ impl Run {
         sigterm: SigtermOwner,
     ) -> Result<Self, OxaError> {
         handle.set_token_budget(max_tokens);
-        let current = Arc::new(Mutex::new(handle));
         // The parent's abort and kernel parent-death signal both use SIGTERM. A child
         // must exit on that signal, while the root owns cooperative run termination.
         let started = Instant::now();
@@ -61,6 +60,9 @@ impl Run {
         if let Some(subagent) = &subagent {
             subagent.set_deadline(deadline);
         }
+        // The time notes (70% and 90%) need the window, not only the deadline.
+        handle.set_time_limit(deadline.map(|at| (started, at)));
+        let current = Arc::new(Mutex::new(handle));
         let watched = current.clone();
         let terminated = Arc::new(AtomicBool::new(false));
         // Register escalation first: the first SIGTERM sets the flag below; any

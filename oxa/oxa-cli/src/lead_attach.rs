@@ -8,15 +8,16 @@
 //! HTTP input never names a session or a path.
 use crate::dispatch::lead_owner::{private_directory, private_file, unavailable, user_settings};
 use oxa_config::Dirs;
-use oxa_proto::{Entry, OxaError};
+use oxa_proto::{Entry, EntryBody, OxaError, Role};
 use oxa_session::{
-    decode_entry, decode_header, lock_holder, send_inbox_steer, session_files_under, SessionRef,
+    decode_entry, decode_header, lock_holder, send_inbox_steer, session_files_under, SessionHeader,
+    SessionRef,
 };
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     os::unix::fs::MetadataExt,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 /// How much of the end of the session file one page render reads. A display bound for the
@@ -32,6 +33,25 @@ pub(crate) struct AttachedSession {
     uid: u32,
     session: SessionRef,
     file: (u64, u64),
+    /// Started from `oxa.lead.attachSessionId`: that setting must keep naming this session.
+    /// A session the owner chose on the page (`select`) is held to the file proof only.
+    follows_setting: bool,
+}
+
+/// One session of this user that is running now.
+pub(crate) struct LiveSession {
+    pub id: String,
+    /// The project directory's basename; no other part of the path is shown.
+    pub cwd_name: String,
+    pub modified_ms: u64,
+    path: PathBuf,
+}
+
+/// What a running session is doing, from the last message of the tail.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Activity {
+    Working,
+    Idle,
 }
 
 /// The newest part of a session file as decoded entries.
@@ -59,8 +79,9 @@ fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
     Ok(Some(id.to_owned()))
 }
 
-/// Prove that `path` is a private owner file whose header names `id`; returns its identity.
-fn file_identity(path: &Path, uid: u32, id: &str) -> Result<(u64, u64), OxaError> {
+/// Prove that `path` is a private owner file with a session header: the header, the file's
+/// (device, inode) and its modification time in milliseconds.
+fn proof(path: &Path, uid: u32) -> Result<(SessionHeader, (u64, u64), u64), OxaError> {
     let file = private_file(path, uid)?;
     let metadata = file.metadata().map_err(|_| unavailable())?;
     let mut line = Vec::new();
@@ -68,10 +89,89 @@ fn file_identity(path: &Path, uid: u32, id: &str) -> Result<(u64, u64), OxaError
         .read_until(b'\n', &mut line)
         .map_err(|_| unavailable())?;
     let header = decode_header(&line).map_err(|_| unavailable())?;
+    let modified = metadata
+        .mtime()
+        .max(0)
+        .unsigned_abs()
+        .saturating_mul(1000)
+        .saturating_add(metadata.mtime_nsec().max(0).unsigned_abs() / 1_000_000);
+    Ok((header, (metadata.dev(), metadata.ino()), modified))
+}
+
+/// Prove that `path` is a private owner file whose header names `id`; returns its identity.
+fn file_identity(path: &Path, uid: u32, id: &str) -> Result<(u64, u64), OxaError> {
+    let (header, identity, _) = proof(path, uid)?;
     if header.id != id {
         return Err(unavailable());
     }
-    Ok((metadata.dev(), metadata.ino()))
+    Ok(identity)
+}
+
+/// Every session of this user that is open in some oxa right now (a lead TUI, an interactive
+/// oxa, a worker), newest activity first. Found by the lock sidecars; the probe takes no lock.
+/// Anything that is not a private owner file with a readable header is skipped silently.
+pub(crate) fn live_sessions(dirs: &Dirs, uid: u32) -> Vec<LiveSession> {
+    if private_directory(&dirs.sessions_dir, uid).is_err() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let Ok(projects) = std::fs::read_dir(&dirs.sessions_dir) else {
+        return out;
+    };
+    for project in projects.flatten() {
+        let Ok(files) = std::fs::read_dir(project.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let sidecar = file.path();
+            let Some(name) = sidecar.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Some(stem) = name.strip_suffix(".lock").filter(|stem| stem.ends_with(".jsonl")) else {
+                continue;
+            };
+            let path = sidecar.with_file_name(stem);
+            if lock_holder(&path).is_none() {
+                continue;
+            }
+            let Ok((header, _, modified_ms)) = proof(&path, uid) else {
+                continue;
+            };
+            out.push(LiveSession {
+                cwd_name: header
+                    .cwd
+                    .file_name()
+                    .map_or_else(|| "(root)".to_owned(), |name| name.to_string_lossy().into_owned()),
+                id: header.id,
+                modified_ms,
+                path,
+            });
+        }
+    }
+    out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms).then_with(|| a.id.cmp(&b.id)));
+    out
+}
+
+/// Working or idle, from the newest message of the entries: an assistant reply with no tool
+/// call is idle; anything else (a user message, tool calls, a result) is working.
+pub(crate) fn activity(entries: &[Entry]) -> Option<Activity> {
+    entries.iter().rev().find_map(|entry| match &entry.body {
+        EntryBody::Msg { wire, .. } => Some(if wire.role == Role::Assistant && wire.tool_calls.is_empty() {
+            Activity::Idle
+        } else {
+            Activity::Working
+        }),
+        _ => None,
+    })
+}
+
+/// Prompt tokens of the newest request whose usage the session recorded. The session does not
+/// record the model's window, so no share of it is ever computed or guessed.
+pub(crate) fn context_tokens(entries: &[Entry]) -> Option<u32> {
+    entries.iter().rev().find_map(|entry| match &entry.body {
+        EntryBody::Usage { usage, .. } if !usage.unreported => Some(usage.prompt),
+        _ => None,
+    })
 }
 
 impl AttachedSession {
@@ -98,14 +198,39 @@ impl AttachedSession {
             uid,
             session: SessionRef { path, id },
             file,
+            follows_setting: true,
         }))
+    }
+
+    /// The session the owner chose on the page. Only a session in the current `live_sessions`
+    /// result qualifies; HTTP input supplies the id and nothing else.
+    pub(crate) fn select(dirs: &Dirs, uid: u32, id: &str) -> Result<Self, OxaError> {
+        if id.len() > 128 || !crate::args::valid_session_id(id) {
+            return Err(unavailable());
+        }
+        let mut live = live_sessions(dirs, uid).into_iter().filter(|live| live.id == id);
+        let (Some(found), None) = (live.next(), live.next()) else {
+            return Err(unavailable());
+        };
+        let file = file_identity(&found.path, uid, id)?;
+        Ok(Self {
+            dirs: dirs.clone(),
+            uid,
+            session: SessionRef {
+                path: found.path,
+                id: id.to_owned(),
+            },
+            file,
+            follows_setting: false,
+        })
     }
 
     /// The settings still select this id, the file is the one proven at load, and the
     /// directories are still owner-only.
     pub(crate) fn recheck(&self) -> Result<(), OxaError> {
         private_directory(&self.dirs.sessions_dir, self.uid)?;
-        if selection(&self.dirs, self.uid)?.as_deref() != Some(self.session.id.as_str())
+        if (self.follows_setting
+            && selection(&self.dirs, self.uid)?.as_deref() != Some(self.session.id.as_str()))
             || file_identity(&self.session.path, self.uid, &self.session.id)? != self.file
         {
             return Err(unavailable());
@@ -290,5 +415,71 @@ mod tests {
         let (_test, dirs, uid, session) = fixture(1);
         std::fs::set_permissions(&session.path, std::fs::Permissions::from_mode(0o640)).unwrap();
         assert!(AttachedSession::load(&dirs, uid).is_err());
+    }
+
+    #[test]
+    fn only_a_live_session_can_be_selected_and_follows_no_setting() {
+        let (test, dirs, uid, session) = fixture(1);
+        assert!(live_sessions(&dirs, uid).is_empty());
+        assert!(AttachedSession::select(&dirs, uid, &session.id).is_err());
+        let store = FsStore::new(dirs.sessions_dir.clone());
+        store.acquire(&session).unwrap();
+        store.commit_lock();
+        let live = live_sessions(&dirs, uid);
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].id, session.id);
+        assert_eq!(live[0].cwd_name, "work");
+        let chosen = AttachedSession::select(&dirs, uid, &session.id).unwrap();
+        assert!(chosen.live());
+        // The owner's page choice does not depend on the settings key.
+        select(&test, "some-other-session");
+        chosen.recheck().unwrap();
+        for bad in ["", "../x", "unknown-session", "a/b"] {
+            assert!(AttachedSession::select(&dirs, uid, bad).is_err(), "{bad:?}");
+        }
+        drop(store);
+        assert!(!chosen.live());
+        assert!(AttachedSession::select(&dirs, uid, &session.id).is_err());
+    }
+
+    #[test]
+    fn activity_and_context_come_from_the_recorded_entries() {
+        let mut call = WireMsg::assistant("running");
+        call.tool_calls.push(oxa_proto::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            args_raw: "{}".into(),
+        });
+        let message = |wire| Entry {
+            body: EntryBody::Msg {
+                wire,
+                parts: Vec::new(),
+                tool: None,
+            },
+            ..user_entry("x")
+        };
+        assert_eq!(activity(&[]), None);
+        assert_eq!(activity(&[user_entry("hi")]), Some(Activity::Working));
+        let done = [user_entry("hi"), message(WireMsg::assistant("done"))];
+        assert_eq!(activity(&done), Some(Activity::Idle));
+        let busy = [message(WireMsg::assistant("done")), message(call)];
+        assert_eq!(activity(&busy), Some(Activity::Working));
+        assert_eq!(context_tokens(&done), None);
+        let usage = |prompt, unreported| Entry {
+            body: EntryBody::Usage {
+                kind: "turn".into(),
+                usage: oxa_proto::Usage {
+                    prompt,
+                    completion: 1,
+                    cached: 0,
+                    cached_missing: false,
+                    unreported,
+                },
+            },
+            ..user_entry("x")
+        };
+        assert_eq!(context_tokens(&[usage(100, false), usage(200, false)]), Some(200));
+        // A request that reported no usage is not a reading; the earlier one stays.
+        assert_eq!(context_tokens(&[usage(100, false), usage(0, true)]), Some(100));
     }
 }
