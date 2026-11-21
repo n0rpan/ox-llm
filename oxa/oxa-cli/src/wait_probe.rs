@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// One `gh` or `git` call must finish within this.
-const CALL_DEADLINE: Duration = Duration::from_secs(20);
+pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(20);
 /// Most bytes of one `gh` answer that are read; more is an error.
 pub(crate) const OUTPUT_CAP: usize = 256 * 1024;
 /// Most failed job names put in the evidence.
@@ -116,6 +116,11 @@ impl ProbeHooks {
     /// The home directory as text, for the output scrubber.
     pub(crate) fn home_string(&self) -> String {
         self.home.to_string_lossy().into_owned()
+    }
+
+    /// A runner-owned `oxa work` worker has no GitHub access; the runner owns every call.
+    pub(crate) fn runner_owns_github(&self) -> bool {
+        self.runner_owns_github
     }
 
     /// Like `run`, with its own read cap, and the listed exit codes count as an answer.
