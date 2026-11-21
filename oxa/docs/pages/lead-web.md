@@ -39,7 +39,7 @@ over 15 minutes, and unanswered owner decisions. Each source is rendered from it
 observation: a source the record does not carry is never shown as healthy. The missing
 sources collapse into one line ("Not in this sample: …") that names them, instead of one
 bullet per source, and a routine healthy read renders no attention block at all. Open
-owner decisions render as rows with the same inline approve forms as the approvals page.
+owner decisions render as compact cards with the same inline approve forms as the approvals page.
 With `owner_chat` enabled, open owner asks are additionally read live from the authorized
 durable Lead Session on every render, with their original revisions, through the
 registered owner-bound caller; an unauthorized or absent session leaves that source
@@ -160,6 +160,18 @@ and it starts on the default again.
 The verified owner can see "Waiting for your approval" on the board and home pages.
 The panel shows each pending request's ID, session, directory basename, command,
 rule reasons and age. The page masks credentials in the command and rule reasons.
+
+Each request is one card. Its first line carries the ID and session with the wait
+time at the right, the directory basename follows, then the exact command, the rule
+reasons and the four answers. On a phone the answers fill the card as a two-by-two
+grid of full tap targets; a wide screen puts them in one row. The card holds the same
+single form, CSRF field, request ID and four answers as before, so the layout changes
+nothing about what an answer means or who may give it.
+
+Open asks render as compact read-only cards too: the ask ID and subject, the question,
+and one muted line naming what the facts do not carry (options, recommendation and
+meanwhile). An ask card carries no form and no button, and the page still grants no
+permission to resolve an ask.
 
 Viewing and answering require owner chat. Enable the user-only
 `oxa.lead.serve.owner_chat` with Tailscale and exactly one allowed identity.

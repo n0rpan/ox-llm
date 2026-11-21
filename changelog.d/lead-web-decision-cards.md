@@ -1,0 +1,1 @@
+- Lead web: pending approvals and open asks render as compact cards. The approval card keeps its one form, CSRF field, request ID and four answers, laid out as a two-by-two tap grid on a phone; ask cards stay read-only.

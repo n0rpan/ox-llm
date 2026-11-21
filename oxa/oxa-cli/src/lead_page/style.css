@@ -98,6 +98,9 @@ th:first-child,td:first-child{white-space:nowrap}th[scope=row]>a{display:inline-
   border:1px solid var(--line);background:var(--surface);font-weight:600}ol.approvals{list-style:none;margin:8px 0;padding:0;display:grid;gap:12px}
 .approval{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:13px 14px}
 .approval p{margin:0 0 6px;font-size:var(--t-sm);color:var(--muted)}.approval code{font-size:12.5px;background:var(--raised);padding:1px 5px;border-radius:6px}
+.approval-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px}
+.approval-head .approval-meta{min-width:0}.approval-head .approval-wait{margin:0;flex:none;font-variant-numeric:tabular-nums}
+.approval-folder{margin-top:2px}
 .approval pre{font-size:12.5px;line-height:1.55;background:var(--bg);border:1px solid var(--line);border-radius:10px;
   padding:8px 10px;overflow-x:auto;margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere}
 .approval .reasons{margin:6px 0;padding-left:20px;font-size:var(--t-sm);color:var(--muted)}.approval .reasons li{margin:3px 0}
@@ -150,3 +153,9 @@ a.row:hover,a.tile:hover,.pages a:hover,.stale-notice a:hover,.top>a:hover,.filt
   .work-tiles{grid-template-columns:repeat(4,minmax(0,1fr))}
   .asks-layout .ask-cards{grid-template-columns:repeat(2,minmax(0,1fr))}  .filters{margin:0 0 12px;padding:2px 0}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto;transition:none!important}}
+/* Decision cards (S12): a card's question reads as the title and its unknown parts as one
+   muted line; the four approval answers fill a phone card in two rows, each a full 44px tap target.
+   Presentation only: the form, its fields and its action are unchanged. */
+.ask h3{margin:2px 0 4px}.ask .ask-unknown{color:var(--muted);font-size:var(--t-sm);margin:0}
+@media (max-width:899.98px){.approval form{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .approval form button{width:100%;flex:none}}

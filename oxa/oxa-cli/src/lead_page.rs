@@ -652,7 +652,7 @@ fn asks(html: &mut String, view: &View<'_>, now: u64) {
         );
         html.push_str("<div class=ask-cards>");
         for ask in &s.asks {
-            let _ = write!(html, "<article><p class=muted>Ask {} · {}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", escape(&ask.id), subject(&ask.subject), escape(&ask.question));
+            let _ = write!(html, "<article class=\"card ask\"><p class=\"muted ask-meta\">Ask {} · {}</p><h3>{}</h3><p class=ask-unknown>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", escape(&ask.id), subject(&ask.subject), escape(&ask.question));
         }
         html.push_str("</div>");
         if s.asks.is_empty() {
@@ -683,7 +683,7 @@ fn asks(html: &mut String, view: &View<'_>, now: u64) {
         for ask in durable {
             let _ = write!(
                 html,
-                "<article><p class=muted>Ask {} · revision {}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts; this page grants no permission to resolve an ask.</p></article>",
+                "<article class=\"card ask\"><p class=\"muted ask-meta\">Ask {} · revision {}</p><h3>{}</h3><p class=ask-unknown>Options, recommendation and meanwhile are unavailable in these facts; this page grants no permission to resolve an ask.</p></article>",
                 escape(&ask.id),
                 ask.revision,
                 escape(&ask.question)
