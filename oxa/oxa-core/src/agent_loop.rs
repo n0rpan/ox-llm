@@ -304,14 +304,7 @@ fn run_inner(
             // persisted conversation. Repeat it for tool/continuation requests too.
             // #2295: a verified-artifact line is the task of ONE request: it is taken here
             // and sent again by no request.
-            extra: {
-                eprintln!(
-                    "DEBUG-EXTRA has={} sha={:?}",
-                    artifacts.is_some(),
-                    st.prefix.sha256[0]
-                );
-                turn_extra(st, &mut artifacts, &schema_repaired)
-            },
+            extra: turn_extra(st, &mut artifacts, &schema_repaired),
             events: true,
             idem_key: String::new(),
         };
@@ -848,12 +841,6 @@ fn run_inner(
             crate::exec::note_stored_images(st, &results, sink)?;
             // #2295: the next repair request (if any) carries this batch's verified files.
             artifacts = done.verified_artifacts(&st.cwd);
-            eprintln!(
-                "DEBUG-BATCH artifacts={} {} done={:?}",
-                artifacts.is_some(),
-                done.debug_state(),
-                st.settings.done_commands()
-            );
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;
@@ -1070,15 +1057,6 @@ fn run_inner(
             continue;
         }
         let failed_check = crate::done::check(st, done, sink, ui);
-        eprintln!(
-            "DEBUG-CHECK failed={} turn={} {}",
-            failed_check.is_some(),
-            turn_index,
-            failed_check
-                .as_deref()
-                .map(|t| &t[..t.len().min(300)])
-                .unwrap_or("")
-        );
         let advised = crate::advice::observe_done(st, done.observation.take(), true, sink)?;
         if matches!(advised, crate::advice::AdviceResult::Escalate) {
             return Ok(RunEnd::Failed(OxaError::new(

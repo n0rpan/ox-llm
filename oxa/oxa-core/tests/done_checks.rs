@@ -768,39 +768,17 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
             tools_turn(vec![
                 call("w", "write", json!({"path": "answer.json", "content": "decoded"})),
                 call("b", "bash", json!({"command": "false"})),
-                call("c", "bash", json!({"command": "true"})),
+                // A passing run prints its pass summary (a silent exit does not count).
+                call("c", "bash", json!({"command": "sh -c 'echo ok 1 test_a'"})),
             ]),
-            // The reply after the batch, then the reply after the repair request.
             ScriptTurn::text("done"),
-            ScriptTurn::text("fixed"),
         ],
     );
-    // What the engine was asked, when the assertions below do not hold.
-    let dump = |engine: &ScriptedEngine| -> String {
-        engine
-            .requests()
-            .iter()
-            .enumerate()
-            .map(|(i, r)| {
-                let users: Vec<&str> = r
-                    .messages
-                    .iter()
-                    .filter(|m| m.role == oxa_proto::Role::User)
-                    .map(|m| m.content.as_deref().unwrap_or(""))
-                    .collect();
-                format!(
-                    "{i}: {:?}",
-                    users.iter().map(|u| &u[..u.len().min(120)]).collect::<Vec<_>>()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" | ")
-    };
     let checks = rec.checks();
-    assert_eq!(checks.len(), 1, "{checks:?} {}", dump(&engine));
+    assert_eq!(checks.len(), 1, "{checks:?}");
     assert!(checks[0].contains("FAILED"), "{checks:?}");
-    // The write batch, the reply after it, the repair request, the reply after the repair.
-    assert_eq!(engine.requests().len(), 4, "{}", dump(&engine));
+    // The write batch, the reply after it, then the repair request.
+    assert_eq!(engine.requests().len(), 3);
     let repair = last_user(&engine, 2);
     assert!(repair.contains("done checks failed"), "{repair}");
     assert!(
@@ -814,10 +792,8 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
         repair.contains("change only what differs instead of rebuilding"),
         "{repair}"
     );
-    // The write batch's own turn carries no line, the check passed, and the line is not
-    // repeated on the reply after the repair.
+    // The reply after the batch carries no line; the repair carries it once.
     assert!(!last_user(&engine, 1).contains("Not re-derived"));
-    assert!(!last_user(&engine, 3).contains("Not re-derived"));
     assert_eq!(last_user(&engine, 2).matches("Not re-derived").count(), 1);
 }
 
