@@ -29,7 +29,10 @@ chain of `env -C`, files read, token-printing commands). `credential-read` and `
 prompts in standard mode, not a sandbox; yolo does not reach them. These rules are hardening, not a security
 boundary: a command that slips past them by obfuscation is P3. A saved unattended grant never covers a
 pipeline fed by anything but a literal `echo`/`printf`, or an input redirect. A `wait` probe that runs `gh`
-is network access (plan denies, ask asks once per session).
+is network access (plan denies, ask asks once per session). The `oxa-self-approve` rule covers `oxa approve`,
+an approval-bearing `oxa send` (`--approve <id> <answer>` or the `--approvals` list) and a write into the agent
+directory; an ordinary `oxa send <session> <text>` (a steer, `--follow-up`, `--retry` or `--withdraw`) is a plain
+inbox message, never an approval, and is not flagged (#2272).
 
 A desk grant (once or session) of a pushing command in an unattended run is bound to resolved facts:
 the source ref object ids and a digest of origin's URLs (never the URLs), re-read at every decision

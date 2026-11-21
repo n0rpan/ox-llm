@@ -38,7 +38,9 @@ code, tests, CI and docs; the owner validates on hardware.
   (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
   project file. An `oxa send` steer (#2183) is not that lane: it is a plain inbox message from the
   same user that a busy session reads at its next tool boundary instead of at the end of its turn.
-  It controls nothing and, like every inbox message, is never an approval.
+  It controls nothing and, like every inbox message, is never an approval. The `oxa-self-approve`
+  danger rule matches only the approval surface (`oxa approve`, or `oxa send` carrying `--approve`
+  or `--approvals`); ordinary coordination send is not flagged (#2272).
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - The native cloud gateway's built-in recommendations are available by default for providers with
   configured API keys unless the owner opts out. They never override explicit model settings,
