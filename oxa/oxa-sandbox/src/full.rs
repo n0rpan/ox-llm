@@ -12,7 +12,7 @@ use crate::{
     run_unsandboxed_capture, run_unsandboxed_stdin, ExecDecision, ExecPolicy, ExecRole, Layout, NetSandbox,
 };
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -273,6 +273,9 @@ impl Sandbox for FullAccess {
             _ => None,
         }
     }
+    fn bash_view(&self, cwd: &Path, path: &Path, writable: bool) -> oxa_proto::BashView {
+        self.inner.bash_view(cwd, path, writable)
+    }
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         match self.decide(Self::role_of(s)) {
             ExecDecision::Sandbox => self.inner.bwrap_args(s),
@@ -381,6 +384,13 @@ impl Sandbox for FileView {
     }
     fn preserves_host_path(&self, path: &std::path::Path) -> bool {
         self.inner.preserves_host_path(path)
+    }
+    /// Unsandboxed file tools and bash are the same machine.
+    fn bash_view(&self, cwd: &Path, path: &Path, writable: bool) -> oxa_proto::BashView {
+        if self.switch.full() || !self.os_sandbox.load(Ordering::Relaxed) {
+            return oxa_proto::BashView::Same;
+        }
+        self.inner.bash_view(cwd, path, writable)
     }
     fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
         self.inner.for_session().map(|inner| {

@@ -84,7 +84,61 @@ pub(crate) fn bwrap_args_pinned(
     real_home: Option<&Path>,
     sockets: &[(&Path, i32)],
 ) -> Vec<String> {
+    let mut a = mount_plan(s, home, layout, real_home, sockets).emit();
     let home_s = home.to_string_lossy().into_owned();
+    let cwd = canon(&s.cwd).to_string_lossy().into_owned();
+    push(&mut a, &["--chdir", &cwd, "--clearenv"]);
+    for (k, mut v) in base_env(&home_s, layout).into_iter().chain(s.env.iter().cloned()) {
+        if k == crate::OWNER_CONFIRM_SOCK_ENV {
+            v = crate::OWNER_CONFIRM_SOCK.to_string();
+        }
+        push(&mut a, &["--setenv", &k, &v]);
+    }
+    push(&mut a, &["--", "bash", "-c", &s.command]);
+    a
+}
+
+/// The canonical account home that is hidden besides `$HOME` (#53), if any.
+fn real_home_canon(real_home: Option<&Path>, home: &Path, home_c: &Path) -> Option<PathBuf> {
+    real_home
+        .filter(|r| r.is_absolute() && *r != Path::new("/") && *r != home && **r != *home_c)
+        .map(canon)
+        .filter(|r| r != home_c && r.parent().is_some() && std::fs::metadata(r).is_ok_and(|m| m.is_dir()))
+}
+
+/// What bash sees at a path for the probe spec `s`: the same [`mount_view`] the plan uses,
+/// without building the rest of the argv (#955).
+pub(crate) fn view_for(s: &ExecSpec, home: &Path, layout: &Layout, real_home: Option<&Path>) -> Mounts {
+    let home_c = canon(home);
+    let cwd_c = canon(&s.cwd);
+    let mode = effective_mode(s, home, layout, real_home);
+    let entries: Vec<PathBuf> = home_entries_canon(&home_c, layout, mode);
+    let mut view = mount_view(&cwd_c, &home_c, layout, mode, &entries);
+    view.hidden.extend(hidden_homes(
+        &cwd_c,
+        &home_c,
+        real_home_canon(real_home, home, &home_c).as_ref(),
+    ));
+    view
+}
+
+/// The home tmpfs mounts: `$HOME` and the account's real home, unless the cwd covers them.
+fn hidden_homes(cwd: &Path, home_c: &Path, real_c: Option<&PathBuf>) -> Vec<PathBuf> {
+    std::iter::once(home_c.to_path_buf())
+        .chain(real_c.cloned())
+        .filter(|h| !h.starts_with(cwd))
+        .collect()
+}
+
+/// The mount plan of one command (#1765, #955): the argv in fixed phases and the mount view it
+/// implies.
+pub(crate) fn mount_plan(
+    s: &ExecSpec,
+    home: &Path,
+    layout: &Layout,
+    real_home: Option<&Path>,
+    sockets: &[(&Path, i32)],
+) -> MountPlan {
     // sbx-symhome: every decision and every mount uses the canonical cwd and home, so a cwd
     // that only resolves to `$HOME` (or into it) gets the masks of the real one. An
     // unresolvable path stays as given here; `refusal` refuses to run then (fail closed).
@@ -103,6 +157,7 @@ pub(crate) fn bwrap_args_pinned(
         .find(|(key, _)| key == crate::OWNER_CONFIRM_SOCK_ENV)
         .map(|(_, value)| value);
     let mut a: Vec<String> = Vec::new();
+    let mut late: Vec<String> = Vec::new();
     push(&mut a, &["--unshare-all"]);
     if owner_confirm.is_some() {
         // `--cap-drop ALL` does not survive `unshare -Urm`: in a nested user namespace a
@@ -130,10 +185,7 @@ pub(crate) fn bwrap_args_pinned(
     // #53: a `$HOME` that is not the account's real home leaves the real one visible. Hide it
     // like `$HOME` (an empty tmpfs; the cwd and the binds below are mounted on top), so its
     // credentials are absent, not merely emptied by a mask. Never `/` or the sandbox's `$HOME`.
-    let real_c = real_home
-        .filter(|r| r.is_absolute() && *r != Path::new("/") && *r != home && **r != *home_c)
-        .map(canon)
-        .filter(|r| r != &home_c && r.parent().is_some() && std::fs::metadata(r).is_ok_and(|m| m.is_dir()));
+    let real_c = real_home_canon(real_home, home, &home_c);
     // #188: parent first. A later tmpfs over an ancestor hides an earlier one below it, and
     // the final `--remount-ro` of the hidden child then fails; so the outer home goes first.
     let home_first = real_c.as_ref().is_none_or(|r| !home_c.starts_with(r));
@@ -175,10 +227,12 @@ pub(crate) fn bwrap_args_pinned(
     }
     let hooks = configured_hook_paths(cwd_path, &home_c, layout);
     let home_entries_c: Vec<PathBuf> = home_entries.iter().map(|p| canon(p)).collect();
-    let mounts = hooks_mounts(cwd_path, &home_c, layout, mode, &home_entries_c);
+    let mut view = mount_view(cwd_path, &home_c, layout, mode, &home_entries_c);
+    view.hidden
+        .extend(hidden_homes(cwd_path, &home_c, real_c.as_ref()));
     // Pins and layout mounts share parent-first order: a cache bind cannot hide a pin,
     // and a pin cannot hide a read-only descendant. The cwd is already a mount point.
-    let hook_pins = hook_parent_pins(&hooks, &mounts);
+    let hook_pins = hook_parent_pins(&hooks, &view);
     // B2: toolchains read-only, caches read-write, in path order (a parent before its child).
     let mut binds: Vec<(&Path, bool)> = layout
         .read
@@ -464,27 +518,45 @@ pub(crate) fn bwrap_args_pinned(
     // every cwd/layout bind. Restore only the resolver configuration needed by online commands.
     // The socket bind remains the last filesystem operation, so no later mount can cover it.
     if let Some(sock) = owner_confirm {
-        push(&mut a, &["--tmpfs", "/run"]);
-        if s.net {
-            for name in ["resolv.conf", "stub-resolv.conf"] {
-                let file = Path::new("/run/systemd/resolve").join(name);
-                if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-                    let file = file.to_string_lossy();
-                    push(&mut a, &["--ro-bind", &file, &file]);
-                }
-            }
-        }
-        push(&mut a, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
+        let files = if s.net {
+            resolver_files(Path::new("/etc/resolv.conf"), Path::new("/run"))
+        } else {
+            Vec::new()
+        };
+        late = late_run_block(sock, &files);
     }
-    push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    for (k, mut v) in base_env(&home_s, layout).into_iter().chain(s.env.iter().cloned()) {
-        if k == crate::OWNER_CONFIRM_SOCK_ENV {
-            v = crate::OWNER_CONFIRM_SOCK.to_string();
-        }
-        push(&mut a, &["--setenv", &k, &v]);
+    MountPlan { head: a, late }
+}
+
+/// The one ordered mount plan of a command: `head` is everything up to the masks, `late` what
+/// must win over every other mount (the `/run` tmpfs of the owner-confirm broker, the restored
+/// resolver files, then the broker socket bind as the very last filesystem operation). The
+/// environment and the command follow after it. What the mounts show is [`mount_view`], built
+/// from the same layout (the one source of #955's `bash_view`).
+pub(crate) struct MountPlan {
+    pub head: Vec<String>,
+    pub late: Vec<String>,
+}
+
+impl MountPlan {
+    /// The mount arguments in their fixed order.
+    pub(crate) fn emit(self) -> Vec<String> {
+        let mut a = self.head;
+        a.extend(self.late);
+        a
     }
-    push(&mut a, &["--", "bash", "-c", &s.command]);
-    a
+}
+
+/// The late `/run` block: tmpfs, the resolver files (read-only), the confirm socket bind last.
+fn late_run_block(sock: &str, files: &[PathBuf]) -> Vec<String> {
+    let mut late = Vec::new();
+    push(&mut late, &["--tmpfs", "/run"]);
+    for f in files {
+        let f = f.to_string_lossy();
+        push(&mut late, &["--ro-bind", &f, &f]);
+    }
+    push(&mut late, &["--ro-bind", sock, crate::OWNER_CONFIRM_SOCK]);
+    late
 }
 
 fn confirm_socket(s: &ExecSpec) -> Option<&Path> {
@@ -645,6 +717,17 @@ fn gh_source_is_safe(
             !(src.starts_with(d) || src.starts_with(&dc) || d.starts_with(src) || dc.starts_with(src))
         })
     })
+}
+
+/// `p` with its deepest existing ancestor resolved (symlinks), so a path to a file that does
+/// not exist yet is judged where it would be created.
+pub(crate) fn canon_existing(p: &Path) -> PathBuf {
+    for a in p.ancestors() {
+        if let Ok(real) = std::fs::canonicalize(a) {
+            return real.join(p.strip_prefix(a).unwrap_or(Path::new("")));
+        }
+    }
+    p.to_path_buf()
 }
 
 /// `p` canonical, or `p` itself when it cannot be resolved (the argv stays deterministic; the
@@ -848,7 +931,7 @@ can write; its hooks and config cannot be protected, so commands are not run her
     // pinned read-only; refuse rather than let a command replace it.
     let home_c = canon(home);
     let paths = configured_hook_paths(&cwd, &home_c, layout);
-    let mut mounts = hooks_mounts(&cwd, &home_c, layout, mode, &home_entries);
+    let mut mounts = mount_view(&cwd, &home_c, layout, mode, &home_entries);
     for p in &paths {
         if p.to_str().is_none() {
             return Some("sandbox refused: the repository's core.hooksPath is not valid UTF-8 and cannot be represented in the sandbox argv; commands are not run here".into());
@@ -910,12 +993,41 @@ can write; its hooks and config cannot be protected, so commands are not run her
         .filter(|d| (!d.starts_with(&cwd) && !cwd.starts_with(d)) || **d == dotgit_c)
         .cloned()
         .collect();
-    alias_refusal(&dirs, &Mounts { rw, ro }, home).map(|why| {
+    alias_refusal(
+        &dirs,
+        &Mounts {
+            rw,
+            ro,
+            hidden: Vec::new(),
+        },
+        home,
+    )
+    .map(|why| {
         format!(
             "sandbox refused: git: {why}; a protected git entry (config, hooks) of this repository \
 reaches what a command could change, so commands are not run here"
         )
     })
+}
+
+/// #1765: the resolver configuration files under `run_root` that online commands need after
+/// the runtime IPC masks: the two systemd names plus whatever `etc_resolv` resolves to when
+/// that is a regular file below `run_root` (resolvconf, NetworkManager, ...). Regular files
+/// only, so sockets and directories are never restored.
+pub(crate) fn resolver_files(etc_resolv: &Path, run_root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = ["resolv.conf", "stub-resolv.conf"]
+        .iter()
+        .map(|n| run_root.join("systemd/resolve").join(n))
+        .collect();
+    if let Ok(target) = std::fs::canonicalize(etc_resolv) {
+        if target.starts_with(run_root) {
+            out.push(target);
+        }
+    }
+    out.retain(|f| std::fs::symlink_metadata(f).is_ok_and(|m| m.is_file()));
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Keep IPC masks identical in both Bubblewrap launch paths. RP6: a listed socket
@@ -944,12 +1056,9 @@ pub(crate) fn mask_runtime_ipc<'s>(
             }
             if net && p == Path::new("/run/systemd/resolve") {
                 // Preserve only DNS configuration online; all resolver IPC stays hidden.
-                for name in ["resolv.conf", "stub-resolv.conf"] {
-                    let file = p.join(name);
-                    if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-                        let file = file.to_string_lossy();
-                        push(a, &["--ro-bind", &file, &file]);
-                    }
+                for file in resolver_files(Path::new("/etc/resolv.conf"), Path::new("/run")) {
+                    let file = file.to_string_lossy();
+                    push(a, &["--ro-bind", &file, &file]);
                 }
             }
             push(a, &["--remount-ro", &ps]);
@@ -1079,7 +1188,7 @@ fn protect_hooks_paths(
     mode: CwdMode,
     home_entries: &[PathBuf],
 ) {
-    let mounts = hooks_mounts(cwd, home, layout, mode, home_entries);
+    let mounts = mount_view(cwd, home, layout, mode, home_entries);
     let protected = protected_paths(cwd);
     for p in configured_hook_paths(cwd, home, layout) {
         if !hook_path_exposed(&p, &mounts) {
@@ -1114,13 +1223,19 @@ fn hook_path_exposed(path: &Path, mounts: &Mounts) -> bool {
     under_any(path, &mounts.rw).is_some() || mounts.rw.iter().any(|rw| rw.starts_with(canon(path)))
 }
 
-/// The mount view used by both configured-hook checks and their ancestor pins.
-fn hooks_mounts(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode, home_entries: &[PathBuf]) -> Mounts {
+/// The mount view of a command: used by the configured-hook checks, their ancestor pins and
+/// `Sandbox::bash_view`.
+fn mount_view(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode, home_entries: &[PathBuf]) -> Mounts {
     let writable = mode == CwdMode::Writable;
     let git_writable = writable && layout.git.rw.iter().all(|d| unsafe_reason(d).is_none());
     let mut mounts = Mounts {
         rw: writable_roots(cwd, layout, mode, home_entries),
         ro: layout.read.iter().map(|p| canon(p)).collect(),
+        hidden: sensitive_paths(home, layout.agent_dir.as_deref())
+            .into_iter()
+            .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.is_dir()))
+            .map(|p| canon(&p))
+            .collect(),
     };
     for p in layout
         .git
@@ -2159,5 +2274,66 @@ mod detect_tests {
         assert_eq!(b.bwrap, script);
         assert_eq!(b.home, env.home());
         assert!(check_bwrap(&b).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::*;
+
+    #[test]
+    fn resolver_files_follow_the_symlink_target_under_run_root() {
+        let env = oxa_fake::TestEnv::new();
+        let d = env.root().to_path_buf();
+        let run = d.join("run");
+        std::fs::create_dir_all(run.join("resolvconf")).unwrap();
+        let target = run.join("resolvconf/resolv.conf");
+        std::fs::write(&target, "nameserver 1.1.1.1\n").unwrap();
+        let etc = d.join("resolv.conf");
+        std::os::unix::fs::symlink(&target, &etc).unwrap();
+        let target = std::fs::canonicalize(&target).unwrap();
+        let run = std::fs::canonicalize(&run).unwrap();
+        assert_eq!(resolver_files(&etc, &run), vec![target]);
+        // Argv order is covered at the real `/run`: restored files come after the late tmpfs.
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: env.work(),
+            writable: true,
+            net: true,
+            timeout_s: None,
+            env: vec![("OXA_CONFIRM_SOCK".into(), "/nonexistent/confirm.sock".into())],
+        };
+        let argv = bwrap_args(&spec, &env.home());
+        let tmpfs = argv
+            .windows(2)
+            .rposition(|w| w == ["--tmpfs", "/run"])
+            .expect("late /run tmpfs");
+        let sock = argv
+            .iter()
+            .position(|x| x == crate::OWNER_CONFIRM_SOCK)
+            .expect("broker bind");
+        for f in resolver_files(Path::new("/etc/resolv.conf"), Path::new("/run")) {
+            let f = f.to_string_lossy().into_owned();
+            let i = argv
+                .windows(3)
+                .position(|w| w == ["--ro-bind", &f, &f])
+                .expect("restored");
+            assert!(tmpfs < i && i < sock);
+        }
+        let off = ExecSpec { net: false, ..spec };
+        let argv = bwrap_args(&off, &env.home());
+        assert!(!argv
+            .iter()
+            .any(|x| x.starts_with("/run/") && x != crate::OWNER_CONFIRM_SOCK));
+        // A target outside run_root is not restored.
+        let outside = d.join("outside.conf");
+        std::fs::write(&outside, "x").unwrap();
+        let etc2 = d.join("resolv2.conf");
+        std::os::unix::fs::symlink(&outside, &etc2).unwrap();
+        assert!(resolver_files(&etc2, &run).is_empty());
+        // A directory is never restored.
+        let etc3 = d.join("resolv3.conf");
+        std::os::unix::fs::symlink(run.join("resolvconf"), &etc3).unwrap();
+        assert!(resolver_files(&etc3, &run).is_empty());
     }
 }

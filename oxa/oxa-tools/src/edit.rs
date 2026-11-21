@@ -254,7 +254,10 @@ impl Tool for EditTool {
 
         ToolOutput {
             images: Vec::new(),
-            text: errors::edit_ok(edits.len(), &path),
+            text: match crate::bash_view_note(cx, &abs) {
+                Some(note) => format!("{}\n{note}", errors::edit_ok(edits.len(), &path)),
+                None => errors::edit_ok(edits.len(), &path),
+            },
             is_error: false,
             ui: json!({"diff": outcome.diff, "firstChangedLine": outcome.first_changed_line}),
         }
