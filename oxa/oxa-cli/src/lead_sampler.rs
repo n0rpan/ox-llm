@@ -89,6 +89,15 @@ pub(crate) struct Sampler {
     stop: Arc<AtomicBool>,
 }
 
+impl Clone for Sampler {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+            stop: self.stop.clone(),
+        }
+    }
+}
+
 impl Sampler {
     /// Start the sampler thread, or `None` when this service has no sample to run.
     pub(crate) fn start(dirs: &Dirs, cwd: &Path, env: &Env) -> Option<Self> {
