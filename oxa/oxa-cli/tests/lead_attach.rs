@@ -99,15 +99,32 @@ impl Fixture {
             session,
             store,
         };
-        fixture.settings(Some(&fixture.session.id.clone()));
+        fixture.settings(Some(&fixture.session.id.clone()), None);
         fixture
+    }
+
+    /// Another session of the same user in its own project directory, holding its writer lock
+    /// when `hold` (the returned store keeps it, as a running oxa does).
+    fn extra(&self, project: &str, text: &str, hold: bool) -> (SessionRef, FsStore) {
+        let directory = self.test.root().join(project);
+        std::fs::create_dir(&directory).unwrap();
+        let store = FsStore::new(self.dirs.sessions_dir.clone());
+        let session = store
+            .create(&directory.canonicalize().unwrap(), None, None)
+            .unwrap();
+        if hold {
+            store.acquire(&session).unwrap();
+            store.commit_lock();
+        }
+        store.append(&session, &message(WireMsg::user(text))).unwrap();
+        (session, store)
     }
 
     fn uid(&self) -> u32 {
         std::fs::metadata(self.test.root()).unwrap().uid()
     }
 
-    fn settings(&self, attach: Option<&str>) {
+    fn settings(&self, attach: Option<&str>, dedicated: Option<&str>) {
         let mut lead = serde_json::json!({
             "serve": {"enabled": true, "port": self.port, "identity": "tailscale", "owner_chat": true,
                 "allowed_identities": ["owner@example.invalid"],
@@ -115,6 +132,9 @@ impl Fixture {
         });
         if let Some(id) = attach {
             lead["attachSessionId"] = id.into();
+        }
+        if let Some(id) = dedicated {
+            lead["sessionId"] = id.into();
         }
         let path = self.test.write(
             "home/.oxa/agent/settings.json",
@@ -222,8 +242,12 @@ impl Fixture {
 
     /// What the session's own inbox consumer receives within `wait`.
     fn inbox(&self, wait: Duration) -> Vec<String> {
+        self.inbox_of(&self.session, wait)
+    }
+
+    fn inbox_of(&self, session: &SessionRef, wait: Duration) -> Vec<String> {
         let (send, receive) = mpsc::channel();
-        let _watch = Inbox::watch(&self.dirs.agent_dir, &self.session.id, move |text| {
+        let _watch = Inbox::watch(&self.dirs.agent_dir, &session.id, move |text| {
             let _ = send.send(text);
             true
         })
@@ -306,12 +330,109 @@ fn bad_posts_and_unsafe_selections_deliver_nothing() {
     fixture.refuses_to_start();
     private(&fixture.session.path, 0o600);
 
-    // An id chosen only in a project settings file selects nothing.
-    fixture.settings(None);
+    // An id chosen only in a project settings file selects nothing: the page starts on the
+    // list alone, shows no transcript and delivers no message.
+    fixture.settings(None, None);
     fixture.test.write(
         "work/.oxa/settings.json",
         &serde_json::json!({"oxa": {"lead": {"attachSessionId": fixture.session.id}}}).to_string(),
     );
-    fixture.refuses_to_start();
+    let _service = fixture.start();
+    let page = fixture.get("/chat", OWNER);
+    assert!(page.contains("No session is attached"), "{page}");
+    assert!(!page.contains("what is the state of the board"), "{page}");
+    let reply = fixture.post(
+        OWNER,
+        &format!("csrf={}&message=must-not-arrive", fixture.nonce()),
+    );
+    assert!(reply.starts_with("HTTP/1.1 503"), "{reply}");
     assert!(fixture.inbox(Duration::from_millis(700)).is_empty());
+}
+
+#[test]
+fn owner_lists_running_sessions_switches_and_returns() {
+    let fixture = Fixture::new();
+    let project = fixture.test.work().canonicalize().unwrap();
+    let lead = oxa_cli::LeadOwnerBinding::create(&fixture.dirs, &project, fixture.uid()).unwrap();
+    fixture.settings(None, Some(&lead));
+    let first = fixture.session.clone();
+    let (second, second_lock) = fixture.extra("second-project", "second session question", true);
+    let (idle, _idle_store) = fixture.extra("idle-project", "idle session question", false);
+    let _service = fixture.start();
+    let short = |session: &SessionRef| session.id[..8].to_owned();
+
+    // The service starts on the dedicated Lead chat and lists exactly the running sessions.
+    let page = fixture.get("/chat", OWNER);
+    assert!(page.contains("Chat with Lead"), "{page}");
+    assert!(
+        page.contains(&short(&first)) && page.contains(&short(&second)),
+        "{page}"
+    );
+    assert!(
+        page.contains("second-project") && !page.contains(&short(&idle)),
+        "{page}"
+    );
+    assert!(!page.contains("Back to Lead chat"), "{page}");
+    assert!(fixture.get("/chat", GUEST).starts_with("HTTP/1.1 403"));
+
+    let attach = |identity: &str, value: &str| {
+        fixture.post(identity, &format!("csrf={}&attach={value}", fixture.nonce()))
+    };
+    // Choosing the second session shows its transcript, not the first one's, and its inbox
+    // receives the owner's message.
+    let reply = attach(OWNER, &second.id);
+    assert!(reply.starts_with("HTTP/1.1 303"), "{reply}");
+    let page = fixture.get("/chat", OWNER);
+    assert!(page.contains("second session question"), "{page}");
+    assert!(!page.contains("what is the state of the board"), "{page}");
+    assert!(
+        page.contains("Back to Lead chat") && page.contains("Status: running"),
+        "{page}"
+    );
+    let reply = fixture.post(
+        OWNER,
+        &format!("csrf={}&message=for-the-second-session", fixture.nonce()),
+    );
+    assert!(reply.starts_with("HTTP/1.1 303"), "{reply}");
+    assert_eq!(
+        fixture.inbox_of(&second, Duration::from_secs(3)),
+        vec!["for-the-second-session".to_owned()]
+    );
+    assert!(fixture.inbox_of(&first, Duration::from_millis(500)).is_empty());
+
+    // A session that is not running, an unknown id, a path-like value, a bad CSRF and a
+    // non-owner all leave the target as it was.
+    let nonce = fixture.nonce();
+    assert!(attach(OWNER, &idle.id).starts_with("HTTP/1.1 404"));
+    assert!(attach(OWNER, "unknown-session-id").starts_with("HTTP/1.1 404"));
+    assert!(attach(OWNER, "..%2F..%2Fetc").starts_with("HTTP/1.1 403"));
+    let bad_csrf = fixture.post(OWNER, &format!("csrf=wrong&attach={}", first.id));
+    assert!(bad_csrf.starts_with("HTTP/1.1 403"), "{bad_csrf}");
+    let guest = fixture.post(GUEST, &format!("csrf={nonce}&attach={}", first.id));
+    assert!(guest.starts_with("HTTP/1.1 403"), "{guest}");
+    assert!(fixture.get("/chat", OWNER).contains("second session question"));
+    assert!(fixture.inbox_of(&first, Duration::from_millis(500)).is_empty());
+    assert!(fixture.inbox_of(&idle, Duration::from_millis(500)).is_empty());
+
+    // When the attached session stops, the page says so and a message waits in its inbox.
+    drop(second_lock);
+    let page = fixture.get("/chat", OWNER);
+    assert!(page.contains("not running"), "{page}");
+    let reply = fixture.post(
+        OWNER,
+        &format!("csrf={}&message=queued-for-later", fixture.nonce()),
+    );
+    assert!(reply.starts_with("HTTP/1.1 303"), "{reply}");
+    assert_eq!(
+        fixture.inbox_of(&second, Duration::from_secs(3)),
+        vec!["queued-for-later".to_owned()]
+    );
+
+    // An empty choice goes back to the dedicated Lead chat.
+    assert!(attach(OWNER, "").starts_with("HTTP/1.1 303"));
+    let page = fixture.get("/chat", OWNER);
+    assert!(
+        page.contains("Chat with Lead") && !page.contains("second session question"),
+        "{page}"
+    );
 }
