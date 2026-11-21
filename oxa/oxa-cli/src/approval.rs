@@ -2,7 +2,7 @@
 //! content trust keeps the existing explicit re-approval path.
 use oxa_config::{Dirs, Env, Keymap, Settings};
 use oxa_interactive::{ask_trust_interactive, TrustChoice};
-use oxa_perm::{Approval, TrustStore};
+use oxa_perm::{saved_trust, Approval, DefaultTrust, TrustOutcome, TrustStore};
 use oxa_proto::{Level, OxaError};
 
 use std::{io::Write, path::Path};
@@ -91,17 +91,21 @@ pub(crate) fn check(c: Check<'_>) -> Result<bool, OxaError> {
     }
 }
 
-/// Subcommands that have always required a saved decision (no prompt or extension hook).
+/// Subcommands that read project resources without a session (`oxa install`, `oxa mcp`). They
+/// never prompt or fire `project_trust`: a flag or the owner's `defaultProjectTrust` decides, and
+/// the shipped default trusts the project. A saved denial still wins.
 pub(crate) fn saved_project_resources(
     dirs: &Dirs,
     cwd: &Path,
     err: &mut dyn Write,
 ) -> Result<bool, OxaError> {
+    let owner = Settings::load(dirs, cwd, false);
     let store = TrustStore::load(&dirs.trust_file());
-    if store.lookup(cwd) != Some(true) {
+    let default = DefaultTrust::from_setting(owner.project_trust_default());
+    if saved_trust(&store, cwd, default) != TrustOutcome::Trusted {
         return Ok(false);
     }
-    if Settings::load(dirs, cwd, false).project_trust_requires_content() {
+    if owner.project_trust_requires_content() {
         if let Approval::Changed(changed) = store.approval(cwd) {
             let paths: Vec<_> = changed.iter().map(|ch| ch.path_line()).collect();
             writeln!(err, "{}", not_loaded_text(cwd, &paths))

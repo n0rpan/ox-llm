@@ -934,29 +934,62 @@ fn pkg_007() {
 // SEC: security and project trust
 // ---------------------------------------------------------------------------------------------
 
-/// SEC-001: a project-local resource found without a decision is skipped and reported; the
-/// trust prompt itself is interactive, the non-interactive surface is the warning.
+/// SEC-001: a project-local resource found without a decision loads without a question
+/// (`defaultProjectTrust` ships as `always`, owner decision 2026-11-21); the owner can opt into
+/// the question with `ask` or into loading nothing with `never`.
 /// pi docs: security.md ("Pi requires a project-trust decision when it finds ...").
 #[test]
 fn sec_001() {
-    // invariant: oxa is stricter: trust approves content (sha256 of the project files that run or load code); a changed file asks again (interactive) or is not loaded with a notice (headless) until approved or `--approve`
+    // invariant: a fresh install needs no trust decision in any project; trust still approves content (sha256 of the project files that run or load code), so a changed file asks again (interactive) or is not loaded with a notice (headless) until approved or `--approve`
     let env = TestEnv::new();
-    put_skill(&env, "work/.oxa/skills", "t-proj", "Project skill.");
+    put_skill(&env, "work/.oxa/skills", "t-fresh", "Project skill.");
     let ran = drive(&env, &[], "hi");
     assert_success(&ran.out);
     assert!(
-        !project_skill_listed(&system(&ran), "t-proj"),
-        "SEC-001: an undecided project must not load its skills"
-    );
-    let err = stderr_of(&ran.out);
-    assert!(
-        err.contains("not trusted"),
-        "SEC-001: the skipped resources must be reported; stderr: {err}"
+        project_skill_listed(&system(&ran), "t-fresh"),
+        "SEC-001: a fresh project is trusted by default; stderr: {}",
+        stderr_of(&ran.out)
     );
     assert!(
-        err.contains(".oxa/skills"),
-        "SEC-001: the report must name the skipped resource; stderr: {err}"
+        !stderr_of(&ran.out).contains("not trusted"),
+        "SEC-001: no trust notice for a trusted project; stderr: {}",
+        stderr_of(&ran.out)
     );
+    assert!(
+        !env.agent_dir().join("trust.json").exists(),
+        "SEC-001: the default trusts the project without saving a decision"
+    );
+
+    // The owner's own opt-ins keep the old behaviour, and report what they skipped.
+    for (value, listed) in [("ask", false), ("never", false), ("always", true)] {
+        let env = TestEnv::new();
+        put_skill(&env, "work/.oxa/skills", "t-proj", "Project skill.");
+        put_settings(
+            &env,
+            "home/.oxa/agent/settings.json",
+            serde_json::json!({ "defaultProjectTrust": value }),
+        );
+        let ran = drive(&env, &[], "hi");
+        assert_success(&ran.out);
+        assert_eq!(
+            project_skill_listed(&system(&ran), "t-proj"),
+            listed,
+            "SEC-001: defaultProjectTrust {value}; stderr: {}",
+            stderr_of(&ran.out)
+        );
+        let err = stderr_of(&ran.out);
+        if listed {
+            assert!(
+                !err.contains("not trusted"),
+                "SEC-001: {value} trusts; stderr: {err}"
+            );
+        } else {
+            assert!(
+                err.contains("not trusted") && err.contains(".oxa/skills"),
+                "SEC-001: {value} must report the skipped resource by name; stderr: {err}"
+            );
+        }
+    }
 }
 
 /// SEC-002: trust-gated resources: project settings, extensions, skills, prompts, themes,

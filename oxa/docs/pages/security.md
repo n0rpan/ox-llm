@@ -202,10 +202,13 @@ These paths are found once, when oxa starts, by reading files only. Git is not r
 
 ## Project trust
 
-A project can carry configuration that runs code or loads code: settings with hooks, MCP servers, extensions, skills, prompts, and system prompt files. oxa treats these as untrusted until you trust the project.
+A project can carry configuration that runs code or loads code: settings with hooks, MCP servers, extensions, skills, prompts, and system prompt files. oxa trusts the project by default, so these load without a question. Trust decides only what loads: a project can never change your user settings, your secrets never reach the model, and offline mode stays offline whether or not a project is trusted.
 
-- In a project that is not yet trusted, oxa asks once. The options are "Trust this project", "Trust parent directory ... and projects below it" (when offered), "Do not trust (remember)" and "Decide later". `/trust` records a decision later.
-- `defaultProjectTrust` sets the answer when no decision is recorded: `ask` (default), `always` or `never`. It is a user setting.
+- By default a project is trusted the first time oxa starts in it, so no question is asked and its resources load.
+- `defaultProjectTrust` sets the answer when no decision is recorded: `always` (the default), `ask` or `never`. It is a user setting. With `ask`, oxa asks once per project in the interface; the options are "Trust this project", "Trust parent directory ... and projects below it" (when offered), "Do not trust (remember)" and "Decide later". Print, JSON and RPC runs never ask: with `ask` they skip the project's resources, and with `never` every run does. `/trust` records a decision at any time.
+- A saved decision written by the question or `/trust` wins over the default. `--no-approve` (`-na`) and `defaultProjectTrust: "never"` skip the project's resources for that run or everywhere.
+- If your user settings file exists but cannot be read, oxa fails safe: `defaultProjectTrust` counts as `never` until you fix the file, whatever the file said.
+- A project file cannot set `defaultProjectTrust`, `projectTrustPolicy` or any other user-only setting; such a key in a project file is ignored with a warning.
 - An untrusted project still contributes its context files (`AGENTS.md`, `CLAUDE.md`), which are text. Its other resources do not load.
 
 `projectTrustPolicy` is a user-only setting. With `folder` (the default), you trust the folder once. New or changed gated files load without another question. The notice names changed paths, not their contents. If the folder has no decision of its own, the closest saved parent decision applies. A saved child denial still blocks loading.
@@ -219,7 +222,7 @@ Trust covers the content, not just the directory. Once you trust a project, oxa 
 
 `--approve` trusts the project and records the current content for one run. `--no-approve` ignores the project's configuration and resources for one run. `oxa install -l` and `oxa mcp ... -l` check the same record.
 
-For a saved decision, start oxa interactively in that folder, approve it (use `/trust` to change an existing decision), and restart. `oxa install -l` and `oxa mcp ... -l` require a saved decision and use the selected policy. Trusted unattended checks still run; an untrusted unattended run with project `done` checks fails with the approval route instead of silently skipping them. This does not grant a managed worker direct trust in its worktree.
+A trusted project needs no saved decision: `oxa install -l` and `oxa mcp ... -l` follow `defaultProjectTrust` and the selected `projectTrustPolicy`. To trust a project that `ask` or `never` keeps untrusted, start oxa interactively in that folder, approve it (use `/trust` to change an existing decision), and restart. Trusted unattended checks run; an untrusted unattended run with project `done` checks fails with the approval route instead of silently skipping them. This does not grant a managed worker direct trust in its worktree.
 
 In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**` without asking, and the file tools refuse writes to `.git/hooks` or `.git/config`. Plan mode denies these writes too. User-selected `yolo` outside plan mode deliberately lifts all of these guards.
 
@@ -326,7 +329,7 @@ publication, so rewrite the unpublished commits. The detailed rules and examples
 ## Checklist
 
 - Keep the mode at `workspace` for daily work and use `plan` for review. Use `ask` on an unfamiliar project.
-- Trust only projects you have read. Use `defaultProjectTrust: "ask"`.
+- Run oxa only in projects you have read: a project is trusted by default. Use `defaultProjectTrust: "ask"` to be asked once per project, or `"never"` to load no project resources at all.
 - Start oxa in a project directory, not in your home directory.
 - Put the Brave key in a `0600` file, or in the environment for one shell.
 - Use `--offline` (or `OXA_OFFLINE=1`) when the task needs no network.

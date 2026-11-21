@@ -477,8 +477,8 @@ read its result; they never launch builds or tests.
 - **Security severity is calibrated to a power tool** (owner 2026-11-21, `docs/threat-model.md` "Risk we accept"): an
   attack that needs code already running as the owner, or shell obfuscation that only reaches what the owner's mode
   allows anyway, is P3 hardening at most and is filed as a follow-up. P0/P1 security means real exposure: a secret
-  leaving the machine or reaching the model, a remote party gaining code, credentials or spend, money past a cap, an
-  untrusted project changing user settings, or data loss under defaults.
+  leaving the machine or reaching the model, a remote party gaining code, credentials or spend, money past a cap, a
+  project (trusted or not) changing user settings, or data loss under defaults.
 - Reserve P0/P1 for a violated invariant below, concrete data loss or a crash. Report only introduced, actionable
   defects with a failure scenario; skip style and speculative risks. Do not ask to split a PR of up to about 800
   lines.
@@ -509,12 +509,16 @@ read its result; they never launch builds or tests.
   its surfaces and help (P1 if added outside it or without an exception reason).
 
 **Security invariants**
-- Project trust defaults to a saved folder decision, including the closest saved parent. Report new or
-  changed gated resources by path when loading them. `projectTrustPolicy: "content"` is user-only and
-  retains executable-content re-approval; loading changes under folder trust does not approve those
-  bytes for content policy or managed-worktree inheritance. Preserve explicit denials, safe paths and
-  the existing owner approval route. Trusted unattended checks run; untrusted checks report why and
-  how the owner can approve the source rather than silently skipping.
+- Project trust ships as `always` (owner decision 2026-11-21): a project is trusted without a question
+  and headless and worker runs do not fail on trust. `defaultProjectTrust: "ask"` and `"never"` are
+  owner opt-ins, the user layer only; a saved decision (the closest saved parent) and `--no-approve`
+  still win, and a user settings file that cannot be read fails safe to `never`. Report new or changed
+  gated resources by path when loading them. `projectTrustPolicy: "content"` is user-only and retains
+  executable-content re-approval; loading changes under folder trust does not approve those bytes for
+  content policy or managed-worktree inheritance. Preserve explicit denials, safe paths and the owner
+  approval route. Trusted unattended checks run; untrusted checks report why and how the owner can
+  approve the source rather than silently skipping. A finding that asks for the question to be the
+  default is answered here.
 - Inbox child creation, publication, scanning and privacy wipes must stay relative to opened
   no-follow directory descriptors on Linux and macOS. Do not re-resolve a saved pathname.
 - Sandbox scratch usage must walk through no-follow directory handles, honor command cancellation,

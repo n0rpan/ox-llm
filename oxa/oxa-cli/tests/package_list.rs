@@ -1,4 +1,5 @@
-//! Package listing must explain the project trust gate without bypassing it.
+//! Package listing must read the project's declarations exactly when the owner's
+//! `defaultProjectTrust` trusts the project, and explain the trust gate without bypassing it.
 #[cfg(target_os = "linux")]
 #[path = "common/strace.rs"]
 mod strace;
@@ -21,9 +22,91 @@ fn command(env: &TestEnv, verb: &str, words: &[&str]) -> String {
     String::from_utf8(out).unwrap()
 }
 
+/// The owner's own trust default, user settings only.
+fn owner_trust(env: &TestEnv, value: &str) {
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &format!(r#"{{"defaultProjectTrust":"{value}"}}"#),
+    );
+}
+
+fn synthetic_package(env: &TestEnv) -> std::path::PathBuf {
+    env.write(
+        "package/skills/synthetic/SKILL.md",
+        "---\nname: synthetic\ndescription: Synthetic fixture.\n---\nReturn a short answer.\n",
+    );
+    env.root().join("package")
+}
+
+#[test]
+fn package_list_reads_project_declarations_by_default() {
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    // A fresh install, no settings file: the project is trusted, so declarations once hidden
+    // behind the trust gate are listed and used.
+    env.write("work/.oxa/settings.json", r#"{"packages":[]}"#);
+    assert_eq!(command(&env, "list", &[]), "No packages declared.\n");
+    let source = synthetic_package(&env);
+    let installed = command(&env, "install", &["-l", source.to_str().unwrap()]);
+    assert!(installed.contains("(project)"), "{installed}");
+    let listed = command(&env, "list", &[]);
+    assert!(listed.contains("(project)"), "{listed}");
+    assert!(!listed.contains("not trusted"), "{listed}");
+    assert!(!listed.contains("hidden"), "{listed}");
+    assert!(
+        !dirs.trust_file().exists(),
+        "listing under the default saves no decision"
+    );
+
+    // `always` is the same answer written out.
+    owner_trust(&env, "always");
+    assert!(command(&env, "list", &[]).contains("(project)"));
+}
+
+#[test]
+fn package_list_hides_project_declarations_when_the_owner_opts_out() {
+    for value in ["never", "ask"] {
+        let env = TestEnv::new();
+        owner_trust(&env, value);
+        assert_eq!(
+            command(&env, "list", &[]),
+            "Project package declarations, if any, are hidden: the project is not trusted (run oxa once in it to decide).\n",
+            "{value}"
+        );
+        let source = synthetic_package(&env);
+        let installed = command(&env, "install", &["-l", source.to_str().unwrap()]);
+        assert!(installed.contains("(project)"), "{installed}");
+        let dirs = Dirs::under(env.root());
+        for words in [&[][..], &["-l"][..]] {
+            let listed = command(&env, "list", words);
+            assert!(listed.contains("project is not trusted"), "{value}: {listed}");
+            assert!(
+                listed.contains("run oxa once in it to decide"),
+                "{value}: {listed}"
+            );
+            assert!(!listed.contains("No packages declared."), "{value}: {listed}");
+            assert!(!listed.contains("installed at"), "{value}: {listed}");
+        }
+        assert!(!dirs.trust_file().exists(), "listing must not grant trust");
+
+        // A saved decision by the owner is honoured, and a saved denial beats `always`.
+        let mut trust = TrustStore::load(&dirs.trust_file());
+        trust.save(&dirs.trust_file(), &env.work(), true).unwrap();
+        trust.approve(&dirs.trust_file(), &env.work()).unwrap();
+        assert!(command(&env, "list", &[]).contains("(project)"), "{value}");
+        owner_trust(&env, "always");
+        trust.save(&dirs.trust_file(), &env.work(), false).unwrap();
+        assert!(
+            command(&env, "list", &[]).contains("project is not trusted"),
+            "{value}: a saved denial wins over always"
+        );
+    }
+}
+
 #[test]
 fn package_list_explains_hidden_project_declarations_after_install() {
     let env = TestEnv::new();
+    owner_trust(&env, "never");
     env.write(
         "package/skills/synthetic/SKILL.md",
         "---\nname: synthetic\ndescription: Synthetic fixture.\n---\nReturn a short answer.\n",
@@ -62,6 +145,7 @@ fn package_list_explains_hidden_project_declarations_after_install() {
 #[test]
 fn package_list_keeps_user_packages_visible_and_empty_state_accurate() {
     let env = TestEnv::new();
+    owner_trust(&env, "never");
     // Without reading untrusted settings we cannot distinguish empty from hidden.
     let untrusted_empty = command(&env, "list", &[]);
     assert!(untrusted_empty.contains("if any"), "{untrusted_empty}");
@@ -123,6 +207,7 @@ fn package_list_does_not_open_untrusted_special_or_oversized_settings() {
 
     for kind in ["fifo", "symlink", "oversized"] {
         let env = TestEnv::new();
+        owner_trust(&env, "never");
         let dirs = Dirs::under(env.root());
         let path = dirs.project_settings_file(&env.work());
         fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -22,7 +22,7 @@ use oxa_interactive::{
 };
 use oxa_perm::{
     gated_resources, resolve_trust, ApprovalDesk, DangerRules, DefaultTrust, ModePolicy, TrustInputs,
-    TrustOutcome, TrustStore, UnattendedMode,
+    TrustOutcome, TrustStore, UnattendedMode, SHIPPED_DEFAULT_TRUST,
 };
 use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
@@ -1553,11 +1553,7 @@ pub(crate) fn project_trusted(
     // Trust: the user's own settings decide the default; project settings load only when the
     // project is trusted.
     let user_settings = Settings::load(dirs, cwd, false);
-    let default = match user_settings.string("defaultProjectTrust").as_deref() {
-        Some("always") => DefaultTrust::Trust,
-        Some("never") => DefaultTrust::Untrusted,
-        _ => DefaultTrust::Ask,
-    };
+    let default = DefaultTrust::from_setting(user_settings.project_trust_default());
     // `OXA_TRUST_PROJECT=1` is `--approve` for the trust decision, for unattended runs;
     // an explicit `-na` still wins.
     let approve = a
@@ -1700,11 +1696,7 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
         return Vec::new();
     };
     let user = Settings::load(&dirs, cwd, false);
-    let default = match user.string("defaultProjectTrust").as_deref() {
-        Some("always") => DefaultTrust::Trust,
-        Some("never") => DefaultTrust::Untrusted,
-        _ => DefaultTrust::Ask,
-    };
+    let default = DefaultTrust::from_setting(user.project_trust_default());
     let store = TrustStore::load(&dirs.trust_file());
     let saved = store.lookup(cwd);
     let gated = gated_resources(cwd);
@@ -1718,7 +1710,9 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
     }) == TrustOutcome::Trusted;
     let trusted = if trusted && !gated.is_empty() {
         if user.project_trust_requires_content() {
-            let blanket = a.approve == Some(true) || (saved.is_none() && default == DefaultTrust::Trust);
+            // Only `--approve`, or the shipped default deciding it with no saved decision and
+            // no owner opt-out for the question, covers content this run did not record.
+            let blanket = a.approve == Some(true) || (saved.is_none() && default == SHIPPED_DEFAULT_TRUST);
             blanket || !matches!(store.approval(cwd), oxa_perm::Approval::Changed(_))
         } else {
             if let Some(text) = store.folder_changes_notice(cwd) {
