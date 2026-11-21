@@ -774,7 +774,9 @@ fn a_held_native_task_runs_online_and_ends_locally_verified_with_publication_hel
         checkpoint["record"]["detail"]
             .as_str()
             .unwrap()
-            .starts_with("local verified; publication held; publication pending: committed_no_push_recorded"),
+            .starts_with(
+                "local verified; publication held for the runner: publication pending: committed_no_push_recorded"
+            ),
         "{}",
         checkpoint["record"]["detail"]
     );

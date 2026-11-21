@@ -343,15 +343,17 @@ Status adds no network probes. An authorized local worker owns the push, ready P
 CI fixes and review replies; a worker without GitHub access hands off to its authorized
 runner. Seeing a pending row does not grant publication authority.
 
-A `--publish` run that ends with accepted commits but no useful receipt at its
-saved head is not reported as done: its outcome is `publication_pending`, its
-`detail` names the publication phase and the age since that head was saved, and
-`oxa work status` marks the row `pending publication, not done`. This covers a
-refused or unanswered push, a failed PR step and an offline retry. It is a
-distinct result, not a new refusal: nothing is blocked, and the next `--publish`
-or lane acceptance resumes without replaying the agent. A `publication_pending`
-exit code is 3, so a caller that reads only the code does not take owed
-publication for success.
+A run whose own publication step leaves accepted commits but no useful receipt at
+their saved head is not reported as done. That is a lane task whose lane run
+concluded without a recorded PR (the lane pushes, it does not open one), and a
+native board task held for publication. Its outcome is `publication_pending`, its
+`detail` names that step, the publication phase and the age since the head was
+saved, and `oxa work status` marks the row `pending publication, not done`. A lane
+task without lane CI performs no publication step in its run and stays `done`; it
+publishes on request. This is a distinct result, not a new refusal: nothing is
+blocked, and the next `--publish` or lane acceptance resumes without replaying the
+agent. A `publication_pending` exit code is 3, so a caller that reads only the code
+does not take owed publication for success.
 
 The [checkpoint integration contract](work-state.md) defines the runner's public
 event hook. Event/situation/standing stores and their CLI adapters are a separate

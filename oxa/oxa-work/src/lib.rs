@@ -1975,23 +1975,41 @@ fn run_locked(
     if planned.native && state.record.outcome == Outcome::Done && state.record.detail.is_empty() {
         state.record.detail = "local verified; publication held".into();
     }
-    // #2304: accepted work whose publication action has no useful exact-head receipt is
-    // pending, not done: the record, the exit code and `oxa work status` say so.
+    // #2304: a run whose own publication step (lane acceptance, or the native hold) leaves no
+    // useful exact-head receipt is pending, not done. A lane task without lane CI performs no
+    // publication step here (#1376 holds it), and a plain task publishes only on request.
+    let Some(step) = publication_step(state.task.lane_ci, state.record.lane.is_some(), planned.native) else {
+        writer
+            .save(&mut state, Step::Finished, observer)
+            .map_err(RunError::Checkpoint)?;
+        return Ok(state.record);
+    };
     let pending = matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo)
         .then(|| crate::PublicationStatus::summary(&state.record, state::now_ms()))
         .flatten();
     if let Some(pending) = pending {
         state.record.outcome = Outcome::PublicationPending;
-        if state.record.detail.is_empty() {
-            state.record.detail = pending;
+        state.record.detail = if state.record.detail.is_empty() {
+            format!("{step}: {pending}")
         } else {
-            state.record.detail = format!("{}; {pending}", state.record.detail);
-        }
+            format!("{}; {pending}", state.record.detail)
+        };
     }
     writer
         .save(&mut state, Step::Finished, observer)
         .map_err(RunError::Checkpoint)?;
     Ok(state.record)
+}
+
+/// Whether this run performed a publication step whose receipt the result owes.
+fn publication_step(lane_ci: bool, lane_attempted: bool, native: bool) -> Option<&'static str> {
+    if lane_ci && lane_attempted {
+        Some("lane acceptance")
+    } else if native {
+        Some("publication held for the runner")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
