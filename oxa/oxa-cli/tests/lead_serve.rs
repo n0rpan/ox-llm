@@ -317,7 +317,7 @@ fn registered_help_works_without_home_or_runtime_inputs() {
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("lead serve"));
     }
-    for command_name in ["board", "status", "asks", "chat", "run"] {
+    for command_name in ["status", "asks", "chat", "run"] {
         let output = command(&test)
             .args(["lead", command_name])
             .env_remove("HOME")
@@ -330,6 +330,18 @@ fn registered_help_works_without_home_or_runtime_inputs() {
         };
         assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
     }
+    // `lead board` has its handler now; its own help answers without HOME or a runtime.
+    let board = command(&test)
+        .args(["lead", "board", "--help"])
+        .env_remove("HOME")
+        .output()
+        .unwrap();
+    assert!(
+        board.status.success(),
+        "{}",
+        String::from_utf8_lossy(&board.stderr)
+    );
+    assert!(String::from_utf8_lossy(&board.stdout).contains("lead board"));
 }
 
 #[test]

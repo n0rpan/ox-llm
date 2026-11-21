@@ -26,11 +26,19 @@ fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
         assert!(text.contains("lead"));
         assert!(text.contains("dedicated Lead session"));
     }
-    for child in ["board", "status", "chat"] {
+    for child in ["status", "chat"] {
         let output = command(&test).args(["lead", child]).output().unwrap();
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("unavailable"));
     }
+    // `lead board` has its handler now, so its own help answers without a runtime.
+    let output = command(&test).args(["lead", "board", "--help"]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("oxa lead board"));
 }
 
 #[test]
@@ -90,6 +98,11 @@ fn one_shot_lead_tail_reaches_the_registered_chat_command() {
             oxa_interactive::command_registry::CommandId::LeadServe,
             vec![],
         ),
+        (
+            vec!["lead", "board", "list", "--json"],
+            oxa_interactive::command_registry::CommandId::LeadBoard,
+            vec!["list", "--json"],
+        ),
     ] {
         let parsed = parse(&args).unwrap();
         assert!(
@@ -102,9 +115,8 @@ fn one_shot_lead_tail_reaches_the_registered_chat_command() {
         );
         assert!(!parsed.lead && !parsed.shadow, "{args:?}");
     }
-    // The named lead children stay on their own surface declarations and the
-    // preset keeps its own spelling.
-    assert!(parse(&["lead", "board"]).is_err());
+    // A lead child without a CLI handler stays on its own declaration, and the preset
+    // keeps its own spelling.
     assert!(parse(&["lead", "status"]).is_err());
     let shadow = parse(&["lead", "--shadow", "-p", "task"]).unwrap();
     assert!(shadow.lead && shadow.shadow && shadow.subcommand.is_none());

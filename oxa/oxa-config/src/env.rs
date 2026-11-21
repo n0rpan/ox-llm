@@ -410,6 +410,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::Internal,
     },
     EnvVar {
+        name: "OXA_BOARD_ITEM",
+        pi_name: None,
+        description: "the kanban card (K41) a dispatched worker was given; with OXA_WORKER_DEPTH set, `oxa lead board` lets that worker note or stick only that card",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
         name: "OXA_WORKER_DEPTH",
         pi_name: None,
         description: "oxa sets 1 in the environment of a lead worker session; dropped from the parent environment before it is set",
