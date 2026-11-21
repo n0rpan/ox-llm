@@ -128,3 +128,7 @@ a.row:hover,a.tile:hover,.pages a:hover,.stale-notice a:hover,.top>a:hover,.filt
   .home-layout{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:24px;align-items:start}
   .asks-layout .ask-cards{grid-template-columns:repeat(2,minmax(0,1fr))}  .filters{margin:0 0 12px;padding:2px 0}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto;transition:none!important}}
+/* The sample line in the top bar (#2262): small and muted, the one place the page says how
+   fresh its board is, and the Retry beside it. The dot stays; this only adds the words. */
+.sampler { font-size: var(--t-xs); font-weight: 500; color: var(--muted); }
+.sampler a { color: var(--accent); }

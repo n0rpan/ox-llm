@@ -269,7 +269,7 @@ fn subject(value: &Subject) -> String {
 /// sampled, and after a failed sample its fixed cause and the next attempt's time.
 fn sampler_line(view: &View<'_>, now: u64) -> String {
     let Some(status) = view.sampler.as_ref() else {
-        return "<span id=connection>Sampling: external timer</span>".into();
+        return "<b class=sampler>Sampling: external timer</b>".into();
     };
     let every = if status.every == 1 {
         "every second".to_owned()
@@ -299,7 +299,7 @@ fn sampler_line(view: &View<'_>, now: u64) -> String {
         format!("Sampling GitHub · {every}")
     };
     // The Retry is a plain link: it works without JS and is never a form of its own.
-    format!("<span id=connection>{line} · <a href=/retry>Retry</a></span>")
+    format!("<b class=sampler>{line} · <a href=/retry>Retry</a></b>")
 }
 
 /// Full server-rendered page; scripts/styles are same-origin resources, without a CDN.
