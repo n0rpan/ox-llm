@@ -889,10 +889,17 @@ fn dangerous_dialog_pages_long_commands() {
         assert!(first.contains(label), "{label}\n{first}");
     }
 
-    // Page through every row; the last page shows the tail.
-    for _ in 0..3 {
+    // Page through every row; the last page shows the tail. The bound is on the presses, not
+    // on a page count, so a page-size change cannot leave the test one page short.
+    let mut presses = 0;
+    loop {
+        let shown = host.render(100, &theme).join("\n");
+        if shown.contains("echo tail-visible") {
+            break;
+        }
         press(&mut host, &keymap, "pagedown");
-        host.render(100, &theme);
+        presses += 1;
+        assert!(presses < 20, "the pages end");
     }
     let last = host.render(100, &theme).join("\n");
     assert!(last.contains("echo tail-visible"), "{last}");
@@ -914,8 +921,15 @@ fn dangerous_dialog_jumping_to_the_last_page_still_answers() {
     let theme = Theme::plain();
     let (tx, rx) = channel();
     host.handle(long_danger_request(tx), &mut vm, 0);
-    for _ in 0..3 {
+    let mut presses = 0;
+    loop {
+        let shown = host.render(100, &theme).join("\n");
+        if shown.contains("echo tail-visible") {
+            break;
+        }
         press(&mut host, &keymap, "pagedown");
+        presses += 1;
+        assert!(presses < 20, "the pages end");
     }
     let last = host.render(100, &theme).join("\n");
     assert!(last.contains("echo tail-visible"), "{last}");
@@ -992,6 +1006,22 @@ fn dangerous_dialog_short_terminal_pages_do_not_skip_rows() {
     assert!(top.contains("step-01") && top.contains("step-02"), "{top}");
     // The dialog is still open behind the cancelled host.
     host.close_all();
+}
+
+/// #1552: a denial of another text does not take back the owner's typed `yes` for the text
+/// that was shown and approved.
+#[test]
+fn a_denial_of_another_text_keeps_the_typed_yes() {
+    oxa_proto::owner_reply::clear();
+    oxa_proto::owner_reply::await_reply("d10-session", "d10-text-shown");
+    oxa_proto::owner_reply::typed("d10-session", "yes");
+    // Another question in the same session is denied.
+    oxa_proto::owner_reply::clear_for("d10-session", "d10-other-text");
+    assert!(
+        oxa_proto::owner_reply::take_approved("d10-session", "d10-text-shown"),
+        "the approved text is still approved"
+    );
+    oxa_proto::owner_reply::clear();
 }
 
 /// #1772: two sessions that loaded their settings before either saved each add a different

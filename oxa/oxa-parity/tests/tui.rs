@@ -1702,8 +1702,9 @@ fn long_dangerous_command_pages_in_the_real_tui() {
         "no new request: nothing ran"
     );
 
-    // Page to the end: the benign tail becomes visible in the dialog itself.
-    for _ in 0..3 {
+    // Page to the end: the benign tail becomes visible in the dialog itself. The bound is on
+    // the presses, not on a page count, so a page-size change cannot leave the test short.
+    for _ in 0..40 {
         rig.pty.send_key("pagedown");
     }
     rig.pty
@@ -1813,8 +1814,9 @@ fn short_terminal_dangerous_command_pages_visible_rows_in_the_real_tui() {
         "no new request: nothing ran"
     );
 
-    // Page to the end: the benign tail becomes visible in the dialog itself.
-    for _ in 0..8 {
+    // Page to the end: the benign tail becomes visible in the dialog itself. The bound is on
+    // the presses, not on a page count, so a page-size change cannot leave the test short.
+    for _ in 0..40 {
         rig.pty.send_key("pagedown");
     }
     rig.pty

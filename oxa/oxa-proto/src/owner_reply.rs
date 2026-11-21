@@ -80,19 +80,15 @@ pub fn take_approved(session: &str, digest: &str) -> bool {
     matches
 }
 
-/// Withdraw this session's pending text and its approval (the owner denied it).
-pub fn clear_for(session: &str) {
+/// Withdraw this session's pending text identified by `digest` and its approval (the owner
+/// denied that text). A denial of another text leaves this one alone.
+pub fn clear_for(session: &str, digest: &str) {
     let mut s = state();
-    if s.pending
-        .as_ref()
-        .is_some_and(|(shown, _)| shown.as_str() == session)
-    {
+    let same = |(shown, text): &(String, String)| shown.as_str() == session && text.as_str() == digest;
+    if s.pending.as_ref().is_some_and(same) {
         s.pending = None;
     }
-    if s.approved
-        .as_ref()
-        .is_some_and(|(shown, _)| shown.as_str() == session)
-    {
+    if s.approved.as_ref().is_some_and(same) {
         s.approved = None;
     }
 }

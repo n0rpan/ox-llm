@@ -152,7 +152,7 @@ not count. Takes the draft path the draft command printed."
             match ui.approve_publication(DIALOG_TITLE, &text) {
                 Some(true) => return Some(true),
                 Some(false) => {
-                    owner_reply::clear_for(session);
+                    owner_reply::clear_for(session, &digest);
                     return Some(false);
                 }
                 None => {}
