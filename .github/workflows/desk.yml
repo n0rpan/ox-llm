@@ -4,6 +4,8 @@ name: desk
 #   the classifier sets `desk` (tools/ci/paths.py: oxa/desk/**, this file, tools/ci/desk_contract.py,
 #   and whatever counts as "everything changed"). The `gate` aggregate covers it; it is not a
 #   required check of its own, because a path-filtered required check would hang every other PR.
+#   A change to shared oxa crates alone does not set `desk` on its PR or in the queue: the run on
+#   main, after the merge, is the first that compiles the desktop against it.
 # - Manual dispatch: `mode` picks the same jobs; `lock` writes oxa/desk/Cargo.lock.
 # Modes: `pr` is the whole job set (rustfmt, the contract lint, clippy with warnings denied, the
 # tests, the `oxa-desk --version` comparison). `queue-check` only compiles (`cargo check`): it is for

@@ -157,8 +157,8 @@ jobs:
     # The desktop app's own workspace (desk.yml: `desk check` and `desk test`, hosted ARM). Runs
     # when the classifier sets `desk`; a skip passes the gate, so no other PR waits for it.
     # A deduped main push skips it only when the queue run really ran it (`desk_covered`): the
-    # queue classifies its own change, so a shared-crate change does not select `desk` there, and
-    # then the main push is the run that compiles the desktop against it.
+    # queue classifies its own change, so a shared-crate change does not select `desk` there or on
+    # its PR, and the main push, after the merge, is the first run that compiles the desktop against it.
     needs: changes
     if: (needs.changes.outputs.covered != 'true' || needs.changes.outputs.desk_covered != 'true') && needs.changes.outputs.desk == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     permissions:
