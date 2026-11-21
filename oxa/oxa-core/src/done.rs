@@ -39,10 +39,17 @@ pub(crate) struct DoneState {
     pub(crate) proof: Proof,
     /// The file deliverables the model declared in this run, oldest first (#2293 A).
     deliverables: Vec<Deliverable>,
+    /// T6: the tool the task's acceptance names ([`crate::think::declared_verifier`]) and when
+    /// this run first ran it (`None`: no tool named, or never run).
+    pub(crate) toolchain: Option<Toolchain>,
+    /// T6: the first [`TRIES_SHOWN`] commands that named the task's tool without running it, to
+    /// show beside the question.
+    toolchain_tries: Vec<String>,
     /// Each finish fact gets one nudge turn per run ([`finish_decision`]).
     nudged_unproven: bool,
     nudged_jobs: bool,
     nudged_image: bool,
+    nudged_toolchain: bool,
     /// The run consulted an image file (`read` on an image, placeholder included).
     image_read: bool,
     /// A check ran after the last image read. Before the image nudge only a recognizable
@@ -52,6 +59,124 @@ pub(crate) struct DoneState {
     /// (#2297). Tool-observed only; reported once at the end as acceptance evidence.
     changed_paths: Vec<String>,
 }
+/// T6: the acceptance tool a task names, and the proof state when a bash call first ran it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Toolchain {
+    pub(crate) tool: String,
+    /// The first run of the tool, as `proof.passed_at_all()` then. Acceptance evidence only when it is
+    /// true (that call, or one after it, passed a check).
+    first_use: Option<bool>,
+}
+
+impl Toolchain {
+    /// The check that could not run as the task asks, so what the run checked is a proxy (or
+    /// nothing): the tool never ran, or only ran without a passing check after it. Nothing is
+    /// asked of a run that changed no file and ran no check (a read-only or failing run).
+    pub(crate) fn unverified(&self, proof: &Proof) -> Option<&str> {
+        let used = self.first_use.is_some_and(|checked| checked);
+        if used || !(proof.edited() || proof.passed_at_all()) {
+            return None;
+        }
+        Some(self.tool.as_str())
+    }
+}
+
+impl DoneState {
+    /// At run start: the tool the task's acceptance names, if a `bash` tool is declared to run it
+    /// (otherwise nothing can run it, and nothing is asked of the run). `planning` is false in a
+    /// goal-engaged run, whose `task` is the model's own pursuit and not the user's ask.
+    pub(crate) fn begin_toolchain(&mut self, st: &SessionState, task: &str, planning: bool) {
+        let has_bash = st.active.specs().iter().any(|t| t.name == "bash");
+        self.toolchain = if has_bash && planning {
+            crate::think::declared_verifier(task)
+        } else {
+            None
+        }
+        .map(|tool| Toolchain {
+            tool,
+            first_use: None,
+        });
+    }
+    /// T6: whether this batch's commands run the acceptance tool the task names, and which
+    /// commands the run named it in.
+    pub(crate) fn note_toolchain(&mut self, calls: &[ToolCall]) {
+        let Some(tool) = self.toolchain.as_ref().map(|t| t.tool.clone()) else {
+            return;
+        };
+        for call in calls.iter().filter(|c| c.name == "bash") {
+            let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.args_raw) else {
+                continue;
+            };
+            let Some(command) = args.get("command").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            // Every program position of the command is a call, as `executed_check` reads it.
+            // Only the first call is kept: a later check does not prove an earlier call's path.
+            let ran = program_names(command).iter().any(|p| runs_tool(p, &tool));
+            let first_use = self.toolchain.as_ref().map(|t| t.first_use);
+            if ran {
+                if first_use == Some(None) {
+                    if let Some(state) = self.toolchain.as_mut() {
+                        state.first_use = Some(self.proof.passed_at_all());
+                    }
+                }
+            } else if first_use == Some(None) && self.toolchain_tries.len() < TRIES_SHOWN {
+                if let Some(attempt) = crate::think::attempt_at(command, &tool) {
+                    self.toolchain_tries.push(one_line(&attempt, TRIES_LINE));
+                }
+            }
+        }
+    }
+}
+
+/// The programs of `cmd`, from every program position (after a separator, `VAR=x`, `time`,
+/// `timeout 60`), plus the interpreter of a leading `#!/usr/bin/env` shebang.
+fn program_names(cmd: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let shebang = cmd
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("#!"))
+        .and_then(|l| l.split_ascii_whitespace().nth(1));
+    out.extend(shebang.map(str::to_string));
+    for words in crate::think::simple_commands(cmd) {
+        if let Some(program) = crate::think::program_words(&words).first() {
+            out.push(program.clone());
+        }
+    }
+    out
+}
+
+/// Whether program `program` is the tool `tool` (`/usr/bin/python3` is `python3`), with a
+/// versioned name also accepting its bare form: the system's `python3` runs when `python3.12` is
+/// not installed.
+fn runs_tool(program: &str, tool: &str) -> bool {
+    let program = program.split('/').next_back().unwrap_or(program);
+    let bare = tool
+        .split_once('.')
+        .filter(|(_, version)| version.chars().all(|c| c.is_ascii_digit()))
+        .map_or(tool, |(name, _)| name);
+    program == tool || program == bare
+}
+
+/// Commands of an unused tool the nudge shows.
+const TRIES_SHOWN: usize = 3;
+/// Bytes of one such command the nudge shows.
+const TRIES_LINE: usize = 120;
+
+/// `text` as one bounded line.
+fn one_line(text: &str, cap: usize) -> String {
+    let line = text.lines().next().unwrap_or("").trim();
+    if line.len() <= cap {
+        return line.to_string();
+    }
+    let mut cut = cap;
+    while !line.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…", &line[..cut])
+}
+
 /// #2293 A: how many declared file deliverables one run keeps; the oldest goes beyond this.
 const MAX_DELIVERABLES: usize = 8;
 /// #2293 A: the longest shown path a declaration records (the tool refuses a longer one).
@@ -92,6 +217,8 @@ pub(crate) struct Proof {
     edited: bool,
     /// A passing check ran after the last change.
     checked: bool,
+    /// Any passing check ran in this run ([`Proof::passed_at_all`]).
+    passed_any: bool,
 }
 
 impl Proof {
@@ -102,6 +229,12 @@ impl Proof {
 
     fn passed(&mut self) {
         self.checked = true;
+        self.passed_any = true;
+    }
+
+    /// Any passing check ran in this run (T6 `Toolchain::unverified`).
+    pub(crate) fn passed_at_all(&self) -> bool {
+        self.passed_any
     }
 
     /// A file changed in this run (FH-N2: a closing question after edits is not an open task).
@@ -523,6 +656,8 @@ pub(crate) enum FinishFact {
     Unproven,
     /// Background jobs (ids) still running.
     JobsRunning(Vec<String>),
+    /// T6: the tool the task's acceptance names never ran (tools tried).
+    ToolchainUnused(String, Vec<String>),
     /// An image was read, files changed, and no check ran since the image was read.
     ImageUnverified,
 }
@@ -532,11 +667,29 @@ pub(crate) enum FinishDecision {
     End { unresolved: Vec<FinishFact> },
     /// One more user turn, once per fact and run.
     Nudge(String),
+    /// T6: the task names a tool for its acceptance and this run never ran it. When
+    /// `oxa.done.proveIt` is on, this supersedes that setting's nudge (asking about the
+    /// substitute is the question that names what remains unverified) and is that nudge.
+    Verifier { nudge: String, unproven: bool },
+}
+
+/// T6: the verifier fact of this decision, if any.
+fn verifier_fact(state: &DoneState) -> Option<FinishFact> {
+    let tool = state
+        .toolchain
+        .as_ref()
+        .and_then(|t| t.unverified(&state.proof))?;
+    Some(FinishFact::ToolchainUnused(
+        tool.to_string(),
+        state.toolchain_tries.clone(),
+    ))
 }
 
 /// The one decision before a run or goal ends. Each fact that is true now gets one nudge turn in
 /// this run; after that the run ends and the caller records what was left ([`record_end`]).
 /// Nothing is asked of a cancelled run, a failed done check, a blocked goal or a read-only run.
+/// With `oxa.done.proveIt` on, the turn before that is [`FinishDecision::Verifier`] once, which
+/// is the proof nudge (or the task-tool question, which asks what the proof would name).
 pub(crate) fn finish_decision(
     st: &SessionState,
     state: &mut DoneState,
@@ -574,11 +727,18 @@ pub(crate) fn finish_decision(
             facts.push(FinishFact::JobsRunning(running));
         }
     }
+    facts.extend(verifier_fact(state));
     for fact in &facts {
         match fact {
-            FinishFact::Unproven if !state.nudged_unproven => {
+            FinishFact::Unproven if !state.nudged_unproven && state.toolchain.is_none() => {
                 state.nudged_unproven = true;
                 return FinishDecision::Nudge(crate::prompt::PROVE_IT_NUDGE.to_string());
+            }
+            // T6 (`oxa.done.proveIt` off): what the run checked is a substitute for the task's
+            // own call path; the task's tool never ran.
+            FinishFact::ToolchainUnused(tool, tries) if !state.nudged_toolchain && !prove_it(st) => {
+                state.nudged_toolchain = true;
+                return FinishDecision::Nudge(crate::prompt::toolchain_nudge(tool, tries));
             }
             FinishFact::JobsRunning(ids) if !state.nudged_jobs => {
                 state.nudged_jobs = true;
@@ -589,6 +749,23 @@ pub(crate) fn finish_decision(
                 return FinishDecision::Nudge(crate::prompt::IMAGE_CROSS_CHECK_NUDGE.to_string());
             }
             _ => {}
+        }
+    }
+    // `oxa.done.proveIt`: one turn that supersedes both nudges when the task's tool never ran, and
+    // that nudge itself when `proveIt` asked for proof and nothing else was asked.
+    let unproven = state.proof.unproven();
+    let asked = state.nudged_unproven || state.nudged_toolchain;
+    if prove_it(st) && !asked {
+        if let Some(FinishFact::ToolchainUnused(tool, tries)) = verifier_fact(state) {
+            state.nudged_unproven = true;
+            state.nudged_toolchain = true;
+            let nudge = crate::prompt::toolchain_nudge(&tool, &tries);
+            return FinishDecision::Verifier { nudge, unproven };
+        }
+        if unproven {
+            state.nudged_unproven = true;
+            let nudge = crate::prompt::PROVE_IT_NUDGE.to_string();
+            return FinishDecision::Verifier { nudge, unproven };
         }
     }
     FinishDecision::End { unresolved: facts }
@@ -603,6 +780,13 @@ pub(crate) fn record_end(
 ) -> Result<(), OxaError> {
     st.stats.proved = state.proof.edited().then(|| !state.proof.unproven());
     st.stats.jobs_left = 0;
+    // Read once, as `proved` above: a proof or check that settles after this record does not
+    // revise the claim frozen with it.
+    st.stats.verifier = state
+        .toolchain
+        .as_ref()
+        .and_then(|t| t.unverified(&state.proof))
+        .map(str::to_string);
     st.stats.image_unverified = false;
     for fact in unresolved {
         let text = match fact {
@@ -611,6 +795,11 @@ pub(crate) fn record_end(
                 st.stats.jobs_left = ids.len() as u32;
                 format!("Run ended with background jobs still running: {}", ids.join(" "))
             }
+            FinishFact::ToolchainUnused(tool, _) => format!(
+                "Run ended without running the tool this task names for its acceptance \
+                 ({tool} never ran): the checks that ran are a substitute, not evidence for \
+                 the task's own call path"
+            ),
             FinishFact::ImageUnverified => {
                 st.stats.image_unverified = true;
                 "Run ended without an independent check of what it read from an image".to_string()
@@ -1114,6 +1303,95 @@ mod tests {
         assert!(!proof.unproven());
         proof.passed();
         assert!(!proof.unproven());
+    }
+
+    fn bash(id: &str, command: &str, exit: i64) -> (ToolCall, CallResult) {
+        let call = ToolCall {
+            id: id.to_string(),
+            name: "bash".to_string(),
+            args_raw: serde_json::json!({ "command": command }).to_string(),
+        };
+        let result = CallResult {
+            msg: oxa_proto::WireMsg::tool_result(id, ""),
+            tool_name: "bash".to_string(),
+            is_error: false,
+            ui: serde_json::json!({ "exit": exit, "timedOut": false }),
+            warn: false,
+        };
+        (call, result)
+    }
+
+    #[test]
+    fn a_batch_runs_the_task_tool_at_a_program_position_and_a_mention_is_no_run() {
+        let mut state = DoneState {
+            toolchain: Some(Toolchain {
+                tool: "python3.12".to_string(),
+                first_use: None,
+            }),
+            ..DoneState::default()
+        };
+        let (mention, _) = bash("c1", "echo python3.12", 0);
+        state.note_toolchain(&[mention]);
+        assert_eq!(state.toolchain.as_ref().unwrap().first_use, None);
+        assert_eq!(state.toolchain_tries.len(), 1, "the mention is shown as a try");
+        // The system's `python3` runs the task's `python3.12` when the exact name is absent,
+        // also after a wrapper and a separator.
+        let (words, _) = bash("c2", "cd src && timeout 5 /usr/bin/python3 check.py", 0);
+        state.note_toolchain(&[words]);
+        assert_eq!(state.toolchain.as_ref().unwrap().first_use, Some(false));
+    }
+
+    #[test]
+    fn a_task_tool_is_evidence_only_with_a_passing_check_after_it() {
+        let mut state = DoneState {
+            toolchain: Some(Toolchain {
+                tool: "python3".to_string(),
+                first_use: None,
+            }),
+            ..DoneState::default()
+        };
+        let unverified = |state: &DoneState| {
+            state
+                .toolchain
+                .as_ref()
+                .unwrap()
+                .unverified(&state.proof)
+                .map(str::to_string)
+        };
+        // A read-only run is never asked, whatever it ran.
+        assert_eq!(unverified(&state), None);
+        // Edited, tried the tool, then a passing check: no evidence for that attempt.
+        state.proof.changed();
+        let (tried, _) = bash("c1", "python3 check.py", 0);
+        state.note_toolchain(&[tried]);
+        let (passed, result) = bash("c2", "cargo test", 0);
+        state.note_proof(&[passed], &[result]);
+        assert_eq!(state.toolchain.as_ref().unwrap().first_use, Some(false));
+        assert_eq!(unverified(&state).as_deref(), Some("python3"));
+        // A run whose tool call had a passing check after it has acceptance evidence.
+        let mut proved = DoneState {
+            toolchain: Some(Toolchain {
+                tool: "python3".to_string(),
+                first_use: None,
+            }),
+            ..DoneState::default()
+        };
+        proved.proof.changed();
+        let (passed, result) = bash("c3", "cargo test", 0);
+        proved.note_proof(&[passed], &[result]);
+        let (call, _) = bash("c4", "python3 check.py", 0);
+        proved.note_toolchain(&[call]);
+        assert_eq!(proved.toolchain.as_ref().unwrap().first_use, Some(true));
+        assert_eq!(unverified(&proved), None);
+        proved.proof.changed();
+        let (again, _) = bash("c5", "python3 check.py", 0);
+        proved.note_toolchain(&[again]);
+        assert_eq!(
+            proved.toolchain.as_ref().unwrap().first_use,
+            Some(true),
+            "an earlier proof of the first call stands"
+        );
+        assert_eq!(unverified(&proved), None);
     }
 
     #[test]

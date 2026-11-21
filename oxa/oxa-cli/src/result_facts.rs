@@ -23,9 +23,10 @@ struct State {
     opened: bool,
     goal: Option<Value>,
     /// The finish decision's facts: whether the last edit was proved (`None`: no edit), how
-    /// many background jobs were still running at the end, and whether an image-derived
-    /// deliverable ended without an independent check.
-    finish: Option<(Option<bool>, u32, bool)>,
+    /// many background jobs were still running at the end, the acceptance tool the task names
+    /// that never ran (T6), and whether an image-derived deliverable ended without an independent
+    /// check.
+    finish: Option<(Option<bool>, u32, Option<String>, bool)>,
     finished: bool,
     session_id: Option<String>,
     requests: Option<u64>,
@@ -126,8 +127,13 @@ impl ResultFacts {
         });
     }
     pub(crate) fn finish(&self, stats: oxa_core::Stats) {
-        self.state.lock().unwrap_or_else(|p| p.into_inner()).finish =
-            Some((stats.proved, stats.jobs_left, stats.image_unverified));
+        let finish = (
+            stats.proved,
+            stats.jobs_left,
+            stats.verifier,
+            stats.image_unverified,
+        );
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).finish = Some(finish);
     }
     pub(crate) fn ci_polls(&self, polls: u32) {
         self.state.lock().unwrap_or_else(|p| p.into_inner()).ci_polls = Some(polls);
@@ -231,9 +237,13 @@ impl ResultFacts {
         if let Some(limit) = state.as_ref().and_then(|state| state.limit) {
             record["limit"] = json!(limit);
         }
-        if let Some((proved, jobs, image_unverified)) = state.as_ref().and_then(|state| state.finish) {
+        if let Some(finish) = state.as_ref().and_then(|state| state.finish.clone()) {
+            let (proved, jobs, verifier, image_unverified) = finish;
             record["proved"] = json!(proved);
             record["jobs_running"] = json!(jobs);
+            // T6: the tool the task's acceptance names that no command of this run ran. `null`
+            // when it ran or the task names none; absent when the run never reached the finish.
+            record["verifier_unused"] = json!(verifier);
             record["image_unverified"] = json!(image_unverified);
         }
         record["usage_scope"] = json!("process");

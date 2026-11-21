@@ -147,6 +147,15 @@ pub fn run_loop(
     // #2293 A: the declared file deliverables of this run, checked once at its end.
     let mut done = crate::done::DoneState::default();
     done.begin(st);
+    // T6: the tool a task names for its acceptance, read once at run start. In a goal-engaged
+    // run the conversation is the model's own pursuit, not the task: nothing is read from it.
+    let planning = !crate::fire::goal_engaged(st);
+    let task = if planning {
+        crate::fire::opening_text(st)
+    } else {
+        String::new()
+    };
+    done.begin_toolchain(st, &task, planning);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening, &mut done);
     // A failed run records why its pursuing goal stopped; `/goal resume` (or the a2a resume)
     // continues it in this session.
@@ -830,6 +839,7 @@ fn run_inner(
             done.note_edits(&results);
             st.stats.ci_polls += results.iter().filter(|r| r.ui["ciPoll"] == true).count() as u32;
             done.note_proof(&calls, &results);
+            done.note_toolchain(&calls);
             done.note_bash(st, &results);
             crate::exec::note_stored_images(st, &results, sink)?;
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
@@ -879,6 +889,16 @@ fn run_inner(
                                 pending_completion = goal.defer_completion();
                                 crate::goal::checkpoint(st, false, sink)?;
                                 crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                                continue;
+                            }
+                            crate::done::FinishDecision::Verifier { nudge, unproven } => {
+                                // `proveIt` alone: the edit stays unproven for the deferred
+                                // completion; the verifier question settles the goal stop.
+                                if unproven {
+                                    pending_completion = goal.defer_completion();
+                                }
+                                crate::goal::checkpoint(st, false, sink)?;
+                                crate::done::send_nudge(st, nudge, sink, ui, run_msgs)?;
                                 continue;
                             }
                             crate::done::FinishDecision::End { unresolved } => {
@@ -1066,6 +1086,10 @@ fn run_inner(
                         crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
                         continue;
                     }
+                    crate::done::FinishDecision::Verifier { nudge, .. } => {
+                        crate::done::send_nudge(st, nudge, sink, ui, run_msgs)?;
+                        continue;
+                    }
                     crate::done::FinishDecision::End { unresolved } => {
                         crate::done::record_end(st, done, &unresolved, sink)?;
                     }
@@ -1192,6 +1216,10 @@ fn run_inner(
             match crate::done::finish_decision(st, done, false) {
                 crate::done::FinishDecision::Nudge(text) => {
                     crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                    continue;
+                }
+                crate::done::FinishDecision::Verifier { nudge, .. } => {
+                    crate::done::send_nudge(st, nudge, sink, ui, run_msgs)?;
                     continue;
                 }
                 crate::done::FinishDecision::End { unresolved } => {
