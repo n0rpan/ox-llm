@@ -537,7 +537,7 @@ fn pipe_holders(key: &str, except: u32) -> Vec<u32> {
         };
         let mut mine = false;
         for fd in fds.flatten() {
-            if std::fs::read_link(fd.path()).is_ok_and(|t| t == std::path::Path::new(key)) {
+            if std::fs::read_link(fd.path()).is_ok_and(|t| t.as_path() == std::path::Path::new(key)) {
                 mine = true;
                 break;
             }
@@ -814,8 +814,11 @@ impl OwnerConfirm {
     }
 
     fn request(&self, request: &Request) -> Reply {
-        let Request::Ask { title, body } = request;
-        self.request_kind(title, body, false).0
+        match request {
+            Request::Ask { title, body } => self.request_kind(title, body, false).0,
+            // `connection` answers a password prompt itself: it needs the value, not a verdict.
+            Request::Secret { prompt } => self.request_kind(prompt, prompt, true).0,
+        }
     }
 
     /// A password prompt waits like a question, but only the `Ui::secret` dialog answers it and
@@ -996,7 +999,7 @@ impl OwnerConfirm {
                     Some(value) => json!({"secret": value}),
                     None => json!({"answer": "none", "source": "none"}),
                 };
-                let _ = writeln!(&*stream, "{line}");
+                let _ = writeln!(&stream, "{line}");
                 return;
             }
             request @ Request::Ask { .. } => self.request(&request),
