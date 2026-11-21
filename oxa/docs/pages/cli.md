@@ -264,25 +264,29 @@ $ oxa lead board add --from-json <path|->           a planning chunk: a JSON arr
 $ oxa lead board edit K41 [--title S] [--done-when S] [--kind K] [--host H] [--model M] [--issue N]
 $ oxa lead board move K41 <column> [--before K12 | --top]
 $ oxa lead board reorder K41 [--before K12 | --top]
-$ oxa lead board split K41 --from-json <path|->     children with their own done-when
+$ oxa lead board split K41 --from-json <path|->     the children array, each {title, done_when}
 $ oxa lead board stuck K41 [--cause C] [--detail S] | unstick K41 | note K41 --text S
 $ oxa lead board link K41 --pr N | rm K41 | undo [--seq N]
 $ oxa lead board capacity [HOST N [--paused]] [--pause HOST | --resume HOST]
 $ oxa lead board goal [--text S] [--measure SPEC] [--target N] [--clear]
-$ oxa lead board check M1 [--passed | --failed] --evidence S
+$ oxa lead board check M1 (--passed | --failed) --evidence S
 $ oxa lead board dispatch [start | pause]
 ```
 
-A measure spec is `issues:N,N`, `merged-all`, `merged:K41` or `manual:TEXT`; only a manual
-measure is ticked, with `check`. Until the
+A measure spec is `issues:N,N`, `merged-all`, `merged:K41` or `manual:TEXT`. Only a manual
+measure is ticked, with `check`, which records exactly the verdict you name: `--passed` or
+`--failed` is required, and a bare `check` is a usage error. Until the
 dispatcher lands, the GitHub measures read `unknown`, never a made-up number. Dispatch defaults
 to paused, and no verb starts a worker.
 
-Who may write comes from the environment, never from the words: at a terminal you are the
-owner and may do everything; a lead session may add, edit, split, reorder, move between
-Backlog and Ready, stick and unstick, link a PR and tick a manual measure, but not set capacity,
-the goal or dispatch, remove a card you created, or rank a card above one you placed; a worker
-may only `note` or `stuck` the card it was given in `OXA_BOARD_ITEM`.
+Who may write never comes from the words or from JSON. A lead session may add, edit, split,
+reorder, move between Backlog and Ready, stick and unstick, link a PR and tick a manual measure,
+but not set capacity, the goal or dispatch, remove a card you created, or rank a card above one
+you placed. A worker may only `note` or `stuck` the card it was given in `OXA_BOARD_ITEM`. Every
+other write is the owner's, and it asks for your typed `yes` on the terminal before it changes
+anything (the same question `oxa wipe --all` asks): without a terminal, or with any other answer,
+nothing is applied. A process that lost the lead or worker markers inside a model's bash is
+therefore not the owner; the markers only ever narrow what oxa already granted the process.
 
 `--json` prints typed JSON: the whole board, an item, the items of a lane, the goal, the
 capacity map or `{"seq": N, "revision": N, "id": N}` for an applied operation. A card printed by

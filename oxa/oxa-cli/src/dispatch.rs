@@ -260,9 +260,18 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                         crate::lead_serve::run(&dirs, &cwd, env, &mut *stdout)
                     }
                     CommandId::LeadRun => crate::lead_loop::run(&words.0, &dirs, &cwd, env, &mut *stdout),
-                    CommandId::LeadBoard => {
-                        crate::lead_board_cmd::run_lead_board(&words.0, &dirs, &cwd, env, &mut *stdout)
-                    }
+                    CommandId::LeadBoard => crate::lead_board_cmd::run_lead_board(
+                        &words.0,
+                        &dirs,
+                        &cwd,
+                        env,
+                        crate::lead_board_cmd::BoardIo {
+                            stdin: &mut *stdin,
+                            stdin_is_tty,
+                            out: &mut *stdout,
+                            err: &mut *stderr,
+                        },
+                    ),
                     CommandId::LeadAsks if words.0.is_empty() => {
                         crate::lead_loop::asks(&dirs, &cwd, env, &mut *stdout)
                     }

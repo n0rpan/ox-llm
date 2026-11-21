@@ -89,7 +89,7 @@ pub use dispatch::{choose_mode, run, with_lead_owner, LeadOwnerBinding, RunMode,
 pub use help::{requested, text};
 pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};
 pub use identity_cmd::{identity_facts, run_identity, write_identity};
-pub use lead_board_cmd::run_lead_board;
+pub use lead_board_cmd::{run_lead_board, BoardIo};
 pub use local_cmd::run_local;
 pub use mcp_cmd::run_mcp;
 pub use memory_cmd::run_memory;

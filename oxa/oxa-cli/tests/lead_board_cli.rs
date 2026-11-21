@@ -1,7 +1,7 @@
 //! K2 acceptance for `oxa lead board`: the owner and the lead run the whole board from a
 //! terminal, every `--json` read round-trips, and a worker environment can only note or stick
 //! its own card. Synthetic boards only, in a temporary home; no engine, no network.
-use oxa_cli::run_lead_board;
+use oxa_cli::{run_lead_board, BoardIo};
 use oxa_config::{Dirs, Env};
 use oxa_fake::TestEnv;
 use oxa_proto::{codes, OxaError};
@@ -52,16 +52,47 @@ impl Fixture {
             None => Env::from_pairs(&[("OXA_WORKER_DEPTH", "1")]),
         }
     }
-    fn run(&self, env: &Env, words: &[&str]) -> Result<String, OxaError> {
+    /// A command run by the owner at a terminal, answering `yes`.
+    fn run(&self, env: &Env, words: &[&str]) -> Result<(i32, String, String), OxaError> {
+        self.run_with(env, words, "yes\n", true)
+    }
+    /// A command with an explicit terminal answer, or no terminal at all.
+    fn run_with(
+        &self,
+        env: &Env,
+        words: &[&str],
+        answer: &str,
+        stdin_is_tty: bool,
+    ) -> Result<(i32, String, String), OxaError> {
         let words: Vec<String> = words.iter().map(|s| (*s).to_string()).collect();
+        let mut stdin = answer.as_bytes();
         let mut out = Vec::new();
-        run_lead_board(&words, &self.dirs, &self.cwd, env, &mut out)?;
-        Ok(String::from_utf8(out).expect("utf-8 board output"))
+        let mut err = Vec::new();
+        let code = run_lead_board(
+            &words,
+            &self.dirs,
+            &self.cwd,
+            env,
+            BoardIo {
+                stdin: &mut stdin,
+                stdin_is_tty,
+                out: &mut out,
+                err: &mut err,
+            },
+        )?;
+        Ok((
+            code,
+            String::from_utf8(out).expect("utf-8 board output"),
+            String::from_utf8(err).expect("utf-8 board error"),
+        ))
     }
     /// A command that must succeed.
     fn ok(&self, words: &[&str]) -> String {
-        self.run(&self.owner(), words)
-            .unwrap_or_else(|e| panic!("{words:?} failed: {e}"))
+        let (code, out, err) = self
+            .run(&self.owner(), words)
+            .unwrap_or_else(|e| panic!("{words:?} failed: {e}"));
+        assert_eq!(code, 0, "{words:?}: {err}");
+        out
     }
     fn json(&self, words: &[&str]) -> Value {
         let text = self.ok(words);
@@ -186,6 +217,16 @@ fn the_owner_runs_the_whole_board_from_a_terminal() {
     assert_eq!(goal["measures"][1]["measure"], "manual");
     assert_eq!(goal["target_per_hour"], 10.0);
     f.ok(&["check", "M2", "--passed", "--evidence", "dogfood day"]);
+    let missing = f
+        .run(&f.owner(), &["check", "M1", "--evidence", "no verdict"])
+        .expect_err("a measure needs an explicit verdict");
+    assert_eq!(missing.code, codes::USAGE, "{missing}");
+    assert!(f
+        .run(
+            &f.owner(),
+            &["check", "M1", "--passed", "--failed", "--evidence", "both"]
+        )
+        .is_err());
     let goal = f.json(&["goal", "--json"]);
     assert_eq!(goal["measures"][1]["result"]["passed"], true);
     // Dispatch is the owner's switch and undo returns the previous state.
@@ -265,6 +306,70 @@ fn a_lead_plans_but_does_not_set_capacity_the_goal_or_dispatch() {
     // The lead's own planning text still edits.
     f.run(&lead, &["edit", "K1", "--title", "Lead card, revised"])
         .unwrap();
+}
+
+#[test]
+fn the_owner_half_is_a_typed_yes_at_a_terminal_not_a_missing_marker() {
+    let f = Fixture::new();
+    // An environment without any lead/worker marker but also without a terminal — what a model's
+    // bash looks like once the markers are scrubbed — is not the owner and changes nothing.
+    let scrubbed = Env::from_pairs(&[]);
+    let refused = f
+        .run_with(
+            &scrubbed,
+            &["add", "--title", "sneak", "--done-when", "x"],
+            "yes\n",
+            false,
+        )
+        .expect_err("no terminal, no owner write");
+    assert_eq!(refused.code, codes::DENIED, "{refused}");
+    assert!(f.ok(&["list", "--json"]) == "[]\n", "nothing was added");
+    // A terminal that answers anything but yes cancels, and still changes nothing.
+    let (code, out, err) = f
+        .run_with(
+            &scrubbed,
+            &["add", "--title", "sneak", "--done-when", "x"],
+            "no\n",
+            true,
+        )
+        .expect("a cancellation is not an error");
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("Cancelled"), "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(f.ok(&["list", "--json"]) == "[]\n", "nothing was added");
+    // The owner's own yes applies it, and the question names the verb on standard error so a
+    // `--json` answer on standard output stays the board.
+    let (code, out, err) = f
+        .run_with(
+            &scrubbed,
+            &["add", "--title", "real", "--done-when", "x", "--json"],
+            "yes\n",
+            true,
+        )
+        .expect("an owner yes applies the card");
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("Apply \"add\""), "{err}");
+    assert_eq!(serde_json::from_str::<Value>(&out).unwrap()["id"], 1, "{out}");
+    // A worker and a lead need no terminal: their markers only narrow the store's own rules.
+    let worker = f.worker(Some("K1"));
+    assert_eq!(
+        f.run_with(&worker, &["note", "K1", "--text", "mine"], "", false)
+            .unwrap()
+            .0,
+        0
+    );
+    let lead = f.lead();
+    assert_eq!(
+        f.run_with(
+            &lead,
+            &["add", "--title", "planned", "--done-when", "y"],
+            "",
+            false
+        )
+        .unwrap()
+        .0,
+        0
+    );
 }
 
 #[test]

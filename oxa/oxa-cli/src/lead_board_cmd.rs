@@ -1,8 +1,11 @@
 //! `oxa lead board`: the lead kanban from a terminal. Every verb is one typed
 //! `oxa_work::kanban::Op` applied by the store, so the terminal and the web board are two front
-//! ends over the same operations. The actor is taken from the environment, never from the words
-//! or from JSON: a person's terminal is the owner, a lead session is the lead, and a worker
-//! (`OXA_WORKER_DEPTH` with `OXA_BOARD_ITEM`) may only note or stick its own card.
+//! ends over the same operations. The actor is never read from the words or from JSON. A lead
+//! session's markers (`OXA_CODING_AGENT`, `AI_AGENT`, `OXA_SUBAGENT_DEPTH`) and a worker's
+//! (`OXA_WORKER_DEPTH` with `OXA_BOARD_ITEM`) only ever narrow what oxa already granted them; the
+//! owner half is not a marker at all: an owner write needs the owner's own typed `yes` on a
+//! terminal. A process that lost every marker in a model's bash therefore cannot become the
+//! owner, and the store still refuses the lead and worker rows.
 //!
 //! Nothing here starts a worker, samples GitHub or reads a setting. `--json` prints the board,
 //! an item, a lane or the applied operation and its sequence number.
@@ -15,12 +18,23 @@ use oxa_work::kanban::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The dispatcher marks the card it handed to a worker with this item id.
 pub(crate) const ENV_BOARD_ITEM: &str = "OXA_BOARD_ITEM";
+
+/// The process streams `oxa lead board` uses, injectable for tests. An owner write asks for the
+/// owner's typed `yes` on the terminal's own input, and the question goes to standard error so a
+/// `--json` answer on standard output stays exactly the board. A pipe, a closed stdin or any
+/// other answer changes nothing.
+pub struct BoardIo<'a> {
+    pub stdin: &'a mut dyn Read,
+    pub stdin_is_tty: bool,
+    pub out: &'a mut dyn Write,
+    pub err: &'a mut dyn Write,
+}
 
 /// A bounded JSON input: the planning chunk or the split children.
 const MAX_JSON_INPUT: usize = 256 * 1024;
@@ -66,12 +80,12 @@ pub fn run_lead_board(
     dirs: &Dirs,
     cwd: &Path,
     env: &Env,
-    out: &mut dyn Write,
+    io: BoardIo<'_>,
 ) -> Result<i32, OxaError> {
     let (verb, args) = Args::parse(words)?;
     let repo = repo(cwd, &args)?;
     let store = open(dirs, &repo)?;
-    run_verb(&verb, &args, &repo, &store, env, out)
+    run_verb(&verb, &args, &repo, &store, env, io)
 }
 
 fn run_verb(
@@ -80,31 +94,61 @@ fn run_verb(
     repo: &str,
     store: &Store,
     env: &Env,
-    out: &mut dyn Write,
+    io: BoardIo<'_>,
 ) -> Result<i32, OxaError> {
+    let BoardIo {
+        stdin,
+        stdin_is_tty,
+        out,
+        err,
+    } = io;
+    if !VERBS.contains(&verb) {
+        return Err(usage(&format!(
+            "unknown board verb {verb:?}; the verbs are listed by `oxa help lead board`"
+        )));
+    }
+    // The actor is resolved once, before the verb reads or writes: an owner whose answer is not
+    // given here changes nothing, and a worker without its card never reaches the store.
+    let read_only = is_read(verb, args);
+    let actor = if read_only {
+        None
+    } else {
+        Some(match owner_actor(verb, stdin, stdin_is_tty, env, err)? {
+            Confirmed::Actor(actor) => actor,
+            Confirmed::Cancelled => {
+                err.write_all(b"Cancelled. Nothing was applied.\n")
+                    .map_err(|e| OxaError::io("write board output", &e))?;
+                return Ok(1);
+            }
+        })
+    };
     match verb {
         "board" => read_board(args, store, out),
         "list" => list(args, store, out),
         "show" => show(args, store, out),
-        "add" => add(args, store, env, out),
-        "edit" => edit(args, store, env, out),
-        "move" | "reorder" => move_card(verb, args, store, env, out),
-        "split" => split(args, store, env, out),
-        "stuck" => stuck(args, store, env, out),
-        "unstick" => unstick(args, store, env, out),
-        "note" => note(args, store, env, out),
-        "rm" | "remove" => remove(args, store, env, out),
-        "undo" => undo(args, store, env, out),
-        "link" => link(args, store, env, out),
-        "capacity" => capacity(args, store, env, out),
-        "goal" => goal(args, store, env, out),
-        "check" => check(args, store, env, out),
-        "dispatch" => dispatch(args, store, env, out),
-        other => Err(usage(&format!(
-            "unknown board verb {other:?}; the verbs are listed by `oxa help lead board`"
-        ))),
+        "add" => add(args, store, actor_of(verb, &actor), out),
+        "edit" => edit(args, store, actor_of(verb, &actor), out),
+        "move" | "reorder" => move_card(verb, args, store, actor_of(verb, &actor), out),
+        "split" => split(args, store, actor_of(verb, &actor), out),
+        "stuck" => stuck(args, store, actor_of(verb, &actor), out),
+        "unstick" => unstick(args, store, actor_of(verb, &actor), out),
+        "note" => note(args, store, actor_of(verb, &actor), out),
+        "rm" | "remove" => remove(args, store, actor_of(verb, &actor), out),
+        "undo" => undo(args, store, actor_of(verb, &actor), out),
+        "link" => link(args, store, actor_of(verb, &actor), out),
+        "capacity" => capacity(args, store, actor.as_ref(), out),
+        "goal" => goal(args, store, actor.as_ref(), out),
+        "check" => check(args, store, actor_of(verb, &actor), out),
+        "dispatch" => dispatch(args, store, actor.as_ref(), out),
+        _ => unreachable!("every known verb is handled above"),
     }
     .map_err(|e| e.with_context(repo))
+}
+
+fn actor_of<'a>(verb: &str, actor: &'a Option<Actor>) -> &'a Actor {
+    actor
+        .as_ref()
+        .unwrap_or_else(|| unreachable!("{verb} is a write and resolved its actor"))
 }
 
 // --- read verbs -------------------------------------------------------------------------
@@ -281,8 +325,7 @@ fn item_text(item: &Item) -> String {
 
 // --- write verbs ------------------------------------------------------------------------
 
-fn add(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
-    let actor = actor(env)?;
+fn add(args: &Args, store: &Store, actor: &Actor, out: &mut dyn Write) -> Result<i32, OxaError> {
     if let Some(source) = args.one("--from-json") {
         let cards: Vec<NewCard> = parse_json(&read_json_input(source)?)?;
         let before = store.read().map_err(refused)?;
@@ -306,12 +349,12 @@ fn add(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32
         column: None,
     };
     let before = store.read().map_err(refused)?;
-    let result = store.apply(actor, card.into_op(args)?).map_err(refused)?;
+    let result = store.apply(actor.clone(), card.into_op(args)?).map_err(refused)?;
     let id = added_id(&before, store);
     report_one(out, args, result.seq, id)
 }
 
-fn edit(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn edit(args: &Args, store: &Store, actor: &Actor, out: &mut dyn Write) -> Result<i32, OxaError> {
     let id = args.id(0)?;
     let before = store.read().map_err(refused)?;
     let item = before
@@ -343,10 +386,9 @@ fn edit(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i3
                 .transpose()?
         },
     };
-    let actor = actor(env)?;
     let result = store
         .apply(
-            actor,
+            actor.clone(),
             Op::Edit {
                 id,
                 rev: revision,
@@ -363,7 +405,7 @@ fn move_card(
     verb: &str,
     args: &Args,
     store: &Store,
-    env: &Env,
+    actor: &Actor,
     out: &mut dyn Write,
 ) -> Result<i32, OxaError> {
     let id = args.id(0)?;
@@ -394,26 +436,24 @@ fn move_card(
             before: target,
         }
     };
-    let actor = actor(env)?;
-    let result = store.apply(actor, op).map_err(refused)?;
+    let result = store.apply(actor.clone(), op).map_err(refused)?;
     report_one(out, args, result.seq, Some(id))
 }
 
-fn split(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn split(args: &Args, store: &Store, actor: &Actor, out: &mut dyn Write) -> Result<i32, OxaError> {
     let id = args.id(0)?;
     let before = store.read().map_err(refused)?;
     let item = before
         .item(id)
         .ok_or_else(|| invalid(format!("kanban item K{id} not found")))?;
     let revision = item.rev;
-    let source = args
-        .one("--from-json")
-        .ok_or_else(|| usage("split needs --from-json <path|-> with the child cards"))?;
+    let source = args.one("--from-json").ok_or_else(|| {
+        usage("split needs --from-json <path|->: a bare array of children, each {\"title\", \"done_when\"}")
+    })?;
     let children: Vec<NewChild> = parse_json(&read_json_input(source)?)?;
-    let actor = actor(env)?;
     let result = store
         .apply(
-            actor,
+            actor.clone(),
             Op::Split {
                 id,
                 rev: revision,
@@ -424,68 +464,66 @@ fn split(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i
     report_one(out, args, result.seq, None)
 }
 
-fn stuck(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn stuck(args: &Args, store: &Store, actor: &Actor, out: &mut dyn Write) -> Result<i32, OxaError> {
     let id = args.id(0)?;
     let cause = match args.one("--cause") {
         Some(spec) => parse_cause(spec)?,
         None => Cause::Manual,
     };
     let detail = args.one("--detail").unwrap_or_default().to_owned();
-    let actor = actor(env)?;
     let result = store
-        .apply(actor, Op::SetStuck { id, cause, detail })
+        .apply(actor.clone(), Op::SetStuck { id, cause, detail })
         .map_err(refused)?;
     report_one(out, args, result.seq, Some(id))
 }
 
-fn unstick(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn unstick(args: &Args, store: &Store, actor: &Actor, out: &mut dyn Write) -> Result<i32, OxaError> {
     let id = args.id(0)?;
-    let actor = actor(env)?;
-    let result = store.apply(actor, Op::Unstick { id }).map_err(refused)?;
+    let result = store.apply(actor.clone(), Op::Unstick { id }).map_err(refused)?;
     report_one(out, args, result.seq, Some(id))
 }
 
-fn note(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn note(args: &Args, store: &Store, actor: &Actor, out: &mut dyn Write) -> Result<i32, OxaError> {
     let id = args.id(0)?;
     let text = args
         .one("--text")
         .ok_or_else(|| usage("note needs --text"))?
         .to_owned();
-    let actor = actor(env)?;
-    let result = store.apply(actor, Op::Note { id, text }).map_err(refused)?;
+    let result = store
+        .apply(actor.clone(), Op::Note { id, text })
+        .map_err(refused)?;
     report_one(out, args, result.seq, Some(id))
 }
 
-fn remove(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn remove(args: &Args, store: &Store, actor: &Actor, out: &mut dyn Write) -> Result<i32, OxaError> {
     let id = args.id(0)?;
-    let actor = actor(env)?;
-    let result = store.apply(actor, Op::Remove { id }).map_err(refused)?;
+    let result = store.apply(actor.clone(), Op::Remove { id }).map_err(refused)?;
     report_one(out, args, result.seq, Some(id))
 }
 
-fn undo(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn undo(args: &Args, store: &Store, actor: &Actor, out: &mut dyn Write) -> Result<i32, OxaError> {
     let board = store.read().map_err(refused)?;
     let seq = match args.one("--seq") {
         Some(value) => parse_number(value)?,
         None => board.revision,
     };
-    let actor = actor(env)?;
-    let result = store.apply(actor, Op::Undo { seq }).map_err(refused)?;
+    let result = store.apply(actor.clone(), Op::Undo { seq }).map_err(refused)?;
     report_one(out, args, result.seq, None)
 }
 
-fn link(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn link(args: &Args, store: &Store, actor: &Actor, out: &mut dyn Write) -> Result<i32, OxaError> {
     let id = args.id(0)?;
     let number = args
         .one("--pr")
         .ok_or_else(|| usage("link needs --pr N"))
         .and_then(parse_number)?;
-    let actor = actor(env)?;
-    let result = store.apply(actor, Op::LinkPr { id, number }).map_err(refused)?;
+    let result = store
+        .apply(actor.clone(), Op::LinkPr { id, number })
+        .map_err(refused)?;
     report_one(out, args, result.seq, Some(id))
 }
 
-fn capacity(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn capacity(args: &Args, store: &Store, actor: Option<&Actor>, out: &mut dyn Write) -> Result<i32, OxaError> {
     let board = store.read().map_err(refused)?;
     let (host, slots, paused) = if let Some(host) = args.one("--pause").or_else(|| args.one("--resume")) {
         let paused = args.one("--pause").is_some();
@@ -525,10 +563,10 @@ fn capacity(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Resul
             .collect();
         return emit(out, &format!("{}\n", line.join(" · ")));
     };
-    let actor = actor(env)?;
+    let actor = actor.expect("a capacity write resolved its actor");
     let result = store
         .apply(
-            actor,
+            actor.clone(),
             Op::SetCapacity {
                 host: host.clone(),
                 slots,
@@ -539,7 +577,7 @@ fn capacity(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Resul
     report_one(out, args, result.seq, None)
 }
 
-fn goal(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn goal(args: &Args, store: &Store, actor: Option<&Actor>, out: &mut dyn Write) -> Result<i32, OxaError> {
     let board = store.read().map_err(refused)?;
     let setting = args.flag("--clear")
         || args.one("--text").is_some()
@@ -584,8 +622,10 @@ fn goal(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i3
             met_at: None,
         })
     };
-    let actor = actor(env)?;
-    let result = store.apply(actor, Op::SetGoal { goal }).map_err(refused)?;
+    let actor = actor.expect("a goal write resolved its actor");
+    let result = store
+        .apply(actor.clone(), Op::SetGoal { goal })
+        .map_err(refused)?;
     report_one(out, args, result.seq, None)
 }
 
@@ -605,7 +645,7 @@ fn goal_text(goal: &Goal) -> String {
     text
 }
 
-fn check(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn check(args: &Args, store: &Store, actor: &Actor, out: &mut dyn Write) -> Result<i32, OxaError> {
     let id = args
         .positional(0)
         .ok_or_else(|| usage("check needs a measure id"))?
@@ -614,11 +654,15 @@ fn check(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i
         .one("--evidence")
         .ok_or_else(|| usage("check needs --evidence"))?
         .to_owned();
-    let passed = !args.flag("--failed");
-    let actor = actor(env)?;
+    // A manual measure is a person's verdict; it is recorded only when the verdict is explicit.
+    let passed = match (args.flag("--passed"), args.flag("--failed")) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => return Err(usage("check needs exactly one of --passed or --failed")),
+    };
     let result = store
         .apply(
-            actor,
+            actor.clone(),
             Op::CheckMeasure {
                 id,
                 result: MeasureResult {
@@ -632,7 +676,7 @@ fn check(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i
     report_one(out, args, result.seq, None)
 }
 
-fn dispatch(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
+fn dispatch(args: &Args, store: &Store, actor: Option<&Actor>, out: &mut dyn Write) -> Result<i32, OxaError> {
     let state = match args.positional(0) {
         Some("start") => Dispatch::Running,
         Some("pause") => Dispatch::Paused,
@@ -646,30 +690,107 @@ fn dispatch(args: &Args, store: &Store, env: &Env, out: &mut dyn Write) -> Resul
             };
         }
     };
-    let actor = actor(env)?;
-    let result = store.apply(actor, Op::SetDispatch { state }).map_err(refused)?;
+    let actor = actor.expect("a dispatch write resolved its actor");
+    let result = store
+        .apply(actor.clone(), Op::SetDispatch { state })
+        .map_err(refused)?;
     report_one(out, args, result.seq, None)
 }
 
 // --- actor, repository and store --------------------------------------------------------
 
-/// The actor the trusted front end supplies: a worker with its own card, a lead session, or
-/// the owner at a terminal. It is never read from the words or from JSON.
-fn actor(env: &Env) -> Result<Actor, OxaError> {
+enum Confirmed {
+    Actor(Actor),
+    /// The owner was asked and did not answer `yes`; nothing is applied.
+    Cancelled,
+}
+
+/// Who writes, without ever turning a marker's absence into the owner's authority:
+///
+/// * a worker (`OXA_WORKER_DEPTH` set) is its own card and must carry `OXA_BOARD_ITEM`;
+/// * a lead session's `OXA_CODING_AGENT`/`AI_AGENT`/`OXA_SUBAGENT_DEPTH` gives [`Actor::Lead`],
+///   which the store limits to its row;
+/// * otherwise this can only be the owner, and the owner's authority is the owner's own typed
+///   `yes` on a terminal, as `oxa wipe --all` asks. A process whose markers were scrubbed inside a
+///   model's bash has no terminal, so it changes nothing; an `env OXA_CODING_AGENT=1` process is
+///   only ever the lead, never more.
+///
+/// The words and the JSON are never an input here.
+fn owner_actor(
+    verb: &str,
+    stdin: &mut dyn Read,
+    stdin_is_tty: bool,
+    env: &Env,
+    err: &mut dyn Write,
+) -> Result<Confirmed, OxaError> {
     if env.get(crate::run_kind::ENV_WORKER_DEPTH).is_some() {
-        return match env.get(ENV_BOARD_ITEM) {
-            Some(value) => Ok(Actor::Worker(parse_id(value)?)),
-            None => Err(OxaError::new(
-                codes::DENIED,
-                "a worker may only note or stick the card the dispatcher gave it (OXA_BOARD_ITEM)",
-            )),
-        };
+        return env
+            .get(ENV_BOARD_ITEM)
+            .ok_or_else(|| {
+                OxaError::new(
+                    codes::DENIED,
+                    "a worker may only note or stick the card the dispatcher gave it (OXA_BOARD_ITEM)",
+                )
+            })
+            .and_then(|value| Ok(Confirmed::Actor(Actor::Worker(parse_id(value)?))));
     }
-    Ok(if crate::dispatch::is_agent(env) {
-        Actor::Lead
+    if crate::dispatch::is_agent(env) {
+        return Ok(Confirmed::Actor(Actor::Lead));
+    }
+    if !stdin_is_tty {
+        return Err(OxaError::new(
+            codes::DENIED,
+            "an owner board write needs your own typed yes in a terminal; nothing was applied",
+        )
+        .with_hint(
+            "Run the command in your terminal, or let the lead session make a lead change with `oxa lead board` from inside oxa",
+        ));
+    }
+    owner_says_yes(verb, stdin, err)
+}
+
+/// Ask the owner on the terminal and read the answer; only the word `yes` applies a change.
+fn owner_says_yes(verb: &str, stdin: &mut dyn Read, err: &mut dyn Write) -> Result<Confirmed, OxaError> {
+    write!(
+        err,
+        "Apply \"{verb}\" to the lead board as the owner? Type yes to continue: "
+    )
+    .map_err(|e| OxaError::io("write the owner question", &e))?;
+    err.flush()
+        .map_err(|e| OxaError::io("write the owner question", &e))?;
+    let mut line = String::new();
+    std::io::BufReader::new(stdin)
+        .read_line(&mut line)
+        .map_err(|e| OxaError::io("read the owner's answer", &e))?;
+    Ok(if line.trim().eq_ignore_ascii_case("yes") {
+        Confirmed::Actor(Actor::Owner)
     } else {
-        Actor::Owner
+        Confirmed::Cancelled
     })
+}
+
+/// Every verb of `oxa lead board`.
+const VERBS: &[&str] = &[
+    "board", "list", "show", "add", "edit", "move", "reorder", "split", "stuck", "unstick", "note", "rm",
+    "remove", "undo", "link", "capacity", "goal", "check", "dispatch",
+];
+
+/// A verb that only reads the board: it needs no actor and never asks.
+fn is_read(verb: &str, args: &Args) -> bool {
+    match verb {
+        "board" | "list" | "show" => true,
+        "goal" => {
+            !args.flag("--clear")
+                && args.one("--text").is_none()
+                && args.one("--target").is_none()
+                && args.many("--measure").is_empty()
+        }
+        "capacity" => {
+            args.one("--pause").is_none() && args.one("--resume").is_none() && args.positional(0).is_none()
+        }
+        "dispatch" => args.positional(0).is_none(),
+        _ => false,
+    }
 }
 
 fn repo(cwd: &Path, args: &Args) -> Result<String, OxaError> {
