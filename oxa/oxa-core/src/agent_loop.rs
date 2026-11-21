@@ -304,7 +304,14 @@ fn run_inner(
             // persisted conversation. Repeat it for tool/continuation requests too.
             // #2295: a verified-artifact line is the task of ONE request: it is taken here
             // and sent again by no request.
-            extra: turn_extra(st, &mut artifacts, &schema_repaired),
+            extra: {
+                eprintln!(
+                    "DEBUG-EXTRA has={} sha={:?}",
+                    artifacts.is_some(),
+                    st.prefix.sha256[0]
+                );
+                turn_extra(st, &mut artifacts, &schema_repaired)
+            },
             events: true,
             idem_key: String::new(),
         };

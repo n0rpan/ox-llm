@@ -1602,7 +1602,8 @@ mod tests {
             .verified_artifacts(&work)
             .expect("a verified result is named");
         assert!(line.starts_with("Not re-derived:"), "{line}");
-        assert!(line.contains("decode.json, out."), "{line}");
+        // The folder keeps the trailing slash the call named.
+        assert!(line.contains("decode.json, out/."), "{line}");
         assert!(
             line.contains("change only what differs instead of rebuilding"),
             "{line}"
