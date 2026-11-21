@@ -759,8 +759,10 @@ fn call(id: &str, name: &str, args: serde_json::Value) -> oxa_proto::ToolCall {
 #[test]
 fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
     let env = TestEnv::new();
-    // A build check that passes in this folder: `make all` is a recognised check.
-    env.write("work/Makefile", "all:\n\t@true\n");
+    // A recognised build check that passes here without any toolchain: a local `make` whose
+    // exit status is the check's (executed_check reads the program's name, not its path).
+    let make = env.write("work/make", "#!/bin/sh\nexit 0\n");
+    std::fs::set_permissions(&make, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let (rec, engine) = run(
         &env,
         // The check passes on this turn's write and fails as the end-of-run done check.
@@ -771,7 +773,7 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
                 call("w", "write", json!({"path": "answer.json", "content": "decoded"})),
                 call("b", "bash", json!({"command": "false"})),
                 // A build run that succeeds is the check (a bare `true` is not one).
-                call("c", "bash", json!({"command": "make all"})),
+                call("c", "bash", json!({"command": "./make all"})),
             ]),
             ScriptTurn::text("done"),
         ],

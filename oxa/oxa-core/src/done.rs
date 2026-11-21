@@ -560,19 +560,10 @@ impl DoneState {
     /// ran the check also failed a command after writing the file; older writes are the parts a
     /// check or a formatter may already have rewritten, so they are not claimed here.
     pub(crate) fn verified_artifacts(&self, cwd: &Path) -> Option<String> {
-        let line = if !self.failed_command || !self.proof.checked() {
-            None
-        } else {
-            artifact_line(cwd, &self.written)
-        };
-        eprintln!(
-            "DEBUG-VA failed={} checked={} written={:?} line={:?}",
-            self.failed_command,
-            self.proof.checked(),
-            self.written,
-            line.is_some()
-        );
-        line
+        if !self.failed_command || !self.proof.checked() {
+            return None;
+        }
+        artifact_line(cwd, &self.written)
     }
 
     /// Start of a run: remember the tree, so a later `bash` change can be told apart.
