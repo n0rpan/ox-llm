@@ -872,6 +872,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
             writeln!(out, "{warning}").map_err(|_| invalid("cannot report lead startup"))?;
         }
     }
+    // Published before the start line: the owner's tools act on that line.
     if local {
         publish_client_token(&dirs.agent_dir, &client_token)
             .map_err(|_| invalid("cannot write the lead client token"))?;

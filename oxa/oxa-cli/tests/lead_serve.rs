@@ -29,21 +29,22 @@ thread_local! {
     static AGENT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 /// The bearer header of the local client token the running lead wrote for its owner.
-/// The start line is printed before the file is published, so wait briefly for it.
+/// A test that starts the service directly names its agent dir; otherwise the child's
+/// `HOME` says where the token was published.
 fn bearer() -> String {
-    AGENT.with(|agent| {
-        let dir = agent
-            .borrow()
-            .clone()
-            .expect("the lead start recorded its agent dir");
-        for _ in 0..200 {
-            if let Ok(token) = std::fs::read_to_string(dir.join("lead-client-token")) {
-                return format!("Authorization: Bearer {}\r\n", token.trim());
-            }
-            std::thread::sleep(Duration::from_millis(25));
+    let dir = AGENT.with(|agent| agent.borrow().clone()).unwrap_or_else(|| {
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default()
+            .join(".oxa/agent")
+    });
+    for _ in 0..200 {
+        if let Ok(token) = std::fs::read_to_string(dir.join("lead-client-token")) {
+            return format!("Authorization: Bearer {}\r\n", token.trim());
         }
-        panic!("the running lead published no client token");
-    })
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("the running lead published no client token")
 }
 fn get(port: u16, path: &str, authority: &str, extra: &str) -> String {
     get_raw(port, path, authority, &format!("{}{extra}", bearer()))
@@ -158,6 +159,7 @@ fn with_fixed_chat(run: impl FnOnce(u16, &str, &std::path::Path)) {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
     drop(reservation);
+    // `start_with_situation` names the agent dir the token went to.
     let _server = start_with_situation(&test, &board, Some(&situation));
     let authority = format!("127.0.0.1:{port}");
     run(port, &authority, &test.root().join("lead.stderr"));
