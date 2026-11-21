@@ -304,6 +304,7 @@ commands! {
             slash: Availability::Exception("The slash menu has no board command"),
             menu: Availability::Exception("The menu has no board command"),
             web: Availability::Exception("Use the Board page in the lead web"),
+            desk: Availability::Exception("The desktop app has no board pane yet"),
         },
         requirements: NO_REQUIREMENTS,
     },
