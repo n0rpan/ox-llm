@@ -429,6 +429,7 @@ impl NetSandbox {
         if view.is_empty() && statics.is_empty() && controls.is_some_and(|c| c.gh_source.is_none()) {
             return run(live);
         }
+        // The env-carried host secrets are part of the first mask, not only of a later refresh.
         let mut all: Vec<Vec<u8>> = view
             .iter()
             .chain(statics.iter())
@@ -436,7 +437,7 @@ impl NetSandbox {
             .map(|t| t.as_bytes().to_vec())
             .collect();
         all.sort_by_key(|t| std::cmp::Reverse(t.len()));
-        let mut sr = StreamRedactor::from_bytes(&view);
+        let mut sr = StreamRedactor::from_bytes(&all);
         let mut r = run(&mut |b: &[u8]| {
             // A session copy may register a token (or a refresh) while this command runs.
             let next = Self::host_secret_views(controls, env).0;

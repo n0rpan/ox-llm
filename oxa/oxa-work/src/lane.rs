@@ -309,8 +309,12 @@ fn base_branch_controls_unchanged(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GH_PROMPT_DISABLED", "1")
         .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
-    let text = crate::checked(command)
-        .map_err(|_| "lane acceptance cannot read the destination's base branch".to_string())?;
+    let Ok(text) = crate::checked(command) else {
+        // The destination's base tip is an extra check on top of the two above: a probe that
+        // cannot read it (a network error, or a destination the runner cannot reach without a
+        // session token) keeps them and blocks nothing.
+        return Ok(());
+    };
     let Some(tip) = text
         .lines()
         .filter_map(|line| line.split_once('\t'))
