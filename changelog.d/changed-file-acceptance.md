@@ -1,0 +1,1 @@
+- `oxa -p --allowed-changed-files <list>` records the tool-observed changed files and any extra files outside the supplied set in the run result, as acceptance evidence (never a refusal).

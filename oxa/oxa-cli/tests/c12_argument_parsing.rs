@@ -608,6 +608,12 @@ fn usage_text_lists_flags_and_extension_flags() {
     assert!(!usage_text(&[]).contains("Extension CLI Flags"));
 }
 
+/// The CLI command table and the registry both know `cache`; help prints it once.
+#[test]
+fn usage_text_lists_cache_once() {
+    assert_eq!(usage_text(&[]).matches("oxa cache").count(), 1);
+}
+
 /// Extra: a plain prompt keeps word order, and no words give the default Args.
 #[test]
 fn prompts_keep_order_and_default_is_empty() {
