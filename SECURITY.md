@@ -136,6 +136,8 @@ Each loopback listener that can start a model request or spend cloud budget need
 - **In-process guards in every mode:** secret masking, private-path denials, user-only settings, offline mode.
 - **Sandbox scratch usage:** Measure through no-follow directory handles with entry, time and open-directory budgets. Stop sampling on command cancellation. A partial estimate can warn but never block a command.
 - **Settings fail safe:** a user settings file that exists but cannot be read or parsed keeps offline on, bash network off, remote engines off and new projects untrusted, and warns the owner. Only a missing file or a valid file changes this.
+  Content re-approval also stays on when the user settings file cannot be read or parsed.
+- **Project resource loading:** After the usual trust decision, folder policy loads changed gated resources and names their paths without printing their contents. The owner alone can select `projectTrustPolicy: "content"` for strict executable-content re-approval. A notice is not a content approval; neither policy widens managed-worktree inheritance, safe-path checks or user-only settings. Unattended project checks that cannot run for lack of trust report the saved owner approval route; invoking an unattended check does not itself grant trust.
 - **Re-adding an OS sandbox to interactive or yolo paths** is a regression, not a hardening.
 
 ## Owner decisions (not findings)

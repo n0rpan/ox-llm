@@ -18,8 +18,8 @@ pub(crate) fn run(
 ) -> Result<i32, String> {
     let request: SupervisorRequest = serde_json::from_str(request).map_err(|e| e.to_string())?;
     let source = request.source.canonicalize().map_err(|e| e.to_string())?;
-    if !crate::work_cmd::trusted(&source, env, dirs)? {
-        return Err("supervisor source project is not trusted".into());
+    if !crate::work_cmd::trusted(&source, env, dirs, err)? {
+        return Err(crate::work_cmd::needs_trust(&source, "the check supervisor"));
     }
     let root = cwd.canonicalize().map_err(|e| e.to_string())?;
     let committed = matches!(&request.operation, SupervisorOperation::CommittedChecks { .. });

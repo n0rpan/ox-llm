@@ -1,23 +1,11 @@
-//! B4 (wave H lane `harden`): project files that run outside the sandbox load only as the user
-//! approved them.
-//!
-//! A trusted project's executable files (`oxa_perm::approval_files`: project settings' hooks
-//! and commands, `mcp.json`, extensions, skills, prompt templates, `SYSTEM.md`) are compared
-//! with the content hashes recorded in `trust.json` when the user approved them. A new or
-//! changed file needs a fresh explicit approval: interactive, the trust question again, listing
-//! each file and what it would run; print / JSON / RPC, the project's resources are skipped
-//! with one notice naming the files and the way to approve. An extension's `project_trust`
-//! answer and a saved decision accept only content that matches the record (the first record
-//! of a project is taken when nothing was recorded yet); `--approve` (this run) and
-//! `defaultProjectTrust: "always"` are the user's own blanket answers and load as they are.
-//! pi trusts a directory, not its content: oxa is stricter here because the model can write
-//! these files and has the network.
-use oxa_config::{Dirs, Env, Keymap};
+//! Project trust policy after a positive trust decision. Folder trust reports changes;
+//! content trust keeps the existing explicit re-approval path.
+use oxa_config::{Dirs, Env, Keymap, Settings};
 use oxa_interactive::{ask_trust_interactive, TrustChoice};
 use oxa_perm::{Approval, TrustStore};
 use oxa_proto::{Level, OxaError};
 
-use std::path::Path;
+use std::{io::Write, path::Path};
 
 pub(crate) struct Check<'a> {
     pub env: &'a Env,
@@ -30,6 +18,7 @@ pub(crate) struct Check<'a> {
     pub via_default: bool,
     /// The user answered the trust question in this start.
     pub asked_now: bool,
+    pub content: bool,
     pub interactive: bool,
     pub notices: &'a mut Vec<(Level, String)>,
 }
@@ -46,7 +35,18 @@ pub(crate) fn not_loaded_text(cwd: &Path, lines: &[String]) -> String {
 /// Whether the trusted project's resources load. Records the approval where the user gave it.
 pub(crate) fn check(c: Check<'_>) -> Result<bool, OxaError> {
     let file = c.dirs.trust_file();
-    if c.via_default {
+    if !c.content {
+        if let Some(text) = c.store.folder_changes_notice(c.cwd) {
+            c.notices.push((Level::Warning, text));
+        }
+        if c.via_flag || c.asked_now {
+            c.store.approve(&file, c.cwd)?;
+        } else {
+            c.store.record_baseline(&file, c.cwd)?;
+        }
+        return Ok(true);
+    }
+    if c.via_default && !c.via_flag {
         return Ok(true);
     }
     if c.via_flag || c.asked_now {
@@ -89,4 +89,34 @@ pub(crate) fn check(c: Check<'_>) -> Result<bool, OxaError> {
             }
         }
     }
+}
+
+/// Subcommands that have always required a saved decision (no prompt or extension hook).
+pub(crate) fn saved_project_resources(
+    dirs: &Dirs,
+    cwd: &Path,
+    err: &mut dyn Write,
+) -> Result<bool, OxaError> {
+    let store = TrustStore::load(&dirs.trust_file());
+    if store.lookup(cwd) != Some(true) {
+        return Ok(false);
+    }
+    if Settings::load(dirs, cwd, false).project_trust_requires_content() {
+        if let Approval::Changed(changed) = store.approval(cwd) {
+            let paths: Vec<_> = changed.iter().map(|ch| ch.path_line()).collect();
+            writeln!(err, "{}", not_loaded_text(cwd, &paths))
+                .map_err(|e| OxaError::io("write output", &e))?;
+            return Ok(false);
+        }
+    } else if let Some(text) = store.folder_changes_notice(cwd) {
+        writeln!(err, "Warning: {text}").map_err(|e| OxaError::io("write output", &e))?;
+    }
+    Ok(true)
+}
+
+pub(crate) fn approval_fix(cwd: &Path) -> String {
+    format!(
+        "start oxa interactively in {} and approve the project (use /trust to change a saved decision)",
+        cwd.display()
+    )
 }

@@ -28,7 +28,7 @@ oxa loads extensions from these places, in order:
 4. the paths given with `-e` or `--extension` (repeatable), relative to the current directory. `-e builtin:<name>` loads a built-in extension.
 5. installed packages ([Packages](#packages)).
 
-`--no-extensions` (`-ne`) disables discovery and the built-in extensions; `-e` paths still load. A file loaded from the project is content-approved like the rest of the project ([security.md](security.md#project-trust)). `/reload` loads changes; a loaded extension that fails is reported and does not stop the others.
+`--no-extensions` (`-ne`) disables discovery and the built-in extensions; `-e` paths still load. A trusted project's changed extension loads with a notice under the default folder policy. With `projectTrustPolicy: "content"`, it needs fresh approval ([project trust](security.md#project-trust)). `/reload` loads changes; a loaded extension that fails is reported and does not stop the others.
 
 ## The API
 
