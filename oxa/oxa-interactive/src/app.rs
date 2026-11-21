@@ -311,6 +311,13 @@ struct StopInner {
     /// V020-OPTIMIZE #13: 1 + the generation of the last draft prefill that completed (0 =
     /// none): the UI sends a draft again whose prefill was skipped or cancelled.
     draft_done: AtomicU64,
+    /// The worker blocks between commands instead of ticking (see
+    /// [`WorkerStop::without_idle_tick`]). Fixed when the signal is created.
+    block_idle: bool,
+    /// The worker's wake sender, kept so [`WorkerStop::stop`] reaches a worker that blocks.
+    wake: Mutex<Option<Weak<Sender<SessionCmd>>>>,
+    /// How often the worker left its idle wait with no front-end command (a tick or a wake).
+    idle_wakes: AtomicU64,
 }
 
 impl WorkerStop {
@@ -318,10 +325,62 @@ impl WorkerStop {
         WorkerStop::default()
     }
 
-    /// Set the flag and stop the current session's run, retry wait and queues.
+    /// A stop signal that also tells the worker to block between commands with no periodic
+    /// wake: an idle session thread then costs nothing until a command, a host request, a
+    /// wrap-up or [`stop`] arrives. For front ends that keep many idle sessions (the desktop
+    /// app); the terminal keeps [`WorkerStop::new`] and its [`WORKER_IDLE_TICK`].
+    ///
+    /// What the tick did is done on a wake instead. The session's attention waker sends
+    /// [`SessionCmd::Wake`] for a host request and a wrap-up, [`stop`] sends one itself, and
+    /// the worker checks the host once before each wait, so a request posted before the waker
+    /// was installed is not lost. The worker blocks only while the front end's wake sender is
+    /// alive (the `wake` argument of [`worker_loop_with`]); without it the tick stays.
+    ///
+    /// One thing waits for the next command or wake: a changed local-memory status with no
+    /// event behind it (an idle unload of the local model) is announced then, not within a tick.
+    ///
+    /// [`stop`]: WorkerStop::stop
+    pub fn without_idle_tick() -> WorkerStop {
+        WorkerStop {
+            inner: Arc::new(StopInner {
+                block_idle: true,
+                ..StopInner::default()
+            }),
+        }
+    }
+
+    /// Whether the worker blocks between commands (see [`WorkerStop::without_idle_tick`]).
+    pub fn blocks_when_idle(&self) -> bool {
+        self.inner.block_idle
+    }
+
+    /// How often the worker left its idle wait with no front-end command: an idle tick that
+    /// ran out, or a [`SessionCmd::Wake`]. A worker that blocks keeps this at zero while
+    /// nothing happens.
+    pub fn idle_wakes(&self) -> u64 {
+        self.inner.idle_wakes.load(Ordering::SeqCst)
+    }
+
+    fn note_idle_wake(&self) {
+        self.inner.idle_wakes.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The worker started: keep its wake sender for [`WorkerStop::stop`].
+    fn bind_wake(&self, wake: &Weak<Sender<SessionCmd>>) {
+        *self.inner.wake.lock().unwrap_or_else(|p| p.into_inner()) = Some(wake.clone());
+    }
+
+    /// Set the flag and stop the current session's run, retry wait and queues. A worker that
+    /// blocks between commands is woken, so it sees the flag at once.
     pub fn stop(&self) {
         self.inner.stopped.store(true, Ordering::SeqCst);
         self.abort_current();
+        if self.inner.block_idle {
+            let wake = self.inner.wake.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if let Some(tx) = wake.and_then(|w| w.upgrade()) {
+                let _ = tx.send(SessionCmd::Wake);
+            }
+        }
     }
 
     pub fn is_stopped(&self) -> bool {
@@ -565,6 +624,9 @@ pub fn worker_loop(
 /// reaching the UI like a prompt's. `wake` is a sender on the same channel as `cmds`, used to
 /// weakly borrow the front-end sender for [`SessionCmd::Wake`] when a host request arrives (see
 /// [`install_wake`]): the tick is the deadline, not the only wake.
+///
+/// A `stop` made with [`WorkerStop::without_idle_tick`] removes the tick: the worker blocks on
+/// `cmds` until a command or a wake arrives.
 pub fn worker_loop_with(
     session: Session,
     reopen: ReopenFn,
@@ -593,6 +655,11 @@ fn worker_loop_inner(
     // One wake in flight is enough; the flag is shared with the waker of the session in force.
     let pending = Arc::new(AtomicBool::new(false));
     install_wake(&session.handle(), &wake, &pending);
+    stop.bind_wake(&wake);
+    // Without the tick (`WorkerStop::without_idle_tick`) the worker checks the host once before
+    // each wait: after it started and after every command. A request posted before the waker
+    // was installed, or left unserved by a command, is then not lost.
+    let mut host_due = true;
     let mut memory_status = session.inner().engine.local_memory_status(&session.state().model);
     let _ = out.send(WorkerMsg::Session(session_info(&session)));
     let mut session = Some(session);
@@ -678,7 +745,21 @@ fn worker_loop_inner(
                 if let Some(cmd) = backlog.pop_front() {
                     cmd
                 } else {
-                    match cmds.recv_timeout(WORKER_IDLE_TICK) {
+                    // Block only while the front end's wake sender is alive: without it
+                    // nothing could announce a host request, so the tick stays.
+                    let waited = if !stop.blocks_when_idle() || wake.strong_count() == 0 {
+                        let waited = cmds.recv_timeout(WORKER_IDLE_TICK);
+                        if matches!(waited, Err(mpsc::RecvTimeoutError::Timeout)) {
+                            stop.note_idle_wake();
+                        }
+                        waited
+                    } else if std::mem::take(&mut host_due) {
+                        // Not a wait: one pass through the idle work, then block.
+                        Err(mpsc::RecvTimeoutError::Timeout)
+                    } else {
+                        cmds.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                    };
+                    match waited {
                         Ok(cmd) => cmd,
                         Err(mpsc::RecvTimeoutError::Timeout) => {
                             if limit_exit_if_requested(session.as_ref(), &out) {
@@ -699,6 +780,7 @@ fn worker_loop_inner(
                 }
             }
         };
+        host_due = true;
         // A command taken in the same instant as the stop does not start.
         if stop.is_stopped() || limit_exit_if_requested(session.as_ref(), &out) {
             break;
@@ -723,6 +805,7 @@ fn worker_loop_inner(
             // flag is cleared first, so a wake arriving while the host is served is not lost.
             SessionCmd::Wake => {
                 pending.store(false, Ordering::SeqCst);
+                stop.note_idle_wake();
                 if let Some(s) = session.as_mut() {
                     idle_tick(s, &out, &mut ui_proxy, &mut last, &stop, &cmds, &mut backlog);
                 }

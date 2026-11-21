@@ -8,6 +8,7 @@ pub use lead_owner::{with_lead_owner, LeadOwnerBinding};
 use mode::headless_argument_error;
 pub use mode::{choose_mode, RunMode};
 
+use crate::frontend::{Frontend, Terminal};
 use crate::hooks::{build_hooks, HookInputs, HookSets};
 use crate::{parse_args, run_config, run_local, run_mcp, run_pkg, usage_text, Args, Subcommand};
 use oxa_config::{
@@ -16,10 +17,7 @@ use oxa_config::{
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_engine::HttpEngine;
 use oxa_export::{default_output_name, export_html, format_for, ExportFormat, ExportOpts, ExportTheme};
-use oxa_interactive::{
-    ask_trust_interactive, image_part, run as run_interactive, ClipImage, InteractiveOpts, Reopen, ReopenFn,
-    TrustChoice,
-};
+use oxa_interactive::{image_part, ClipImage, InteractiveOpts, Reopen, ReopenFn, TrustChoice};
 use oxa_perm::{
     gated_resources, resolve_trust, ApprovalDesk, DangerRules, DefaultTrust, ModePolicy, TrustInputs,
     TrustOutcome, TrustStore, UnattendedMode,
@@ -85,6 +83,18 @@ pub(crate) const USAGE_HINT: &str = "Run `oxa --help` for the list of options.";
 /// per the session flags -> the chosen mode. Piped stdin text is prepended to the first
 /// prompt; `@file` text is included as pi does and images become `Part::Image`.
 pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
+    run_with(argv, env, io, &mut Terminal { env })
+}
+
+/// [`run`] with the front end of the interactive mode given by the caller (Z05). Everything
+/// else is the same code: flags, trust, settings, hooks, MCP, limits, the session and its
+/// `InteractiveOpts`. Only the project trust question and the interactive loop go to
+/// `frontend`; the headless modes and the subcommands never call it. [`run`] is this function
+/// with the terminal.
+///
+/// The interactive mode is chosen as in [`run`]: a caller that is not a terminal sets
+/// `stdin_is_tty` and `stdout_is_tty` in `io` to get it.
+pub fn run_with(argv: &[String], env: &Env, io: Stdio, frontend: &mut dyn Frontend) -> i32 {
     let Stdio {
         mut stdin,
         mut stdout,
@@ -235,9 +245,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 Ok((args, prep, session, binding))
             })();
             return match result {
-                Ok((args, prep, session, binding)) => {
-                    run_tui(&args, env, &cwd, prep, &mut *stderr, Some((session, binding)))
-                }
+                Ok((args, prep, session, binding)) => run_tui(
+                    &args,
+                    env,
+                    &cwd,
+                    prep,
+                    &mut *stderr,
+                    Some((session, binding)),
+                    &mut *frontend,
+                ),
                 Err(error) => report(&mut *stderr, &error),
             };
         }
@@ -265,6 +281,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     }
                     CommandId::Usage => crate::usage_cmd::run(&words.0, &dirs, &cwd, &mut *stdout),
                     CommandId::Cache => crate::cache_cmd::run(&words.0, &dirs, &cwd, env, &mut *stdout),
+                    CommandId::PrThreads => crate::pr_threads_cmd::run(&words.0, &dirs, &cwd, &mut *stdout),
+                    CommandId::WorkerRun | CommandId::WorkerList => crate::workers::run_cmd::run(
+                        id,
+                        &words.0,
+                        &dirs,
+                        &cwd,
+                        env,
+                        &mut *stdin,
+                        &mut *stdout,
+                        &mut *stderr,
+                    ),
                     CommandId::Lead
                     | CommandId::LeadServe
                     | CommandId::LeadBoard
@@ -285,7 +312,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::MemoryRm
                     | CommandId::Models
                     | CommandId::Local
-                    | CommandId::LocalAdd => Err(OxaError::new(
+                    | CommandId::LocalAdd
+                    | CommandId::Desk => Err(OxaError::new(
                         codes::USAGE,
                         "registered command handler or arguments are unavailable",
                     )),
@@ -490,7 +518,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             let answer = answer.trim().to_lowercase();
             answer == "y" || answer == "yes"
         };
-        prepare(
+        prepare_with(
             &mut a,
             env,
             &dirs,
@@ -502,6 +530,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             &mut confirm,
             cloud_diagnostics.clone(),
             None,
+            &mut *frontend,
         )
     };
     let mut prep = match prepared {
@@ -549,7 +578,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     };
 
     match mode {
-        RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
+        RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None, &mut *frontend),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
             let replay = std::io::Cursor::new(rpc_early).chain(stdin);
@@ -671,6 +700,9 @@ fn open_named(
     }
     // S1: the owner confirm broker. No broker (a bind failure) means no confirmation is possible.
     let _ = session.enable_owner_confirm(built.yolo.clone());
+    if let Some(publisher) = &built.owner_publisher {
+        session.set_owner_publisher(publisher.clone());
+    }
     session.set_output_schema(built.output_schema.clone());
     if let Some(goal) = &built.goal {
         session.set_goal(Some(goal.clone()), &mut oxa_proto::VecSink::default())?;
@@ -689,6 +721,9 @@ fn open_interactive_session(base: &Built, deps: Deps, how: Open) -> Result<Sessi
     let mut session = Session::open(deps, how)?;
     // No broker (a bind failure) means no confirmation is possible, matching the initial open.
     let _ = session.enable_owner_confirm(base.yolo.clone());
+    if let Some(publisher) = &base.owner_publisher {
+        session.set_owner_publisher(publisher.clone());
+    }
     Ok(session)
 }
 
@@ -724,6 +759,9 @@ struct Built {
     /// #1552: an interactive session offers `report_publish`, whose approval dialog only a
     /// person's key press can answer; print, json and RPC runs keep the terminal confirmation.
     report_dialog: Option<Env>,
+    /// The parent's side of a report publication, installed in the session's owner confirm
+    /// broker so a tool child's `oxa report-issue submit` is posted by this process.
+    owner_publisher: Option<Arc<dyn oxa_core::owner_confirm::Publisher>>,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -964,8 +1002,7 @@ fn no_bwrap_sandbox(
     )
 }
 
-/// Settings, trust, resources, engine, sandbox and the open mode. Notices are printed by the
-/// caller once the session is open, so a failed start prints only its one error line.
+/// [`prepare_with`] with the terminal as the front end (the dedicated Lead session).
 fn prepare(
     a: &mut Args,
     env: &Env,
@@ -978,6 +1015,39 @@ fn prepare(
     confirm: &mut dyn FnMut(&str, &str) -> bool,
     cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
     owner_open: Option<(&oxa_session::SessionRef, Arc<dyn SessionStore>)>,
+) -> Result<Prep, OxaError> {
+    prepare_with(
+        a,
+        env,
+        dirs,
+        cwd,
+        mode,
+        home_workspace,
+        stdin_is_tty,
+        stdout_is_tty,
+        confirm,
+        cloud_diagnostics,
+        owner_open,
+        &mut Terminal { env },
+    )
+}
+
+/// Settings, trust, resources, engine, sandbox and the open mode. Notices are printed by the
+/// caller once the session is open, so a failed start prints only its one error line. The
+/// trust question goes to `frontend`.
+fn prepare_with(
+    a: &mut Args,
+    env: &Env,
+    dirs: &Dirs,
+    cwd: &Path,
+    mode: RunMode,
+    home_workspace: bool,
+    stdin_is_tty: bool,
+    stdout_is_tty: bool,
+    confirm: &mut dyn FnMut(&str, &str) -> bool,
+    cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
+    owner_open: Option<(&oxa_session::SessionRef, Arc<dyn SessionStore>)>,
+    frontend: &mut dyn Frontend,
 ) -> Result<Prep, OxaError> {
     let owner_chat = owner_open.is_some();
     if a.goal.is_some() && !goal_flag_accepted(mode) {
@@ -1057,7 +1127,7 @@ fn prepare(
         }
         trusted
     } else {
-        project_trusted(
+        project_trusted_with(
             a,
             env,
             dirs,
@@ -1065,6 +1135,7 @@ fn prepare(
             &gated,
             mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty,
             &mut notices,
+            frontend,
         )?
     };
     // Inherited trust covers verified resources. Project settings, MCP and
@@ -1522,6 +1593,15 @@ fn prepare(
             result_facts.with_changed_file_scope(cwd.to_path_buf(), a.allowed_changed_files.clone());
     }
     let result_facts = Arc::new(result_facts);
+    let ask_owner_present = mode != RunMode::Rpc || rpc_owner_present(mode, env);
+    // Do not offer the parent's GitHub authority to an RPC confirmation UI unless the host
+    // declared an owner. Yolo is already the owner's approval and never consults the UI.
+    let owner_publisher = (ask_owner_present || yolo.full()).then(|| {
+        let publisher: Arc<dyn oxa_core::owner_confirm::Publisher> = Arc::new(
+            crate::report_cmd::ReportPublisher::new(dirs, env, &user_settings, cwd),
+        );
+        publisher
+    });
     let built = Built {
         lead: a.lead,
         status,
@@ -1543,8 +1623,9 @@ fn prepare(
         mode: table_mode,
         supervised_child: child.nested(),
         fork_seed: child.fork.clone(),
-        ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
+        ask_owner_present,
         report_dialog: (mode == RunMode::Interactive).then(|| env.clone()),
+        owner_publisher,
         hook_sets,
         yolo,
         bash_sandbox,
@@ -1576,6 +1657,29 @@ pub(crate) fn project_trusted(
     gated: &[String],
     interactive: bool,
     notices: &mut Vec<(Level, String)>,
+) -> Result<bool, OxaError> {
+    project_trusted_with(
+        a,
+        env,
+        dirs,
+        cwd,
+        gated,
+        interactive,
+        notices,
+        &mut Terminal { env },
+    )
+}
+
+/// [`project_trusted`] with the front end that answers the trust question.
+fn project_trusted_with(
+    a: &Args,
+    env: &Env,
+    dirs: &Dirs,
+    cwd: &Path,
+    gated: &[String],
+    interactive: bool,
+    notices: &mut Vec<(Level, String)>,
+    frontend: &mut dyn Frontend,
 ) -> Result<bool, OxaError> {
     // Trust: the user's own settings decide the default; project settings load only when the
     // project is trusted.
@@ -1609,10 +1713,9 @@ pub(crate) fn project_trusted(
         TrustOutcome::Trusted => true,
         TrustOutcome::Untrusted => false,
         TrustOutcome::AskUser => {
-            // The trust dialog (D10) on the terminal, before the session exists. A dismissed
+            // The trust dialog (D10) of the front end, before the session exists. A dismissed
             // question leaves the project untrusted for this run and is asked again next time.
-            let (keymap, _) = Keymap::load(dirs);
-            let choice = ask_trust_interactive(env.pairs(), &keymap, &cwd.display().to_string(), gated)?;
+            let choice = frontend.ask_trust(&cwd.display().to_string(), gated)?;
             asked_now = true;
             let file = dirs.trust_file();
             match choice {
@@ -1644,7 +1747,7 @@ pub(crate) fn project_trusted(
     let via_default = extension.is_none() && saved.is_none() && default == DefaultTrust::Trust;
     let trusted = if trusted && (!gated.is_empty() || (content && via_default)) {
         crate::approval::check(crate::approval::Check {
-            env,
+            ask: &mut |cwd: &str, changed: &[String]| frontend.ask_trust(cwd, changed),
             dirs,
             cwd,
             store: &mut trust_store,
@@ -2237,8 +2340,9 @@ fn run_rpc(
     finish_outcome_facts(result, stderr, Some(&built.result_facts))
 }
 
-/// The interactive terminal: the first prompt and the further messages come from the command
-/// line; `reopen` builds the sessions of `/new`, `/resume`, fork, clone and import.
+/// The interactive mode: the first prompt and the further messages come from the command
+/// line; `reopen` builds the sessions of `/new`, `/resume`, fork, clone and import. The session
+/// and its options go to `frontend` (the terminal for `run`).
 fn run_tui(
     a: &Args,
     env: &Env,
@@ -2246,6 +2350,7 @@ fn run_tui(
     prep: Prep,
     stderr: &mut dyn Write,
     owner: Option<(Session, LeadOwnerBinding)>,
+    frontend: &mut dyn Frontend,
 ) -> i32 {
     let dirs = &prep.built.dirs.clone();
     let prompts = match build_prompts(a, dirs, cwd, None) {
@@ -2440,11 +2545,7 @@ fn run_tui(
         os_sandbox: crate::run_kind::os_sandbox_active(built.os_sandbox, oxa_proto::OS_SANDBOX),
     };
     let evidence = a.wire_evidence.then(|| session.arm_wire_evidence());
-    let result = if pinned {
-        oxa_interactive::run_pinned(session, opts, "oxa lead")
-    } else {
-        run_interactive(session, opts)
-    };
+    let result = frontend.interactive(session, opts, pinned.then_some("oxa lead"));
     if let Some(evidence) = evidence {
         if let Ok(report) = serde_json::to_string(&evidence.finish()) {
             let _ = writeln!(stderr, "Wire adjacency (oxa handoff only): {report}");
@@ -3410,6 +3511,7 @@ mod session_scratch_tests {
             fork_seed: None,
             ask_owner_present: true,
             report_dialog: None,
+            owner_publisher: None,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),
@@ -3499,6 +3601,7 @@ mod session_scratch_tests {
             fork_seed: None,
             ask_owner_present: true,
             report_dialog: None,
+            owner_publisher: None,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base,
@@ -3621,6 +3724,7 @@ mod session_scratch_tests {
                 approval_desk: None,
                 unattended: UnattendedMode::default(),
                 report_dialog: None,
+                owner_publisher: None,
             }
         };
         let policy = build().deps(None).policy;

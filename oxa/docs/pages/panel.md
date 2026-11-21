@@ -28,7 +28,7 @@ Fixture: `status.json`. `oxa status <session>` keeps its meaning (one session's 
 | `default_model` | The model used when none is named. |
 | `local.state` | `off`, `not_wired`, `ready`, `running` or `error`. `engine_binary` is `found` or `missing`. `running` lists `{model, sessions}` for engines that a live session proves. |
 | `cloud.state` | `off`, `ready`, `no_credentials` or `error`. `key_file` is `present`, `missing` or `unsafe_mode`; `chatgpt_login` is `present` or `missing`. Both come from `stat` only. |
-| `lead.state` | `off`, `idle`, `pursuing`, `awaiting_owner`, `paused`, `stalled` or `unknown`. `open_asks` is a count; ask text is never included. `serve.url` is the loopback address of the lead page. |
+| `lead.state` | `off`, `idle`, `pursuing`, `awaiting_owner`, `paused`, `stalled` or `unknown`. `open_asks` is a count; ask text is never included. `serve.url` is the loopback address of the lead page. `capacity` is the owner's user-only per-host worker capacity map (`{"<host>": <count>}`), or `null` when unset; display only. |
 | `sessions` | Session status files whose recorded process is alive. |
 | `workers` | Counts by state and up to the newest rows. A finished row carries `outcome`. |
 | `usage_state` | The worst pool state from `usage`, or `unknown`. |

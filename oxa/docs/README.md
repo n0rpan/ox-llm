@@ -34,6 +34,7 @@ User files live in `~/.oxa/agent/`. Project files live in `.oxa/` and load only 
 | [cli.md](pages/cli.md) | every flag, subcommand and environment variable |
 | [work.md](work.md) | `oxa work`: unattended tasks in git worktrees, workers and the work board |
 | [lead.md](lead.md) | `oxa lead`: the lead session that watches the board and the workers |
+| [kanban.md](kanban.md) | `oxa_work::kanban`: the owner-private board of planned work, typed ops and undo |
 | [lead-web.md](pages/lead-web.md) | default-off lead web access scaffold and future Tailscale setup |
 | [panel.md](pages/panel.md) | the ox AI panel: the JSON that `oxa` prints for it |
 | [settings.md](pages/settings.md) | every settings key, its type and default, and how files are merged |

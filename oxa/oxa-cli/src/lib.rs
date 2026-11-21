@@ -24,6 +24,7 @@ mod cache_cmd;
 mod child;
 mod config_cmd;
 mod dispatch;
+mod frontend;
 mod gh_probe;
 mod goal_cmd;
 mod help;
@@ -56,6 +57,7 @@ mod models_cmd;
 mod netguard;
 mod pkg_cmd;
 mod pr_activity;
+mod pr_threads_cmd;
 mod report_cmd;
 mod result_facts;
 mod run_kind;
@@ -83,7 +85,8 @@ pub use args::{
     NO_TOOL_ALIASES,
 };
 pub use config_cmd::run_config;
-pub use dispatch::{choose_mode, run, with_lead_owner, LeadOwnerBinding, RunMode, Stdio};
+pub use dispatch::{choose_mode, run, run_with, with_lead_owner, LeadOwnerBinding, RunMode, Stdio};
+pub use frontend::Frontend;
 pub use help::{requested, text};
 pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};
 pub use identity_cmd::{identity_facts, run_identity, write_identity};

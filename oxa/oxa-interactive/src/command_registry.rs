@@ -4,6 +4,10 @@
 //! migrated; this module does not claim that those commands already have surface parity.
 //! Resolving help never needs a repository, environment, trust store or runtime policy.
 //!
+//! Every declaration states its availability on every surface, the desktop app (`Surface::Desk`)
+//! included: a new command cannot be added without saying whether the desktop offers it, and why
+//! not when it does not.
+//!
 //! Global process options such as `--sandbox` are an explicit exception: this registry models
 //! invocable commands and their frontend surfaces, while global flags are declared by the CLI
 //! usage table in `oxa-cli/src/args.rs` and have no slash/menu/web handler.
@@ -14,6 +18,19 @@ pub enum Surface {
     Slash,
     Menu,
     Web,
+    /// The desktop app (`oxa-desk`): its command palette and the panes that run a command.
+    Desk,
+}
+
+impl Surface {
+    /// Every surface a declaration answers for.
+    pub const ALL: [Surface; 5] = [
+        Surface::Cli,
+        Surface::Slash,
+        Surface::Menu,
+        Surface::Web,
+        Surface::Desk,
+    ];
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +67,7 @@ pub struct Surfaces {
     pub slash: Availability,
     pub menu: Availability,
     pub web: Availability,
+    pub desk: Availability,
 }
 
 impl Surfaces {
@@ -59,6 +77,7 @@ impl Surfaces {
             Surface::Slash => self.slash,
             Surface::Menu => self.menu,
             Surface::Web => self.web,
+            Surface::Desk => self.desk,
         }
     }
 }
@@ -69,6 +88,7 @@ const LEAD_PENDING: Surfaces = Surfaces {
     slash: Availability::Exception("Lead handler integration is pending"),
     menu: Availability::Exception("Lead menu integration is pending"),
     web: Availability::Exception("Lead web adapter integration is pending"),
+    desk: Availability::Exception("The desktop lead pane is not built yet"),
 };
 /// The `oxa memory` verbs are a CLI-only surface: no slash, menu or web handler exists.
 const MEMORY_CLI_ONLY: Surfaces = Surfaces {
@@ -76,6 +96,7 @@ const MEMORY_CLI_ONLY: Surfaces = Surfaces {
     slash: Availability::Exception("The slash menu has no memory command"),
     menu: Availability::Exception("The menu has no memory command"),
     web: Availability::Exception("No web frontend is shipped"),
+    desk: Availability::Exception("The desktop app has no memory pane"),
 };
 /// `oxa local add` is a CLI-only surface: it edits the user's settings file and prints a report.
 const LOCAL_CLI_ONLY: Surfaces = Surfaces {
@@ -83,6 +104,14 @@ const LOCAL_CLI_ONLY: Surfaces = Surfaces {
     slash: Availability::Exception("Local models are wired from the command line, not a running session"),
     menu: Availability::Exception("The menu has no local command"),
     web: Availability::Exception("No web frontend is shipped"),
+    desk: Availability::Exception("Local models are wired from the command line"),
+};
+const WORKER_CLI_ONLY: Surfaces = Surfaces {
+    cli: Availability::Supported,
+    slash: Availability::Exception("Owner worker commands run outside a session"),
+    menu: Availability::Exception("Owner worker commands run outside a session"),
+    web: Availability::Exception("There is no web worker launcher"),
+    desk: Availability::Exception("The desktop app has no worker launcher"),
 };
 const NO_REQUIREMENTS: Requirements = Requirements {
     restart: false,
@@ -123,6 +152,7 @@ commands! {
             slash: Availability::Supported,
             menu: Availability::Supported,
             web: Availability::Exception("No web frontend is shipped"),
+            desk: Availability::Exception("The desktop palette lists the commands itself"),
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
@@ -136,6 +166,7 @@ commands! {
             slash: Availability::Exception("The JSON usage report is a CLI command"),
             menu: Availability::Exception("The JSON usage report is a CLI command"),
             web: Availability::Exception("The panel reads this report from the CLI"),
+            desk: Availability::Supported,
         },
         requirements: NO_REQUIREMENTS,
     },
@@ -152,6 +183,49 @@ commands! {
             slash: Availability::Exception("Cache reports are a CLI command"),
             menu: Availability::Exception("Cache reports are a CLI command"),
             web: Availability::Exception("Cache reports are a CLI command"),
+            desk: Availability::Exception("Cache reports are a CLI command"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
+    WorkerRun {
+        path: &["worker", "run"], aliases: &[],
+        summary: "Run a worker in its own Git worktree and stream JSON state",
+        arguments: &[
+            Argument { name: "parent", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "name", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "kind", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "job", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "goal-file", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "model", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "resume", kind: ArgumentKind::Flag, required: false },
+        ],
+        surfaces: WORKER_CLI_ONLY,
+        requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
+    },
+    WorkerList {
+        path: &["worker", "list"], aliases: &[],
+        summary: "Read owner workers and local host load and free memory as JSON",
+        arguments: &[
+            Argument { name: "parent", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "json", kind: ArgumentKind::Flag, required: false },
+        ],
+        surfaces: WORKER_CLI_ONLY,
+        requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
+    },
+    PrThreads {
+        path: &["pr", "threads"],
+        aliases: &[],
+        summary: "List a pull request's review threads with full bodies, ids, state and severity (read-only)",
+        arguments: &[
+            Argument { name: "n", kind: ArgumentKind::Word, required: true },
+            Argument { name: "json", kind: ArgumentKind::Flag, required: false },
+        ],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("Review threads are read from the command line"),
+            menu: Availability::Exception("The menu has no pr command"),
+            web: Availability::Exception("No web frontend is shipped"),
+            desk: Availability::Exception("Review threads are read from the command line"),
         },
         requirements: NO_REQUIREMENTS,
     },
@@ -165,6 +239,7 @@ commands! {
             slash: Availability::Exception("Slash handler migration is pending"),
             menu: Availability::Exception("Menu handler migration is pending"),
             web: Availability::Exception("No web frontend is shipped"),
+            desk: Availability::Supported,
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
@@ -178,6 +253,7 @@ commands! {
             slash: Availability::Exception("Work board handler has not landed"),
             menu: Availability::Exception("Work board handler has not landed"),
             web: Availability::Exception("No web frontend is shipped"),
+            desk: Availability::Exception("Work board handler has not landed"),
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
@@ -195,6 +271,7 @@ commands! {
             slash: Availability::Exception("The slash menu has no status command"),
             menu: Availability::Exception("The menu has no status command"),
             web: Availability::Exception("No web frontend is shipped"),
+            desk: Availability::Supported,
         },
         requirements: NO_REQUIREMENTS,
     },
@@ -206,6 +283,7 @@ commands! {
             slash: Availability::Exception("The slash menu is not available yet"),
             menu: Availability::Supported,
             web: Availability::Exception("Use the board navigation in the web UI"),
+            desk: Availability::Exception("The desktop lead pane is not built yet"),
         }, requirements: NO_REQUIREMENTS,
     },
     LeadServe {
@@ -258,6 +336,7 @@ commands! {
             slash: Availability::Exception("Session messages are a CLI verb"),
             menu: Availability::Exception("Session messages are a CLI verb"),
             web: Availability::Exception("No web frontend is shipped"),
+            desk: Availability::Exception("The desktop composer sends session messages itself"),
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
@@ -271,6 +350,7 @@ commands! {
             slash: Availability::Exception("Session messages are a CLI verb"),
             menu: Availability::Exception("Session messages are a CLI verb"),
             web: Availability::Exception("No web frontend is shipped"),
+            desk: Availability::Exception("The desktop app shows approval requests as asks"),
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
@@ -305,6 +385,7 @@ commands! {
             slash: Availability::Exception("No models slash handler is shipped"),
             menu: Availability::Exception("No models menu handler is shipped"),
             web: Availability::Exception("No web frontend is shipped"),
+            desk: Availability::Supported,
         },
         requirements: NO_REQUIREMENTS,
     },
@@ -329,6 +410,7 @@ commands! {
             slash: Availability::Exception("Not a session command"),
             menu: Availability::Exception("Not a session command"),
             web: Availability::Exception("No web frontend is shipped"),
+            desk: Availability::Exception("Not a session command"),
         },
         requirements: NO_REQUIREMENTS,
     },
@@ -342,6 +424,23 @@ commands! {
             slash: Availability::Supported,
             menu: Availability::Exception("Slash handler is the only goal surface for now"),
             web: Availability::Exception("No web frontend is shipped"),
+            desk: Availability::Exception("The goal is set with the slash command in a session thread"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
+    // Reserves `oxa desk` for the desktop app. No surface offers it until the app ships; the
+    // slice that ships it turns the CLI entry on.
+    Desk {
+        path: &["desk"],
+        aliases: &[],
+        summary: "Open the desktop app",
+        arguments: &[],
+        surfaces: Surfaces {
+            cli: Availability::Exception("The desktop app is not shipped yet"),
+            slash: Availability::Exception("The desktop app is opened from the command line"),
+            menu: Availability::Exception("The desktop app is opened from the command line"),
+            web: Availability::Exception("The desktop app is opened from the command line"),
+            desk: Availability::Exception("The desktop app is already open"),
         },
         requirements: NO_REQUIREMENTS,
     },
@@ -435,7 +534,7 @@ mod tests {
                     }
                 }
             }
-            for surface in [Surface::Cli, Surface::Slash, Surface::Menu, Surface::Web] {
+            for surface in Surface::ALL {
                 match entry.surfaces.at(surface) {
                     Availability::Supported => {
                         assert!(entries(surface).any(|view| view.id == entry.id));
@@ -447,6 +546,50 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn desk_surface_lists_commands_that_run_through_the_cli() {
+        // The desktop runs a command in process through the CLI entry point, so a command the
+        // palette lists must be one the CLI accepts.
+        for entry in entries(Surface::Desk) {
+            assert_eq!(entry.surfaces.cli, Availability::Supported, "{:?}", entry.path);
+            assert!(help(Surface::Desk).contains(entry.summary));
+        }
+        // The read-only panes read these reports.
+        for id in [
+            CommandId::Usage,
+            CommandId::Models,
+            CommandId::Status,
+            CommandId::WorkStatus,
+        ] {
+            assert!(entries(Surface::Desk).any(|entry| entry.id == id), "{id:?}");
+        }
+        // A command without a desktop handler stays out of the palette.
+        for id in [
+            CommandId::LeadBoard,
+            CommandId::LocalAdd,
+            CommandId::MemoryRm,
+            CommandId::WorkerRun,
+        ] {
+            assert!(!entries(Surface::Desk).any(|entry| entry.id == id), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn desk_command_is_reserved_and_offered_on_no_surface_until_the_app_ships() {
+        let input = words("desk");
+        assert!(parse_cli(&input).is_none());
+        assert!(dispatch_slash(&input).is_none());
+        let declaration = COMMANDS.iter().find(|entry| entry.id == CommandId::Desk).unwrap();
+        assert_eq!(declaration.path, &["desk"][..]);
+        for surface in Surface::ALL {
+            match declaration.surfaces.at(surface) {
+                Availability::Supported => panic!("the desktop app is not shipped: {surface:?}"),
+                Availability::Exception(reason) => assert!(!reason.trim().is_empty()),
+            }
+            assert!(!entries(surface).any(|entry| entry.id == CommandId::Desk));
         }
     }
 
@@ -521,7 +664,7 @@ mod tests {
                 in_cli.then_some(*id)
             );
             assert!(dispatch_slash(&input).is_none());
-            for surface in [Surface::Cli, Surface::Slash, Surface::Menu, Surface::Web] {
+            for surface in Surface::ALL {
                 let shown = (in_menu && surface == Surface::Menu) || (in_cli && surface == Surface::Cli);
                 assert_eq!(entries(surface).any(|entry| entry.id == *id), shown);
                 assert_eq!(help(surface).contains(declaration.summary), shown);
@@ -538,7 +681,7 @@ mod tests {
         assert!(parsed.command.requirements.owner_only);
         assert_eq!(parse_cli(&words("local")).unwrap().command.id, CommandId::Local);
         assert!(dispatch_slash(&words("local add m.gguf")).is_none());
-        for surface in [Surface::Slash, Surface::Menu, Surface::Web] {
+        for surface in [Surface::Slash, Surface::Menu, Surface::Web, Surface::Desk] {
             assert!(!entries(surface).any(|e| e.id == CommandId::LocalAdd));
         }
     }
@@ -565,6 +708,26 @@ mod tests {
         assert_eq!(parsed.command.arguments[1].name, "search");
         assert_eq!(parsed.command.arguments[1].kind, ArgumentKind::Word);
         assert!(dispatch_slash(&input).is_none());
+    }
+
+    #[test]
+    fn pr_threads_declares_its_number_word_json_flag_and_cli_only_surface() {
+        let input = words("pr threads 7 --json");
+        let parsed = parse_cli(&input).expect("pr threads resolves on the CLI");
+        assert_eq!(parsed.command.id, CommandId::PrThreads);
+        assert_eq!(parsed.args, &input[2..]);
+        assert_eq!(parsed.command.arguments[0].name, "n");
+        assert_eq!(parsed.command.arguments[0].kind, ArgumentKind::Word);
+        assert!(parsed.command.arguments[0].required);
+        assert_eq!(parsed.command.arguments[1].name, "json");
+        assert_eq!(parsed.command.arguments[1].kind, ArgumentKind::Flag);
+        assert!(!parsed.command.arguments[1].required);
+        assert!(!parsed.command.requirements.owner_only);
+        assert!(dispatch_slash(&input).is_none());
+        for surface in [Surface::Slash, Surface::Menu, Surface::Web, Surface::Desk] {
+            assert!(!entries(surface).any(|e| e.id == CommandId::PrThreads));
+        }
+        assert!(entries(Surface::Cli).any(|e| e.id == CommandId::PrThreads));
     }
 
     #[test]

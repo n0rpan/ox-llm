@@ -65,7 +65,7 @@ struct Row {
 }
 
 /// What a reply's `timings` said about the engine's own work. Absent when the route reported
-/// none (the cloud gateway and plain OpenAI servers omit it).
+/// none (a remote provider does).
 #[derive(Serialize)]
 struct Engine {
     /// `timings.prompt_n`: prompt tokens the engine prefilled itself, after the reused prefix.
