@@ -53,6 +53,11 @@ pub struct View<'a> {
     /// The caller retains full SessionRef/revision authority; identities are never rendered.
     pub owner_goal: Option<(&'a oxa_session::Goal, oxa_core::goal::GoalObservation<'a>)>,
     pub board: Option<&'a Board>,
+    /// Why the latest board read failed (#2342), from the allow-listed `BoardCause`.
+    /// `None` on a fresh read; present when the board is missing or retained last-good.
+    pub board_cause: Option<crate::lead_input::BoardCause>,
+    /// True when the board shown is a retained last-good value, not a fresh read (#2342).
+    pub board_retained: bool,
     pub situation: Option<&'a Snapshot>,
     /// The Lead session's workers from its registry and their status files. An error is
     /// an explicit state: no workers recorded, or a registry that was refused.
@@ -155,6 +160,77 @@ fn human_time(timestamp: u64, now: u64) -> String {
     };
     escape(&format!("{date}{} {}", at.hm, at.zone_label()))
 }
+
+/// S3 (#2342): the age of a value as a client-ticking `<time data-at>` element.
+/// The server renders an initial label; live.js re-labels it every 10 s with no
+/// request, so a quiet page never shows a stale age. Like `human_time`, an
+/// observation the host clock cannot format shows no raw value, only a reason.
+fn age(at: u64, now: u64) -> String {
+    if i64::try_from(at).ok().and_then(oxa_session::local_time).is_none() {
+        return "age not available (the host clock cannot format this observation)".into();
+    }
+    format!("<time data-at=\"{at}\">{}</time>", escape(&age_text(at, now)))
+}
+
+fn age_text(at: u64, now: u64) -> String {
+    if at > now.saturating_add(60) {
+        return "ahead of this clock".into();
+    }
+    let delta = now.saturating_sub(at);
+    if delta < 60 {
+        format!("{delta} s old")
+    } else if delta < 3600 {
+        format!("{} min old", delta / 60)
+    } else if delta < 86400 {
+        format!("{} h old", delta / 3600)
+    } else {
+        format!("{} d old", delta / 86400)
+    }
+}
+
+/// Capitalize the first character of an allow-listed cause or hint so it reads as
+/// a sentence; the rest of the fixed text is never altered.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// S3 (#2342): one missing observation state. Names the source, the allow-listed
+/// cause, the age of the last good value (ticking client-side) and the next step.
+/// Never a bare "unavailable", never a raw diagnostic, path or file content.
+fn say_why(html: &mut String, source: &str, cause: &str, next: &str, last_good_at: Option<u64>, now: u64) {
+    let _ = write!(
+        html,
+        "<p class=\"muted say-why\"><b>{} unavailable.</b> {}.",
+        escape(source),
+        escape(&sentence(cause))
+    );
+    match last_good_at {
+        Some(at) => {
+            html.push_str(" Last good value ");
+            html.push_str(&age(at, now));
+            html.push('.');
+        }
+        None => html.push_str(" No good value has been read yet."),
+    }
+    let _ = write!(html, " {}.</p>", escape(&sentence(next)));
+}
+
+/// The allow-listed cause and next step for a board gap (#2342). A view with no
+/// cause (no read attempted) keeps the generic observation-gap text.
+fn board_gap(view: &View<'_>) -> (&'static str, &'static str) {
+    match view.board_cause {
+        Some(cause) => (cause.text(), cause.hint()),
+        None => (
+            "no board observation reached this page",
+            "rerun the Lead loop to read a board observation",
+        ),
+    }
+}
+
 fn action(value: Action) -> &'static str {
     match value {
         Action::FixFindings => "Fix findings",
@@ -224,14 +300,24 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
     let mut html = format!("<main><h1 id=main tabindex=-1>{title}</h1>");
     html.push_str(&page.navigation(view.situation.map(|snapshot| snapshot.asks.len())));
     html.push_str("<aside id=refresh-error class=stale-notice role=status hidden><h2>Refresh unavailable</h2><p>The last rendered observations are retained. <a href=\"\">Retry</a></p></aside>");
-    if view.board.is_some_and(|board| stale(board, now)) {
+    if view.board_retained {
+        if let (Some(board), Some(cause)) = (view.board, view.board_cause) {
+            let _ = write!(
+                html,
+                "<aside class=\"stale-notice say-why\" role=status><h2>Board is last-good</h2><p>{}. Last good value {}. {} <a href=\"\">Retry</a></p></aside>",
+                escape(&sentence(cause.text())),
+                age(board.observed_at, now),
+                escape(&sentence(cause.hint()))
+            );
+        }
+    } else if view.board.is_some_and(|board| stale(board, now)) {
         html.push_str("<aside class=stale-notice role=status><h2>Board observation needs refreshing</h2><p>The Board timestamp is stale or ahead of this clock. <a href=\"\">Retry</a></p></aside>");
     }
     match page {
         Page::Home => {
             goal::render(&mut html, view, now);
             html.push_str("<div class=home-layout><div class=home-decisions>");
-            attention(&mut html, view);
+            attention(&mut html, view, now);
             approvals::render(&mut html, view, now);
             asks(&mut html, view, now);
             html.push_str("</div><div class=home-overview><section><h2>Snapshot overview</h2>");
@@ -240,7 +326,9 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
                     html,
                     "<p><a href=/board>{} observed items</a></p><p class=muted>{} · observed {}</p>",
                     board.entries.len(),
-                    if stale(board, now) {
+                    if view.board_retained {
+                        "Last-good snapshot"
+                    } else if stale(board, now) {
                         "Stale snapshot"
                     } else {
                         "Board snapshot"
@@ -248,13 +336,14 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
                     human_time(board.observed_at, now)
                 );
             } else {
-                html.push_str("<p>Board unavailable. No board observation reached this page; the source did not say why.</p>");
+                let (cause, next) = board_gap(view);
+                say_why(&mut html, "Board", cause, next, None, now);
             }
             html.push_str("</section><details class=home-work><summary>Observed work</summary>");
             board(&mut html, view, now, Query::default());
             workers(&mut html, view, now);
-            queue(&mut html, view);
-            release(&mut html, view);
+            queue(&mut html, view, now);
+            release(&mut html, view, now);
             html.push_str("</details></div></div>");
         }
         Page::Board | Page::BoardQuery(_) => {
@@ -265,7 +354,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             };
             approvals::render(&mut html, view, now);
             board(&mut html, view, now, query);
-            queue(&mut html, view);
+            queue(&mut html, view, now);
         }
         Page::Workers => workers(&mut html, view, now),
         Page::Asks => {
@@ -276,7 +365,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
         Page::Item(number) => item(&mut html, view, number, now),
         Page::Chat(prompt) => chat::render(&mut html, view, prompt, now),
         Page::Usage => {
-            usage(&mut html, view);
+            usage(&mut html, view, now);
             quotas::render(&mut html, view, now);
         }
     }
@@ -284,7 +373,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
     html
 }
 
-fn attention(html: &mut String, view: &View<'_>) {
+fn attention(html: &mut String, view: &View<'_>, now: u64) {
     let asks = view.situation.map_or(0, |s| s.asks.len()) + view.durable_asks.map_or(0, |asks| asks.len());
     let alarms = view.alarms;
     // The queue-age alarm binds each PR to its exact observed head: membership
@@ -297,17 +386,30 @@ fn attention(html: &mut String, view: &View<'_>) {
         || merge_stalled == Some(true)
         || stalled_runs.is_some_and(|runs| !runs.is_empty())
         || !overdue.is_empty();
-    // An absent alarm source is never healthy: it renders its own explicit
-    // unavailable state instead of silence. A page with no alarm record at all
-    // says nothing here; the missing Board section carries that story (#1391).
-    let unavailable = alarms.is_some_and(|a| {
-        a.main_red.is_none()
-            || a.main_merge_stalled.is_none()
-            || a.stalled_runs.is_none()
-            || a.queue.is_none()
-            || a.overdue_queue.is_none()
+    // An absent alarm source is never healthy. #2342: the missing sources collapse
+    // into one line naming them, with the cause, the age of the last good board
+    // value and the next step, instead of one bullet per source. A page with no
+    // alarm record at all says nothing here; the missing Board section carries it.
+    let missing: Vec<&str> = alarms.map_or(Vec::new(), |a| {
+        let mut names = Vec::new();
+        if a.main_red.is_none() {
+            names.push("main checks");
+        }
+        if a.main_merge_stalled.is_none() {
+            names.push("no-merge alarm");
+        }
+        if a.queue.is_none() {
+            names.push("merge queue membership");
+        }
+        if a.overdue_queue.is_none() {
+            names.push("queue age");
+        }
+        if a.stalled_runs.is_none() {
+            names.push("queued workflow runs");
+        }
+        names
     });
-    if alarm || asks > 0 || unavailable {
+    if alarm || asks > 0 || !missing.is_empty() {
         let (role, icon, label) = if alarm {
             ("alert", "!", "Alarm")
         } else if asks > 0 {
@@ -325,58 +427,47 @@ fn attention(html: &mut String, view: &View<'_>) {
                 "<li><a href=#asks>Unanswered owner decisions ({asks})</a></li>"
             );
         }
-        match main_red {
-            Some(true) => html.push_str("<li>Checks on main are failing.</li>"),
-            Some(false) => {}
-            None => html.push_str(
-                "<li>Main checks unavailable. No protected main observation reached this page.</li>",
-            ),
+        if main_red == Some(true) {
+            html.push_str("<li>Checks on main are failing.</li>");
         }
-        match merge_stalled {
-            Some(true) => html
-                .push_str("<li>No PR merged into main for 45 minutes or more at the last observation.</li>"),
-            Some(false) => {}
-            None => html.push_str(
-                "<li>No-merge alarm unavailable. The last verified main merge was not observed.</li>",
-            ),
+        if merge_stalled == Some(true) {
+            html.push_str("<li>No PR merged into main for 45 minutes or more at the last observation.</li>");
         }
-        let queue = alarms.and_then(|a| a.queue.as_deref());
-        if queue.is_none() {
-            html.push_str(
-                "<li>Merge queue membership unavailable. No protected queue observation reached this page.</li>",
+        for pr in overdue {
+            let _ = write!(
+                html,
+                "<li><a href=/board#queue>PR #{} has waited too long in the merge queue</a></li>",
+                pr.number
             );
-        } else {
-            for pr in overdue {
-                let _ = write!(
-                    html,
-                    "<li><a href=/board#queue>PR #{} has waited too long in the merge queue</a></li>",
-                    pr.number
-                );
-            }
-            if alarms.is_some_and(|a| a.overdue_queue.is_none()) {
-                html.push_str(
-                    "<li>Queue age unavailable. No protected landing observation reached this page.</li>",
-                );
-            }
         }
-        match stalled_runs {
-            None => html.push_str(
-                "<li>Queued workflow runs unavailable. No complete protected run observation reached this page.</li>",
-            ),
-            Some(runs) if !runs.is_empty() => {
-                let _ = write!(
-                    html,
-                    "<li><details><summary>Workflow runs queued for more than 15 minutes ({})</summary><ul>",
-                    runs.len()
-                );
-                for id in runs {
-                    let _ = write!(html, "<li>Run {id}</li>");
-                }
-                html.push_str("</ul></details></li>");
+        if let Some(runs) = stalled_runs.filter(|runs| !runs.is_empty()) {
+            let _ = write!(
+                html,
+                "<li><details><summary>Workflow runs queued for more than 15 minutes ({})</summary><ul>",
+                runs.len()
+            );
+            for id in runs {
+                let _ = write!(html, "<li>Run {id}</li>");
             }
-            Some(_) => {}
+            html.push_str("</ul></details></li>");
         }
         html.push_str("</ul>");
+        if !missing.is_empty() {
+            let _ = write!(
+                html,
+                "<p class=\"muted say-why\"><b>Not in this sample:</b> {}. The latest board sample did not carry them.",
+                escape(&missing.join(", "))
+            );
+            match view.board.map(|b| b.observed_at) {
+                Some(at) => {
+                    html.push_str(" Last good value ");
+                    html.push_str(&age(at, now));
+                    html.push('.');
+                }
+                None => html.push_str(" No good value has been read yet."),
+            }
+            html.push_str(" Refresh to read a newer sample.</p>");
+        }
         if alarm {
             html.push_str("<p class=muted>Lead response observations unavailable. These observations report the alarm, without a Lead response.</p>");
         }
@@ -393,13 +484,16 @@ fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
     if let Some(board) = view.board {
         let _ = write!(
             html,
-            "<p class=muted>{} · observed {}</p>",
-            if stale(board, now) {
+            "<p class=muted>{} · observed {} · {}</p>",
+            if view.board_retained {
+                "Last-good snapshot"
+            } else if stale(board, now) {
                 "Stale snapshot"
             } else {
                 "GitHub snapshot"
             },
-            human_time(board.observed_at, now)
+            human_time(board.observed_at, now),
+            age(board.observed_at, now)
         );
         query.navigation(html, board, view);
         if !query.filter.available(view) {
@@ -444,9 +538,8 @@ fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
             html.push_str("</nav>");
         }
     } else {
-        html.push_str(
-            "<p>Board unavailable. No board observation reached this page; the source did not say why.</p>",
-        );
+        let (cause, next) = board_gap(view);
+        say_why(html, "Board", cause, next, None, now);
     }
     html.push_str("</section>");
 }
@@ -465,9 +558,8 @@ fn lease(row: &Entry, now: u64) -> String {
 fn item(html: &mut String, view: &View<'_>, number: u64, now: u64) {
     html.push_str("<p><a href=/board>Back to Board</a></p>");
     let Some(board) = view.board else {
-        html.push_str(
-            "<p>Board unavailable. No board observation reached this page; the source did not say why.</p>",
-        );
+        let (cause, next) = board_gap(view);
+        say_why(html, "Board", cause, next, None, now);
         return;
     };
     let Some(row) = board.entries.iter().find(|row| row.number == number) else {
@@ -483,11 +575,25 @@ fn item(html: &mut String, view: &View<'_>, number: u64, now: u64) {
     html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable. This board observation contains next actions and leases, without those details.</p></section>");
 }
 
-fn usage(html: &mut String, view: &View<'_>) {
+fn usage(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section id=task-usage><h2>Task usage</h2>");
     match view.selected_task_usage {
-        None => html.push_str("<p>Task usage observations unavailable. No selected-task usage observation reached this page.</p>"),
-        Some(Err(_)) => html.push_str("<p>Task usage observations unavailable. The selected task usage could not be read.</p>"),
+        None => say_why(
+            html,
+            "Task usage observations",
+            "no selected-task usage observation reached this page",
+            "select a task and rerun the Lead loop to read its checkpoint",
+            None,
+            now,
+        ),
+        Some(Err(_)) => say_why(
+            html,
+            "Task usage observations",
+            "the selected task usage could not be read",
+            "rerun the Lead loop to read the checkpoint again",
+            None,
+            now,
+        ),
         Some(Ok(None)) => html.push_str("<p>No saved checkpoint for the selected task.</p>"),
         Some(Ok(Some(usage))) => {
             let _ = write!(
@@ -604,12 +710,19 @@ fn workers(html: &mut String, view: &View<'_>, now: u64) {
             }
         }
     } else if !live && !matches!(view.workers, Some(Err(BindingsError::Refused))) {
-        html.push_str("<p>Lane status unavailable. No runner observation reached this page, so workers and their state cannot be shown; the source did not say why.</p>");
+        say_why(
+            html,
+            "Lane status",
+            "no runner observation reached this page",
+            "rerun the Lead loop to read a runner situation",
+            None,
+            now,
+        );
     }
     html.push_str("</section>");
 }
 
-fn queue(html: &mut String, view: &View<'_>) {
+fn queue(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section id=queue><h2>Merge queue</h2>");
     if let Some(queue) = view.alarms.and_then(|a| a.queue.as_deref()) {
         for (index, pr) in queue.iter().enumerate() {
@@ -619,12 +732,19 @@ fn queue(html: &mut String, view: &View<'_>) {
             html.push_str("<p>Queue empty at observation.</p>");
         }
     } else {
-        html.push_str("<p>Merge queue unavailable. No queue observation reached this page. Ready to land does not establish queue membership.</p>");
+        say_why(
+            html,
+            "Merge queue",
+            "no queue observation reached this page; ready to land does not establish queue membership",
+            "rerun the Lead loop to read a fresh sample",
+            None,
+            now,
+        );
     }
     html.push_str("</section>");
 }
 
-fn release(html: &mut String, view: &View<'_>) {
+fn release(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section id=release><h2>Release checklist</h2>");
     if let Some((number, items)) = view.release {
         let _ = write!(html, "<p class=muted>Issue #{number} · {} / {} checkboxes reported checked.</p><p class=muted>Owner outcome verification unavailable. This checklist does not include release or installability evidence.</p><ul>", items.iter().filter(|i| i.0).count(), items.len());
@@ -638,7 +758,14 @@ fn release(html: &mut String, view: &View<'_>) {
         }
         html.push_str("</ul>");
     } else {
-        html.push_str("<p>Release checklist unavailable. No release issue and checklist were supplied.</p>");
+        say_why(
+            html,
+            "Release checklist",
+            "no release issue and checklist were supplied",
+            "supply a release issue with its checklist to show it here",
+            None,
+            now,
+        );
     }
     html.push_str("</section>");
 }
@@ -660,9 +787,23 @@ fn asks(html: &mut String, view: &View<'_>, now: u64) {
             html.push_str("<p>No open asks in these runner facts.</p>");
         }
     } else if view.durable_asks.is_some() {
-        html.push_str("<p>Runner asks unavailable. No runner observation reached this page; the Lead Session asks below are a separate source.</p>");
+        say_why(
+            html,
+            "Runner asks",
+            "no runner observation reached this page; the Lead Session asks below are a separate source",
+            "rerun the Lead loop to read a runner situation",
+            None,
+            now,
+        );
     } else {
-        html.push_str("<p>Owner asks unavailable. No runner observation reached this page and no Lead Session asks reached it, so open decisions cannot be shown; the source did not say why.</p>");
+        say_why(
+            html,
+            "Owner asks",
+            "no runner observation reached this page and no Lead Session asks reached it",
+            "rerun the Lead loop to read open decisions",
+            None,
+            now,
+        );
     }
     if let Some(durable) = view.durable_asks {
         html.push_str("<p class=muted>Lead Session asks · read live from the authorized durable Session</p>");
@@ -691,6 +832,7 @@ pub const STYLE: &str = concat!(
 .scroll caption { text-align:left; padding:12px; font-weight:600; }
 .scroll th[scope=row]>a { display:inline-flex; align-items:center; min-height:44px; }
 .stale-notice { padding:16px; margin:16px 0; border:1px dashed var(--muted); border-radius:var(--radius); background:var(--raised); }
+.say-why b { color:var(--ink); }
 :root { --bad:#b62c24; --bad-soft:#fde7e4; }
 @media(prefers-color-scheme:dark) { :root { --bad:#ff8a80; --bad-soft:#331917; } }
 #attention .severity { font-weight:700; color:var(--warn); }
@@ -728,6 +870,10 @@ const digest=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
 let runningSha=document.querySelector('meta[name=oxa-running-sha256]')?.content;
 if(!digest(runningSha))runningSha=null;
 let timer,pending,stream,reconnectTimer,streamOk=false,reloadNeeded=false;
+let ageTimer=null;
+function ageText(at,now){if(at>now+60)return 'ahead of this clock';const d=Math.max(0,now-at);if(d<60)return d+' s old';if(d<3600)return Math.floor(d/60)+' min old';if(d<86400)return Math.floor(d/3600)+' h old';return Math.floor(d/86400)+' d old';}
+function tickAges(){if(typeof document.querySelectorAll!=='function')return;const now=Math.floor(Date.now()/1000);document.querySelectorAll('time[data-at]').forEach(el=>{const at=Number(el.getAttribute('data-at'));if(Number.isFinite(at))el.textContent=ageText(at,now);});}
+function scheduleAges(){if(typeof document.querySelectorAll!=='function')return;tickAges();ageTimer=setTimeout(()=>{ageTimer=null;if(!document.hidden)scheduleAges();},10000);}
 function unavailable(){
   badge.textContent='Refresh unavailable';
   const notice=document.getElementById('refresh-error');if(notice)notice.hidden=false;
@@ -796,10 +942,12 @@ function connect(){
 }
 document.addEventListener('visibilitychange',()=>{
   clearTimeout(timer);clearTimeout(reconnectTimer);reconnectTimer=null;if(pending)pending.abort();
+  if(ageTimer){clearTimeout(ageTimer);ageTimer=null;}
   if(stream){stream.close();stream=null;streamOk=false;}
-  if(!document.hidden){if(live&&typeof EventSource==='function')connect();else refresh();}
+  if(!document.hidden){if(live&&typeof EventSource==='function')connect();else refresh();scheduleAges();}
 });
 if(live&&typeof EventSource==='function')connect();else timer=setTimeout(refresh,15000);
+scheduleAges();
 "#;
 
 #[cfg(test)]
@@ -1356,7 +1504,7 @@ mod tests {
         // A partial observation keeps the active alarm visible and names the
         // sources that did not reach the page (#1391).
         assert!(html.contains("Checks on main are failing."));
-        assert!(html.contains("Merge queue membership unavailable"));
+        assert!(html.contains("merge queue membership"));
         for ask in &snapshot.asks {
             assert!(html.contains(&escape(&ask.question)));
         }
@@ -1768,12 +1916,12 @@ return true;
         // Unobserved membership never becomes a quiet alarm: the page says the
         // queue was not observed, even when the landing record raised the age.
         let unobserved = render(None, Some(overdue.as_slice()));
-        assert!(unobserved.contains("Merge queue membership unavailable"));
+        assert!(unobserved.contains("merge queue membership"));
         assert!(!unobserved.contains("waited too long"));
         assert!(!unobserved.contains("role=alert"));
         // A landing record with no observation of its own is explicit as well.
         let no_landing = render(Some(queue.as_slice()), None);
-        assert!(no_landing.contains("Queue age unavailable"));
+        assert!(no_landing.contains("queue age"));
         assert!(!no_landing.contains("waited too long"));
         let page = render(Some(&queue), Some(&overdue));
         assert!(page.contains("PR #17 has waited too long in the merge queue"));
@@ -1932,8 +2080,8 @@ return true;
         // a landing record without membership, stays explicit and never alarms.
         for situation in [None, Some(&snapshot)] {
             for (queue, overdue_queue, expected) in [
-                (None, Some(queue.as_slice()), "Merge queue membership unavailable"),
-                (Some(queue.as_slice()), None, "Queue age unavailable"),
+                (None, Some(queue.as_slice()), "merge queue membership"),
+                (Some(queue.as_slice()), None, "queue age"),
             ] {
                 let unknown = content_for(
                     Page::Home,
@@ -2548,5 +2696,170 @@ return true;
             assert!(missing.contains(expected));
             assert!(!missing.contains("<dl>") && !missing.contains("<dt>"));
         }
+    }
+
+    #[test]
+    fn missing_states_name_source_cause_age_and_next_step() {
+        // #2342: every observation gap names its source, an allow-listed cause,
+        // the age of the last good value and the next step; never a bare
+        // "unavailable" and never "the source did not say why".
+        let html = document_for(Page::Home, &View::default(), 100);
+        assert!(!html.contains("did not say why"));
+        for source in [
+            "Board unavailable.",
+            "Lane status unavailable.",
+            "Merge queue unavailable.",
+            "Owner asks unavailable.",
+        ] {
+            assert!(html.contains(source), "{source}");
+        }
+        assert!(html.contains("No good value has been read yet."));
+        assert!(html.contains("say-why"));
+        // A read cause reaches the view from the allowlist and is shown verbatim.
+        let caused = document_for(
+            Page::Board,
+            &View {
+                board_cause: Some(crate::lead_input::BoardCause::Unreadable),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(caused.contains("not readable by this owner"));
+        assert!(caused.contains("owner-only"));
+        assert!(!caused.contains("did not say why"));
+        for invented in ["Sign in again", "not configured", "Permission denied"] {
+            assert!(!caused.contains(invented));
+        }
+    }
+
+    #[test]
+    fn five_missing_alarm_sources_collapse_into_one_line() {
+        let html = content_for(
+            Page::Home,
+            &View {
+                alarms: Some(&Alarms::default()),
+                ..View::default()
+            },
+            100,
+        );
+        let banner = html
+            .split("<section id=attention")
+            .nth(1)
+            .unwrap()
+            .split("</section>")
+            .next()
+            .unwrap();
+        assert_eq!(banner.matches("Not in this sample:").count(), 1);
+        for name in [
+            "main checks",
+            "no-merge alarm",
+            "merge queue membership",
+            "queue age",
+            "queued workflow runs",
+        ] {
+            assert!(banner.contains(name), "{name}");
+        }
+        assert!(banner.contains("role=status"));
+        assert!(!banner.contains("role=alert"));
+        // A complete healthy observation stays quiet.
+        let healthy = Alarms {
+            main_red: Some(false),
+            main_merge_stalled: Some(false),
+            stalled_runs: Some(vec![]),
+            queue: Some(vec![]),
+            overdue_queue: Some(vec![]),
+        };
+        let quiet = content_for(
+            Page::Home,
+            &View {
+                alarms: Some(&healthy),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(!quiet.contains("id=attention"));
+    }
+
+    #[test]
+    fn ages_render_as_client_ticking_time_elements() {
+        let board = Board {
+            observed_at: 40,
+            ..Board::default()
+        };
+        let html = content_for(
+            Page::Board,
+            &View {
+                board: Some(&board),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(html.contains("<time data-at=\"40\">1 min old</time>"));
+        // The script re-labels ages every 10 s with no request.
+        assert!(SCRIPT.contains("time[data-at]"));
+        assert!(SCRIPT.contains("scheduleAges"));
+        // A retained board shows its age and cause in the banner.
+        let retained = document_for(
+            Page::Board,
+            &View {
+                board: Some(&board),
+                board_retained: true,
+                board_cause: Some(crate::lead_input::BoardCause::Changed),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(retained.contains("Board is last-good"));
+        assert!(retained.contains("changed while it was being read"));
+        assert!(retained.contains("<time data-at=\"40\">"));
+        assert!(retained.contains("Last-good snapshot"));
+        // An observation the host clock cannot format leaks no raw value into the
+        // age (the host-zone test guards this across pages; here it guards age()).
+        let invalid = content_for(
+            Page::Board,
+            &View {
+                board: Some(&Board {
+                    observed_at: u64::MAX,
+                    ..Board::default()
+                }),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(!invalid.contains(&u64::MAX.to_string()));
+        assert!(invalid.contains("age not available"));
+    }
+
+    #[test]
+    fn retained_board_keeps_last_good_rows_with_cause_and_age() {
+        let board = Board {
+            observed_at: 40,
+            entries: vec![Entry {
+                number: 17,
+                head: "synthetic-head".into(),
+                release_pinned: false,
+                action: Action::Ready,
+                lease: None,
+                attempts_today: 0,
+                eligible: true,
+                evidence_incomplete: None,
+            }],
+        };
+        let html = content_for(
+            Page::Board,
+            &View {
+                board: Some(&board),
+                board_retained: true,
+                board_cause: Some(crate::lead_input::BoardCause::Changed),
+                ..View::default()
+            },
+            100,
+        );
+        // The last good row stays visible; the cause and age are named.
+        assert!(html.contains("href=/items/17"));
+        assert!(html.contains("Board is last-good"));
+        assert!(html.contains("changed while it was being read"));
+        assert!(html.contains("Last good value"));
+        assert!(!html.contains("Board unavailable."));
     }
 }

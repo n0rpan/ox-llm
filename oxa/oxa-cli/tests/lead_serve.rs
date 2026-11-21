@@ -549,7 +549,11 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     std::fs::set_permissions(&sample, std::fs::Permissions::from_mode(0o644)).unwrap();
     let event = get(port, "/events", &authority, "");
     assert!(event.contains("event: snapshot\ndata: <main>"));
-    assert!(event.contains("Board unavailable"));
+    // #2342: a failed read keeps the last good board and names the allow-listed
+    // cause; it never blanks the page nor reflects the path.
+    assert!(event.contains("Board is last-good"));
+    assert!(event.contains("not readable by this owner"));
+    assert!(event.contains("href=/items/17"));
     assert!(!event.contains(sample.to_str().unwrap()));
     drop(child);
     use std::os::unix::fs::MetadataExt;
@@ -754,24 +758,28 @@ fn protected_view_shows_every_stuck_signal_and_keeps_missing_sources_explicit() 
     let page = get(port, "/", &authority, "");
     assert!(page.contains("Checks on main are failing."));
     assert!(page.contains("PR #17 has waited too long"));
-    assert!(page.contains("Queued workflow runs unavailable."), "{page}");
+    assert!(page.contains("Not in this sample:"), "{page}");
+    assert!(page.contains("queued workflow runs"), "{page}");
     drop(server);
 
     // An absent panels record leaves its signals explicitly unavailable: the
-    // landing age alone cannot claim queue membership it never observed.
+    // landing age alone cannot claim queue membership it never observed. #2342:
+    // the five missing sources collapse into one line naming them.
     let mut partial = stuck_record(now, false, 10 * 60, None, true, None);
     partial.as_object_mut().unwrap().remove("panels");
     let sample = write_record(&directory, &partial);
     let server = start(&test, &sample);
     let page = get(port, "/", &authority, "");
     for expected in [
-        "Main checks unavailable.",
-        "No-merge alarm unavailable.",
-        "Merge queue membership unavailable.",
+        "main checks",
+        "no-merge alarm",
+        "merge queue membership",
+        "queued workflow runs",
         "role=status",
     ] {
         assert!(page.contains(expected), "{expected}");
     }
+    assert_eq!(page.matches("Not in this sample:").count(), 1, "{page}");
     assert!(!page.contains("waited too long"), "{page}");
     assert!(!page.contains("role=alert"), "{page}");
     drop(server);
