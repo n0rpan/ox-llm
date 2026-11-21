@@ -1971,14 +1971,6 @@ fn run_locked(
             }
         }
     }
-    // A record that reached its verdict keeps it: a publication step still owed is not an
-    // unspecified end (`acceptance_outcome`). A lane task that waited on its run owes that
-    // run's evidence, which its own outcome already carries.
-    if state.record.acceptance_outcome.is_none()
-        && matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo)
-    {
-        state.record.acceptance_outcome = Some(state.record.outcome);
-    }
     // #1376: a native task is held for publication; say what finished and what did not.
     if planned.native && state.record.outcome == Outcome::Done && state.record.detail.is_empty() {
         state.record.detail = "local verified; publication held".into();
@@ -1987,6 +1979,11 @@ fn run_locked(
     // useful exact-head receipt is pending, not done. A lane task without lane CI performs no
     // publication step here (#1376 holds it), and a plain task publishes only on request.
     let step = publication_step(state.task.lane_ci, state.record.lane.is_some(), planned.native);
+    // The verdict is settled here, after every outcome the loop can still change (a save
+    // recovery, a lane repair that turns red), and beside the pending marker it belongs to.
+    if matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo) {
+        state.record.acceptance_outcome = Some(state.record.outcome);
+    }
     let pending = step.and_then(|step| {
         matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo)
             .then(|| {

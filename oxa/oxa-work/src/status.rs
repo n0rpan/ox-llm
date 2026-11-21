@@ -403,7 +403,6 @@ mod tests {
         assert!(!publication_pending(&published));
         // A record that only awaits its lane run does not owe publication yet.
         let mut awaiting_lane = accepted(&head);
-        awaiting_lane.acceptance_outcome = None;
         awaiting_lane.lane = Some(crate::lane::LaneVerdict {
             head,
             run_id: 1,
