@@ -48,13 +48,23 @@ impl PublicationStatus {
     /// this one decision, so they cannot disagree about owed publication.
     pub fn owed(record: &Record, now_ms: u64) -> Option<String> {
         let status = Self::read(record, now_ms)?;
-        // An owed run has an accepted verdict and no published receipt or recorded PR; any
-        // other phase (`published_readback_unknown`, `push_unconfirmed`) is not owed
-        // publication. One decision for the runner, the status row and the exit code.
-        if !awaiting_publication(record) || recorded_pr(record) {
-            return None;
-        }
-        (status.phase != "published_readback_unknown").then(|| {
+        let receipt = record
+            .publish_receipt
+            .as_ref()
+            .filter(|r| r.requested == record.head_sha.as_deref()?);
+        // An accepted head whose own push is missing, refused or unconfirmed is owed its
+        // receipt; a saved receipt at the head means a push landed, and a recorded PR means
+        // the publication finished (#2310). The runner, the status row and the exit code
+        // take this one decision.
+        let owed = awaiting_publication(record)
+            && !recorded_pr(record)
+            && receipt.is_none_or(|r| {
+                !matches!(
+                    r.class,
+                    crate::Divergence::Published | crate::Divergence::RemoteUnknown
+                )
+            });
+        owed.then(|| {
             format!(
                 "publication pending: {} ({})",
                 status.phase,
