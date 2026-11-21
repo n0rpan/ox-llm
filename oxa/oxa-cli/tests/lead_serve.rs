@@ -49,6 +49,20 @@ fn bearer() -> String {
 fn get(port: u16, path: &str, authority: &str, extra: &str) -> String {
     get_raw(port, path, authority, &format!("{}{extra}", bearer()))
 }
+fn wait_for_page(port: u16, path: &str, authority: &str, expected: &str) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let page = get(port, path, authority, "");
+        if page.contains(expected) {
+            return page;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "observer did not publish {expected}: {page}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
 fn get_raw(port: u16, path: &str, authority: &str, extra: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -435,6 +449,19 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     let record = serde_json::json!({"schema_version":1,"observed_at":10,
         "board":{"observed_at":10,"entries":entries}});
     std::fs::write(&sample, format!("{record}\n")).unwrap();
+    // The pages read the observer's frame, which picks a changed sample up on its next tick.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let page = get(port, "/board", &authority, "");
+        if page.contains("#50<") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the observer did not publish the new sample: {page}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
     for (path, first, last, absent) in [
         ("/board", 1, 50, 51),
         ("/board?page=1", 51, 100, 1),
@@ -471,6 +498,7 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
         .into();
     }
     std::fs::write(&sample, format!("{filtered}\n")).unwrap();
+    wait_for_page(port, "/board", &authority, "Needs fix (60)");
     for (query, first, last, absent) in [
         ("f=fix", 1, 50, 51),
         ("f=fix&page=1", 51, 60, 61),
@@ -509,7 +537,9 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
         "release_pinned":true,"action":"fix_findings","lease":null,
         "attempts_today":2,"eligible":false}]}});
     std::fs::write(&sample, format!("{record}\n")).unwrap();
-    assert!(get(port, "/board", &authority, "").contains("href=/items/17"));
+    // The item page reads the same frame, so wait for the one field that only this sample
+    // carries before asserting the rest of the row.
+    wait_for_page(port, "/items/17", &authority, "<dd>Release</dd>");
     for path in ["/items/17", "/items/17?fragment=1"] {
         let response = get(port, path, &authority, "");
         assert_eq!(response.lines().next(), Some("HTTP/1.1 200 OK"), "{path}");
@@ -548,11 +578,11 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     )
     .starts_with("HTTP/1.1 403"));
     std::fs::set_permissions(&sample, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let event = get(port, "/events", &authority, "");
+    // #2342: a failed read keeps the last good board and names the allow-listed cause; it
+    // never blanks the page nor reflects the path. The page reads the observer's frame, so
+    // the refusal appears on the tick that reads the changed sample.
+    let event = wait_for_page(port, "/events", &authority, "Board is last-good");
     assert!(event.contains("event: snapshot\ndata: <main>"));
-    // #2342: a failed read keeps the last good board and names the allow-listed
-    // cause; it never blanks the page nor reflects the path.
-    assert!(event.contains("Board is last-good"));
     assert!(event.contains("not readable by this owner"));
     assert!(event.contains("href=/items/17"));
     assert!(!event.contains(sample.to_str().unwrap()));
@@ -898,14 +928,94 @@ fn authorized_durable_asks_reach_the_protected_view_as_a_live_readback() {
     drop(child);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Synthetic lead frames (#2349). Six native fixture frames under tests/fixtures/lead/ render
-// through the real routes: healthy, needs_you, alarm, stale, partial and first_run. The files
-// hold the native wire formats (one Reader sample record, one runner situation document) at a
-// synthetic reference epoch; `with_frame` rebases their timestamps so each frame renders the
-// age it declares. Assertions are behavioural: rows survive staleness, every gap is explicit,
-// an absent source never reads as healthy or alarming, and no frame fabricates data.
-// ---------------------------------------------------------------------------------------------
+fn get_open(port: u16, path: &str, authority: &str) -> TcpStream {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {authority}\r\n{}\r\n",
+        bearer()
+    )
+    .unwrap();
+    let mut reply = String::new();
+    let mut byte = [0u8; 1];
+    while !reply.ends_with("\r\n\r\n") {
+        let read = stream.read(&mut byte).unwrap();
+        assert!(read > 0, "stream ended in its headers: {reply}");
+        reply.push(byte[0] as char);
+    }
+    stream
+}
+
+/// Append what arrives within the next second; `true` when that includes a `lead-update`.
+fn quiet(stream: &mut TcpStream) -> bool {
+    let mut text = [0u8; 2048];
+    match stream.read(&mut text) {
+        Ok(read) => String::from_utf8_lossy(&text[..read]).contains("lead-update"),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            false
+        }
+        Err(_) => true,
+    }
+}
+
+#[test]
+fn idle_streams_share_one_frame_and_only_publish_real_changes() {
+    // Five open tabs cost what none costs: the stream is woken only by a published frame,
+    // never by a one-second poll. A transient read failure keeps the last page.
+    let test = TestEnv::new();
+    let dirs = oxa_config::Dirs::under(test.root());
+    std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let uid = std::fs::metadata(test.root()).unwrap().uid();
+    let project = test.work().canonicalize().unwrap();
+    let id = oxa_cli::LeadOwnerBinding::create(&dirs, &project, uid).unwrap();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{"serve":{"enabled":true,"port":port}}}}).to_string(),
+    );
+    let directory = test.root().join("observer-inputs");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let now = oxa_proto::time::now_ms() / 1000;
+    let sample = write_record(
+        &directory,
+        &stuck_record(now, false, 10 * 60, Some(0), false, Some(false)),
+    );
+    let authority = format!("127.0.0.1:{port}");
+    drop(reservation);
+    let _server = start(&test, &sample);
+    let mut tabs = (0..5)
+        .map(|_| get_open(port, "/events/live", &authority))
+        .collect::<Vec<_>>();
+    let page = get(port, "/", &authority, "");
+    assert!(page.starts_with("HTTP/1.1 200"));
+    assert!(page.contains("Queue empty at observation"), "{page}");
+    for tab in &mut tabs {
+        assert!(quiet(tab), "the initial event must reach every tab");
+    }
+    // Changing user capacity publishes a frame even when the Board did not change.
+    test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{"capacity":{"host-a":6},"serve":{"enabled":true,"port":port}}}})
+            .to_string(),
+    );
+    for tab in &mut tabs {
+        assert!(quiet(tab), "a published frame must reach an open tab");
+    }
+    // Five idle tabs: no further event, so none of them refreshes the page.
+    for tab in &mut tabs {
+        assert!(!quiet(tab), "an idle stream polled the source");
+    }
+    let page = get(port, "/", &authority, "");
+    assert!(page.contains("Queue empty at observation"), "{page}");
+}
 
 fn fixture(name: &str) -> serde_json::Value {
     let text = match name {
@@ -1265,7 +1375,7 @@ fn failed_board_replacement_degrades_explicitly_and_a_fresh_sample_recovers() {
         // keeps the one last-good sample (#2342), so its rows stay, labelled as last-good
         // and carrying the allow-listed cause and age; the rejected bytes never render.
         std::fs::write(&board, b"not a board sample\n").unwrap();
-        let degraded = get(port, "/board", authority, "");
+        let degraded = wait_for_page(port, "/board", authority, "Board is last-good");
         assert!(degraded.contains("Board is last-good"));
         assert!(degraded.contains("The protected Board observation is not a valid board sample"));
         assert!(degraded.contains("Last good value "));
@@ -1277,7 +1387,7 @@ fn failed_board_replacement_degrades_explicitly_and_a_fresh_sample_recovers() {
         assert!(!degraded.contains("not a board sample"));
         assert!(get(port, "/", authority, "").starts_with("HTTP/1.1 200"));
         std::fs::write(&board, &good).unwrap();
-        let recovered = get(port, "/board", authority, "");
+        let recovered = wait_for_page(port, "/board", authority, "GitHub snapshot");
         assert!(recovered.contains("#101") && recovered.contains("GitHub snapshot"));
         assert!(!recovered.contains("Board is last-good"));
     });

@@ -515,6 +515,8 @@ pub struct Binding {
     pub started_ms: u64,
     /// Seconds since the worker's status file changed; `None` when it has none.
     pub status_age_secs: Option<u64>,
+    /// The status file this state was read from, so a reader can watch it instead of polling.
+    pub status_file: Option<std::path::PathBuf>,
 }
 
 /// Why no binding list could be read: an explicit state, never an empty list.
@@ -549,11 +551,12 @@ pub fn bindings(
                 model: rec.model.clone(),
                 state: live_state(rec, sessions_dir),
                 started_ms: rec.started_ms,
-                status_age_secs: fs::metadata(path)
+                status_age_secs: fs::metadata(&path)
                     .and_then(|m| m.modified())
                     .ok()
                     .and_then(|at| now.duration_since(at).ok())
                     .map(|age| age.as_secs()),
+                status_file: Some(path),
             }
         })
         .collect())

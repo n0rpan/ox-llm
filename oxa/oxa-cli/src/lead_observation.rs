@@ -17,6 +17,7 @@ use std::{collections::BTreeMap, path::Path};
 const SITUATION_FUTURE_MS: u64 = 60_000;
 const SITUATION_AGE_MS: u64 = 900_000;
 
+#[derive(Clone)]
 pub(crate) struct Observation {
     pub board: Board,
     /// Why the Board sample could not be read; the board is then the default one.
