@@ -865,10 +865,10 @@ const ROWS: &[Row] = &[
         expect: RM,
     },
     Row {
-        name: "one_env_uses_only_its_last_chdir_option",
+        name: "one_env_composes_its_chdir_options_in_order",
         cmd: "env -C oxa -C .. rm -rf victim",
         cwd: ".",
-        expect: RM,
+        expect: NONE,
     },
     Row {
         name: "absolute_nested_env_chdir_restores_a_known_directory",
