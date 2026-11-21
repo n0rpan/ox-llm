@@ -1,3 +1,16 @@
+const themeBtn=document.getElementById('theme');
+if(themeBtn){
+  const root=document.documentElement;
+  let saved=null;try{saved=localStorage.getItem('lead-theme')}catch(e){}
+  if(saved==='light'||saved==='dark')root.dataset.theme=saved;
+  const dark=()=>root.dataset.theme?root.dataset.theme==='dark':matchMedia('(prefers-color-scheme:dark)').matches;
+  themeBtn.setAttribute('aria-pressed',String(dark()));
+  themeBtn.addEventListener('click',()=>{
+    const next=dark()?'light':'dark';root.dataset.theme=next;
+    themeBtn.setAttribute('aria-pressed',String(next==='dark'));
+    try{localStorage.setItem('lead-theme',next)}catch(e){}
+  });
+}
 const badge=document.getElementById('connection');
 const live=!!document.querySelector('meta[name=oxa-live-events]');
 const digest=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
@@ -43,6 +56,7 @@ async function refresh(){
         if(!nextDraft)return;
         nextDraft.value=draft.value;
       }
+      // The chat thread keeps its scroll and its open folds across the swap (#2341).
       const currentThread=typeof current.querySelector==='function'?current.querySelector('.thread'):null;
       const scroll=currentThread?currentThread.scrollTop:0;
       if(currentThread&&typeof current.querySelectorAll==='function'){
@@ -55,8 +69,7 @@ async function refresh(){
       }
       current.replaceWith(next);badge.textContent='Connected';
       const fresh=document.querySelector('.thread');
-      if(fresh&&currentThread&&pinned)fresh.scrollTop=fresh.scrollHeight;
-      else if(fresh&&currentThread)fresh.scrollTop=scroll;
+      if(fresh&&currentThread)fresh.scrollTop=pinned?fresh.scrollHeight:scroll;
       if(pinned&&pill)pill.hidden=true;
       grow(document.getElementById('lead-message'));
     }
@@ -101,7 +114,9 @@ scheduleAges();
 // Chat (#2341): the composer grows with its text, the thread stays at the newest message
 // unless the reader scrolled up, and a pill says new messages wait below. The composer
 // still posts the same form; nothing here changes a request.
-const composer=document.getElementById('lead-message'),thread=document.querySelector('.thread');
+const composer=document.getElementById('lead-message');
+const rawThread=document.querySelector('.thread');
+const thread=rawThread&&typeof rawThread.addEventListener==='function'?rawThread:null;
 const pill=typeof document.createElement==='function'?document.createElement('a'):null;
 if(pill){pill.className='pill new';pill.href='#thread-end';pill.textContent='New messages ↓';pill.hidden=true;}
 let pinned=true;

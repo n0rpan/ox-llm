@@ -12,6 +12,7 @@ mod pages;
 mod proposals;
 mod quotas;
 mod session;
+mod ui;
 pub use filters::{Filter, Query};
 pub use pages::{Page, Prompt};
 
@@ -60,6 +61,10 @@ pub struct View<'a> {
     /// True when the board shown is a retained last-good value, not a fresh read (#2342).
     pub board_retained: bool,
     pub situation: Option<&'a Snapshot>,
+    /// The owner's configured per-host worker capacity (#2369), read live from the
+    /// user settings. `None` when the settings cannot be read (shown unavailable);
+    /// an empty map means the owner stated no capacity.
+    pub capacity: Option<&'a crate::lead::capacity::Capacity>,
     /// The Lead session's workers from its registry and their status files. An error is
     /// an explicit state: no workers recorded, or a registry that was refused.
     pub workers: Option<&'a Result<Vec<crate::workers::tool::Binding>, crate::workers::tool::BindingsError>>,
@@ -300,7 +305,7 @@ pub fn document_for(page: Page, view: &View<'_>, now: u64) -> String {
     } else {
         ""
     };
-    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=color-scheme content=\"light dark\">{live}{digest}<title>oxa lead</title><link rel=stylesheet href=/style.css><script src=/live.js defer></script>{refresh}<a class=skip href=#main>Skip to content</a><header class=top><a href=/>oxa <b>lead</b></a><span id=connection class=age>Snapshot</span></header>{}</html>", content_for(page, view, now))
+    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=color-scheme content=\"light dark\">{live}{digest}<title>oxa lead</title><link rel=stylesheet href=/style.css><script src=/live.js defer></script>{refresh}<a class=skip href=#main>Skip to content</a><header class=top><a href=/>oxa <b>lead</b></a><span class=age>{}<span id=connection>Snapshot</span></span>{}</header>{}</html>", ui::dot(), ui::theme_toggle(), content_for(page, view, now))
 }
 
 /// Allow-listed HTML fragment, also used by SSE. No worktrees, sessions, errors or headers.
@@ -355,7 +360,9 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
                 let (cause, next) = board_gap(view);
                 say_why(&mut html, "Board", cause, next, None, now);
             }
-            html.push_str("</section><details class=home-work><summary>Observed work</summary>");
+            html.push_str("</section>");
+            capacity(&mut html, view);
+            html.push_str("<details class=home-work><summary>Observed work</summary>");
             board(&mut html, view, now, Query::default());
             workers(&mut html, view, now);
             queue(&mut html, view, now);
@@ -372,7 +379,10 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             board(&mut html, view, now, query);
             queue(&mut html, view, now);
         }
-        Page::Workers => workers(&mut html, view, now),
+        Page::Workers => {
+            capacity(&mut html, view);
+            workers(&mut html, view, now);
+        }
         Page::Asks => {
             html.push_str("<div class=asks-layout>");
             asks(&mut html, view, now);
@@ -385,7 +395,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             quotas::render(&mut html, view, now);
         }
     }
-    html.push_str("<footer>Read-only · Chat with the lead is not connected yet.</footer></main>");
+    html.push_str("</main>");
     html
 }
 
@@ -667,6 +677,54 @@ fn binding_row(html: &mut String, binding: &crate::workers::tool::Binding) {
     );
 }
 
+fn capacity(html: &mut String, view: &View<'_>) {
+    html.push_str("<section id=capacity><h2>Capacity</h2>");
+    let Some(configured) = view.capacity else {
+        html.push_str("<p>Capacity unavailable. The owner's user settings could not be read.</p></section>");
+        return;
+    };
+    let facts = crate::lead::capacity::derive(configured, view.board, view.situation);
+    if facts.hosts.is_empty() {
+        html.push_str("<p>No per-host capacity configured. Set <code>oxa.lead.capacity</code> in user settings, for example <code>{\"host-a\": 6}</code>.</p>");
+    } else {
+        html.push_str("<p class=muted>running workers / configured capacity</p><ul>");
+        for row in &facts.hosts {
+            let used = row.used.map_or("unknown".to_owned(), |n| n.to_string());
+            let cap = row.capacity.map_or("unknown".to_owned(), |n| n.to_string());
+            let _ = write!(html, "<li>{} {used}/{cap}</li>", escape(&row.host));
+        }
+        html.push_str("</ul>");
+        if configured.is_empty() {
+            html.push_str("<p class=muted>Observed use only; no per-host capacity is configured.</p>");
+        }
+    }
+    if configured.ignored() > 0 {
+        let _ = write!(
+            html,
+            "<p class=muted>{} capacity entries could not be read and were ignored.</p>",
+            configured.ignored()
+        );
+    }
+    match facts.ready {
+        Some(n) => {
+            let _ = write!(html, "<p>Ready: {n} items</p>");
+        }
+        None => html.push_str("<p>Ready depth unavailable. No board observation reached this page.</p>"),
+    }
+    match &facts.stuck {
+        Some(list) if list.is_empty() => html.push_str("<p>Stuck: none reported.</p>"),
+        Some(list) => {
+            html.push_str("<p>Stuck:</p><ul>");
+            for label in list {
+                let _ = write!(html, "<li>{}</li>", escape(label));
+            }
+            html.push_str("</ul>");
+        }
+        None => html.push_str("<p>Stuck work unavailable. No runner observation reached this page.</p>"),
+    }
+    html.push_str("</section>");
+}
+
 fn workers(html: &mut String, view: &View<'_>, now: u64) {
     use crate::workers::tool::BindingsError;
     html.push_str("<section id=lanes><h2>Workers</h2>");
@@ -841,44 +899,7 @@ fn asks(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("</section>");
 }
 
-pub const STYLE: &str = concat!(
-    include_str!("lead_page/style.css"),
-    r#"
-:root { --nav-height:3.875rem; }
-.scroll caption { text-align:left; padding:12px; font-weight:600; }
-.scroll th[scope=row]>a { display:inline-flex; align-items:center; min-height:44px; }
-.stale-notice { padding:16px; margin:16px 0; border:1px dashed var(--muted); border-radius:var(--radius); background:var(--raised); }
-.say-why b { color:var(--ink); }
-:root { --bad:#b62c24; --bad-soft:#fde7e4; }
-@media(prefers-color-scheme:dark) { :root { --bad:#ff8a80; --bad-soft:#331917; } }
-#attention .severity { font-weight:700; color:var(--warn); }
-#attention[role=alert] { background:var(--bad-soft); }
-#attention[role=alert] h2,#attention[role=alert] .severity { color:var(--bad); }
-nav.tabs a { position:relative; flex-direction:column; gap:.125rem; font-size:.75rem; line-height:1.25; }
-nav.tabs svg { order:-1; flex:none; width:1.375rem; height:1.375rem; }
-nav.tabs .badge {
-  position:absolute; top:.25rem; right:.25rem; max-width:calc(100% - .5rem);
-  padding:.125rem .375rem; border-radius:1rem; font-size:.71875rem;
-  color:var(--warn); background:var(--warn-soft); white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis;
-}
-nav.tabs .badge.quiet { color:var(--muted); background:var(--raised); }
-.home-decisions,.home-overview,.ask-cards>article { min-width:0; }
-.home-work { border:1px solid var(--line); border-radius:var(--radius); padding:16px; background:var(--surface); }
-.home-work>summary { min-height:44px; font-weight:600; }
-.ask-cards { display:grid; gap:14px; }
-.ask-cards>article { margin:0; }
-@media(min-width:900px) {
-  body { padding-left:5.75rem; }
-  nav.tabs { width:5.75rem; }
-  .home-layout { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,1fr); gap:24px; align-items:start; }
-  .asks-layout .ask-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  nav.tabs a { min-height:4.5rem; padding:.625rem .25rem; justify-content:center; font-size:.78125rem; }
-}
-.quota-windows dd { margin:0 0 16px; overflow-wrap:anywhere; }
-.quota-windows meter { display:block; width:100%; max-width:24rem; margin-top:6px; }
-"#
-);
+pub const STYLE: &str = include_str!("lead_page/style.css");
 
 pub const SCRIPT: &str = include_str!("lead_page/live.js");
 
@@ -1016,6 +1037,94 @@ mod tests {
             100,
         );
         assert!(!invalid.contains(&u64::MAX.to_string()));
+    }
+
+    #[test]
+    fn capacity_section_shows_configured_and_observed_truth() {
+        use crate::lead::capacity::Capacity;
+        use oxa_proto::work::{Running, TaskStep};
+        let running = |task: &str, host: &str| Running {
+            task: task.into(),
+            host: host.into(),
+            branch: format!("agent/{task}"),
+            worktree: format!("~/project/{task}"),
+            session_id: None,
+            step: TaskStep::Worker,
+        };
+        let situation = Snapshot {
+            as_of_seq: 1,
+            at_ms: 1_000,
+            standing_revision: 1,
+            goal: None,
+            running: vec![
+                running("t1", "host-a"),
+                running("t2", "host-a"),
+                running("t3", "<b>host"),
+            ],
+            local_accepted: Vec::new(),
+            published: Vec::new(),
+            landed: Vec::new(),
+            blocked: Vec::new(),
+            asks: Vec::new(),
+            incidents: Vec::new(),
+            history_truncated: false,
+        };
+        let board = Board {
+            observed_at: 1,
+            entries: vec![Entry {
+                number: 1,
+                head: "synthetic-head".into(),
+                release_pinned: false,
+                action: Action::Ready,
+                lease: None,
+                attempts_today: 0,
+                eligible: true,
+                evidence_incomplete: None,
+            }],
+        };
+        let capacity = Capacity::parse(Some(&serde_json::json!({"host-a": 6})));
+        let view = View {
+            board: Some(&board),
+            situation: Some(&situation),
+            capacity: Some(&capacity),
+            ..Default::default()
+        };
+        for page in [Page::Home, Page::Workers] {
+            let html = content_for(page, &view, 100);
+            assert!(html.contains("id=capacity"), "{page:?}");
+            assert!(html.contains("host-a 2/6"), "{page:?}");
+            // An observed but unconfigured host keeps an unknown capacity, and its
+            // name is escaped rather than rendered as markup.
+            assert!(html.contains("&lt;b&gt;host 1/unknown"), "{page:?}");
+            assert!(!html.contains("<b>host"), "{page:?}");
+            assert!(html.contains("Ready: 1 items"), "{page:?}");
+            assert!(html.contains("Stuck: none reported."), "{page:?}");
+        }
+    }
+
+    #[test]
+    fn capacity_unknown_states_are_explicit() {
+        use crate::lead::capacity::Capacity;
+        // No capacity source at all: unavailable, not "not configured".
+        let html = content_for(Page::Workers, &View::default(), 100);
+        assert!(html.contains("Capacity unavailable"));
+        // Configured but no situation or board: use and ready stay unknown, never zero.
+        let capacity = Capacity::parse(Some(&serde_json::json!({"host-a": 6})));
+        let view = View {
+            capacity: Some(&capacity),
+            ..Default::default()
+        };
+        let html = content_for(Page::Workers, &view, 100);
+        assert!(html.contains("host-a unknown/6"));
+        assert!(html.contains("Ready depth unavailable"));
+        assert!(html.contains("Stuck work unavailable"));
+        // An empty configuration with no observation offers the set-it hint.
+        let empty = Capacity::default();
+        let view = View {
+            capacity: Some(&empty),
+            ..Default::default()
+        };
+        assert!(content_for(Page::Workers, &view, 100).contains("No per-host capacity configured"));
     }
 
     fn owner_goal_fixture() -> (oxa_session::Goal, oxa_session::SessionRef) {
@@ -1396,7 +1505,14 @@ mod tests {
                 "aria-label=\"Asks, {} open in snapshot\"",
                 snapshot.asks.len()
             )));
-            assert_eq!(nav.matches("<svg ").count(), 5);
+            assert_eq!(nav.matches("<svg ").count(), 6);
+            assert!(nav.contains("class=rail-only href=/chat"));
+            assert!(nav.contains("<span class=badge aria-hidden=true>"));
+            if matches!(page, Page::Chat(_)) {
+                assert!(!html.contains("class=fab"));
+            } else {
+                assert!(html.contains("<a class=fab href=/chat"));
+            }
             assert_eq!(html.matches("<h1 ").count(), 1);
             assert!(html.contains("href=#main>Skip to content"));
             assert!(html.contains("id=main tabindex=-1"));
@@ -1412,10 +1528,122 @@ mod tests {
             100,
         );
         assert!(quiet.contains("aria-label=\"Asks, 0 open in snapshot\""));
+        assert!(!quiet.contains("class=badge"));
         let unknown = content_for(Page::Asks, &View::default(), 100);
         assert!(unknown.contains("aria-label=\"Asks, observations unavailable\""));
         assert!(!unknown.contains("Asks, 0 open in snapshot"));
+        assert!(!unknown.contains("class=badge"));
         assert!(unknown.contains("Owner asks unavailable"));
+    }
+
+    #[test]
+    fn capability_footer_is_gone_and_the_theme_toggle_is_document_chrome() {
+        for page in [
+            Page::Home,
+            Page::Asks,
+            Page::Board,
+            Page::Workers,
+            Page::Usage,
+            Page::Item(17),
+            Page::Chat(Prompt::Status),
+        ] {
+            let document = document_for(page, &View::default(), 100);
+            let fragment = content_for(page, &View::default(), 100);
+            assert!(!document.contains("not connected yet"), "{page:?}");
+            assert!(!fragment.contains("not connected yet"), "{page:?}");
+            assert!(!document.contains("<footer"), "{page:?}");
+            assert!(document.contains("<button id=theme class=iconbtn type=button aria-label=\"Switch colour theme\" aria-pressed=false>"));
+            // The fragment swaps into a document that already carries the toggle.
+            assert!(!fragment.contains("id=theme"), "{page:?}");
+            assert!(document.contains("<span class=dot aria-hidden=true></span>"));
+        }
+    }
+
+    #[test]
+    fn style_keeps_colour_literals_inside_the_token_block() {
+        let end = STYLE
+            .find("/* End of design tokens.")
+            .expect("the token block is marked");
+        let rest = &STYLE[end..];
+        assert!(!rest.contains("rgb(") && !rest.contains("rgba(") && !rest.contains("hsl("));
+        let bytes = rest.as_bytes();
+        for (index, byte) in bytes.iter().enumerate() {
+            if *byte != b'#' {
+                continue;
+            }
+            let run = bytes[index + 1..]
+                .iter()
+                .take_while(|b| b.is_ascii_hexdigit())
+                .count();
+            let next = bytes.get(index + 1 + run).copied().unwrap_or(b' ');
+            if (3..=8).contains(&run) && !next.is_ascii_alphanumeric() && next != b'-' && next != b'_' {
+                panic!(
+                    "colour literal outside the token block: {}",
+                    &rest[index..index + 1 + run]
+                );
+            }
+        }
+        for token in [
+            "--ink2:",
+            "--on-accent:",
+            "--ok:",
+            "--bad:",
+            "--shadow:",
+            "--on-bad:",
+        ] {
+            assert!(STYLE[..end].contains(token), "missing token {token}");
+        }
+    }
+
+    #[test]
+    fn theme_toggle_follows_the_system_and_persists_an_explicit_choice() {
+        let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
+        runtime.eval_script("dom-fixture", DOM_FIXTURE).unwrap();
+        runtime
+            .eval_script(
+                "theme-setup",
+                "themeState.systemDark=true;themeState.store['lead-theme']='light';",
+            )
+            .unwrap();
+        runtime.eval_script("live.js", SCRIPT).unwrap();
+        let result = runtime
+            .eval_async_body(
+                "theme-choice",
+                r#"
+const root=document.documentElement;
+if(root.dataset.theme!=='light'||themeState.pressed!=='false')throw new Error('saved choice did not win over the system');
+themeState.click();
+if(root.dataset.theme!=='dark'||themeState.pressed!=='true'||themeState.store['lead-theme']!=='dark')throw new Error('toggle did not flip and persist');
+themeState.click();
+if(root.dataset.theme!=='light'||themeState.pressed!=='false'||themeState.store['lead-theme']!=='light')throw new Error('second toggle did not return to light');
+return true;
+"#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!(true));
+
+        let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
+        runtime.eval_script("dom-fixture", DOM_FIXTURE).unwrap();
+        runtime
+            .eval_script(
+                "theme-setup",
+                "themeState.systemDark=true;themeState.store['lead-theme']='banana';",
+            )
+            .unwrap();
+        runtime.eval_script("live.js", SCRIPT).unwrap();
+        let result = runtime
+            .eval_async_body(
+                "theme-invalid",
+                r#"
+if(document.documentElement.dataset.theme)throw new Error('invalid saved theme was applied');
+if(themeState.pressed!=='true')throw new Error('system dark was not reported');
+themeState.click();
+if(document.documentElement.dataset.theme!=='light'||themeState.store['lead-theme']!=='light')throw new Error('toggle from system dark did not choose light');
+return true;
+"#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!(true));
     }
 
     #[test]
@@ -1479,23 +1707,22 @@ mod tests {
         refresh_runtime_config(false, None, false)
     }
 
-    fn refresh_runtime_config(events: bool, digest: Option<&str>, enabled: bool) -> oxa_script::Runtime {
-        let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
-        runtime
-            .eval_script(
-                "dom-fixture",
-                r#"
+    const DOM_FIXTURE: &str = r#"
 let current, supplied, closeDuringFetch, failureMode='ok', focusDuringFetch=false, hideDuringFetch=false, focused='', inside=false, fetches=0;
 let initialDigest=null, liveEnabled=false, reloads=0, visibilityListener, serial=0;
 const timers=new Map(), requested=[], streams=[];
 const connectionBadge={textContent:'Snapshot'};
+const themeState={store:{},pressed:null,click:null,systemDark:false};
+const themeButton={setAttribute:(k,v)=>{if(k==='aria-pressed')themeState.pressed=v;},addEventListener:(n,fn)=>{if(n==='click')themeState.click=fn;}};
+const localStorage={getItem:k=>Object.prototype.hasOwnProperty.call(themeState.store,k)?themeState.store[k]:null,setItem:(k,v)=>{themeState.store[k]=String(v);}};
+const matchMedia=()=>({matches:themeState.systemDark});
 function makeMain(open, message=null) {
   const work={open}, notice={hidden:true}, draft=message===null?null:{value:message};
   return {work, notice, draft, contains:()=>inside, querySelector:selector=>selector==='details.home-work'?work:selector==='#lead-message'?draft:null,
     replaceWith:next=>{current=next;}};
 }
-const document={hidden:false, activeElement:{matches:selectors=>selectors.split(',').includes(focused)},
-  getElementById:id=>id==='connection'?connectionBadge:id==='refresh-error'?current.notice:id==='lead-message'?current?.draft:null,
+const document={hidden:false, documentElement:{dataset:{}}, activeElement:{matches:selectors=>selectors.split(',').includes(focused)},
+  getElementById:id=>id==='theme'?themeButton:id==='connection'?connectionBadge:id==='refresh-error'?current.notice:id==='lead-message'?current?.draft:null,
   querySelector:selector=>selector==='meta[name=oxa-live-events]'?(liveEnabled?{}:null):selector.startsWith('meta')?(initialDigest?{content:initialDigest}:null):selector==='#lead-message'?current?.draft:selector==='.thread'?null:current,
   addEventListener:(name,fn)=>{if(name==='visibilitychange')visibilityListener=fn;}};
 const setTimeout=(fn,ms)=>{const id=++serial;timers.set(id,{fn:()=>{timers.delete(id);return fn();},ms});return id;}, clearTimeout=id=>timers.delete(id);
@@ -1516,9 +1743,11 @@ async function fetch(target){
   if(closeDuringFetch)current.work.open=false;
   return {ok:failureMode!=='refused', text:async()=>''};
 }
-"#,
-            )
-            .unwrap();
+"#;
+
+    fn refresh_runtime_config(events: bool, digest: Option<&str>, enabled: bool) -> oxa_script::Runtime {
+        let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
+        runtime.eval_script("dom-fixture", DOM_FIXTURE).unwrap();
         if events {
             runtime
                 .eval_script(

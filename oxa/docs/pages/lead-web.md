@@ -5,6 +5,25 @@ Run `oxa lead serve` to serve the read-only board after enabling it in user sett
 The owner must read the final authentication composition before merge or live exposure.
 Chat remains separate work. The one owner-decision mutation is the approval answer below.
 
+## The page
+
+Every page shares one chrome: a sticky top bar with a state dot and a light/dark
+toggle, a fixed bottom navigation, and a floating chat button. The theme choice
+is kept in the browser only, follows the system theme until you pick one, and
+never leaves the device. From 900px wide the bottom bar becomes a left rail with
+a sixth Chat entry, and the floating button hides.
+
+- The Asks tab carries a red count badge only when asks are open. Zero or an
+  unknown count shows no badge; the tab's accessible name says which it is.
+- The active tab is marked with an accent bar and `aria-current=page`. On chat
+  the floating button is absent, because the composer is there.
+- Buttons, textareas, cards, chips and meters follow one token set (colour,
+  type, space, shape) at the top of `lead_page/style.css`; light and dark come
+  from the same tokens. Status colour always pairs with an icon or a word, and
+  an unknown state never renders green.
+- Pages no longer end with a "not connected yet" footer; what chat can do is
+  shown on the chat page itself.
+
 The home page's attention block reports the five stuck-work signals from the board
 log's protected record: main required-check failures, no verified main merge for 45
 minutes, over-age merge-queue membership at the exact PR head, workflow runs queued
@@ -207,6 +226,16 @@ the pages did not read before. The server no longer makes its own partial read.
   of the Lead owner binding, never a session list. No workers recorded and no runner
   observation render the "Lane status unavailable" text; a corrupt registry renders
   "Live workers refused" and is left untouched.
+- **Capacity** (home and Workers pages) shows the owner's user-only `oxa.lead.capacity`
+  map next to observed use: one row per host as `running workers / configured capacity`,
+  for example `host-a 2/6`. A host the owner did not configure shows an unknown capacity;
+  without a runner observation the use is unknown, never zero. It also reports the Ready
+  queue depth (eligible items the loop would propose first) and the stuck work the
+  situation reports (stalled tasks, idle hosts, blocked task/host subjects). A board or
+  situation that did not reach the page leaves the corresponding line explicitly
+  unavailable, and an unreadable user settings file shows "Capacity unavailable". An
+  invalid capacity entry is ignored and counted, never refused. This is display only:
+  nothing schedules, refuses or starts work on it, and a project file cannot set it.
 - **Usage** adds a line for each optional GitHub read the reserve deferred
   (`oxa.lead.github_reserve`), saying whether it waits for a window reset or for a first
   observation. Model plan windows still render only from an observation that reached the
@@ -215,9 +244,28 @@ the pages did not read before. The server no longer makes its own partial read.
   advertises it and the page opens `GET /events/live`, behind the same authorization as
   every other path. The server sends `retry: 5000` and a `lead-update` event at once and
   again only when a fingerprint of the observation changes (board time, situation
-  sequence, ask revisions, worker states), polled once a second; a `: keep-alive`
+  sequence, ask revisions, worker states, capacity edits), polled once a second; a `: keep-alive`
   comment goes out every 15 seconds and the stream ends after five minutes so the
   client reconnects. The event carries the SHA-256 of the serving executable, so a
   changed digest after an update reloads the page. Streams use the existing
   16-connection pool and per-write deadline. The one-shot `/events` route and the
   polling fallback remain for listeners without the route.
+
+## Synthetic fixture frames
+
+Six synthetic frames under `oxa/oxa-cli/tests/fixtures/lead/` drive the real service in
+`tests/lead_serve.rs`: `healthy`, `needs_you`, `alarm`, `stale`, `partial` and `first_run`.
+Each file holds the native wire formats — one complete Reader sample record (board, panels,
+landing, queued runs, App quota, deferrals) and one runner situation document — with
+synthetic identities only. Timestamps sit at a synthetic reference epoch; the test rebases
+them so the frame renders the age it declares (`age_secs`, `situation_age_secs`), which
+keeps the files deterministic while the freshness states stay real.
+
+The tests assert behaviour through the real routes: a healthy frame renders no attention
+block; open decisions render as a request, not an alarm; an alarm names every firing
+source; a stale board keeps its rows and offers a retry; a partial sample keeps its known
+sources and names each gap with its cause; a first run renders explicit missing states and
+never a fabricated row; a malformed replacement degrades explicitly and a fresh sample
+recovers. The hosted screenshot job proposed for #2349 renders these same frames at phone
+and desktop widths in light and dark, so every `lead_page/` change is reviewed by looking
+at it.

@@ -299,18 +299,7 @@ fn run_inner(
             snapshot_keep: false,
             // The contract (including repair feedback) belongs to this run, not the
             // persisted conversation. Repeat it for tool/continuation requests too.
-            extra: st
-                .output_schema
-                .as_ref()
-                .map(|schema| {
-                    let instruction = if let Some(error) = &schema_repaired {
-                        format!("Your final answer did not match the output schema: {error}. Return only valid JSON matching this schema:")
-                    } else {
-                        "Your final answer must be JSON matching this schema:".to_owned()
-                    };
-                    vec![WireMsg::user(format!("{instruction}\n{}", schema.value()))]
-                })
-                .unwrap_or_default(),
+            extra: turn_extra(st, &schema_repaired),
             events: true,
             idem_key: String::new(),
         };
@@ -840,6 +829,9 @@ fn run_inner(
             st.stats.ci_polls += results.iter().filter(|r| r.ui["ciPoll"] == true).count() as u32;
             done.note_proof(&calls, &results);
             done.note_toolchain(&calls);
+            // #2295: with `done` checks in the run, keep this batch's written files as the
+            // verified result a repair names.
+            done.note_artifacts(crate::done::checks_run(st));
             done.note_bash(st, &results);
             crate::exec::note_stored_images(st, &results, sink)?;
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
@@ -1638,6 +1630,25 @@ fn failure_why(e: &OxaError, got_data: bool) -> &'static str {
         oxa_proto::codes::STREAM_BROKEN if got_data => shown_why::CUT,
         _ => shown_why::FAILED,
     }
+}
+
+/// The messages sent after the wire for one request and never stored: the output schema
+/// contract (with its repair feedback).
+fn turn_extra(
+    st: &SessionState,
+    schema_repaired: &Option<crate::output_schema::OutputValidationError>,
+) -> Vec<WireMsg> {
+    st.output_schema
+        .as_ref()
+        .map(|schema| {
+            let instruction = if let Some(error) = schema_repaired {
+                format!("Your final answer did not match the output schema: {error}. Return only valid JSON matching this schema:")
+            } else {
+                "Your final answer must be JSON matching this schema:".to_owned()
+            };
+            vec![WireMsg::user(format!("{instruction}\n{}", schema.value()))]
+        })
+        .unwrap_or_default()
 }
 
 /// The placeholder of the assistant message a request is about to stream.
