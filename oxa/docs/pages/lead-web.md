@@ -24,17 +24,36 @@ a sixth Chat entry, and the floating button hides.
 - Pages no longer end with a "not connected yet" footer; what chat can do is
   shown on the chat page itself.
 
-The home page's attention block reports the five stuck-work signals from the board
+The home page answers three questions in order, above the fold first. A banner at the
+top says whether anything is wrong: a firing stuck-work signal reads red ("Alarm"), open
+owner decisions or asks read amber ("Needs you"), a fully observed quiet system reads one
+green sentence ("All clear"), and anything less reads "Can't tell yet" rather than green.
+The banner never invents health: it is green only when every alarm source is observed and
+quiet, the board sample is fresh and not a retained last-good value, and no decision or
+ask is open. It is a status, not an alert, unless an alarm is actually firing.
+
+Below the banner, the attention block reports the five stuck-work signals from the board
 log's protected record: main required-check failures, no verified main merge for 45
 minutes, over-age merge-queue membership at the exact PR head, workflow runs queued
 over 15 minutes, and unanswered owner decisions. Each source is rendered from its own
 observation: a source the record does not carry is never shown as healthy. The missing
 sources collapse into one line ("Not in this sample: …") that names them, instead of one
-bullet per source, and a routine healthy read renders no attention block at all. With
-`owner_chat` enabled, open owner asks are additionally read live from the authorized
+bullet per source, and a routine healthy read renders no attention block at all. Open
+owner decisions render as rows with the same inline approve forms as the approvals page.
+With `owner_chat` enabled, open owner asks are additionally read live from the authorized
 durable Lead Session on every render, with their original revisions, through the
 registered owner-bound caller; an unauthorized or absent session leaves that source
 unavailable rather than quietly empty.
+
+Then four read-only tiles navigate to the full pages, each with one factual line from the
+same observation the destination renders: Board (the observed item count and whether the
+snapshot is current, stale or last-good), Workers (how many are running at the
+observation), Merge queue (how many PRs are in it) and Release (the checked and total
+release-checklist items). A tile whose source is absent names the gap instead of showing a
+number; no tile carries a form, button or inline handler. The owner goal collapses to one
+row that links to `/goal`, where the full acceptance tree lives: the home row shows the
+objective, its recorded state and start time, or says the goal observation is unavailable.
+Live workers and the observed-work details follow, as before.
 
 ## Last-known data, age and cause
 

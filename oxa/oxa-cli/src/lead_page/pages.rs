@@ -20,6 +20,7 @@ pub enum Page {
     Usage,
     Item(u64),
     Chat(Prompt),
+    Goal,
 }
 
 impl Page {
@@ -34,6 +35,7 @@ impl Page {
             Self::Usage => "Usage",
             Self::Item(_) => "Item",
             Self::Chat(_) => "Chat with lead",
+            Self::Goal => "Owner goal",
         }
     }
 
@@ -45,6 +47,7 @@ impl Page {
             Self::Workers => "/workers",
             Self::Usage => "/usage",
             Self::Chat(_) => "/chat",
+            Self::Goal => "/goal",
         }
     }
 
@@ -69,6 +72,9 @@ impl Page {
         if let Some(prompt) = prompt {
             return Some((Self::Chat(prompt), fragment));
         }
+        if path == "/goal" {
+            return Some((Self::Goal, fragment));
+        }
         Self::ALL
             .into_iter()
             .find(|page| page.path() == path)
@@ -77,10 +83,10 @@ impl Page {
 
     pub(super) fn navigation(self, ask_count: Option<usize>) -> String {
         let mut html = String::from("<nav class=tabs aria-label=Main>");
-        let selected = if matches!(self, Self::BoardQuery(_) | Self::Item(_)) {
-            Self::Board
-        } else {
-            self
+        let selected = match self {
+            Self::BoardQuery(_) | Self::Item(_) => Self::Board,
+            Self::Goal => Self::Home,
+            _ => self,
         };
         for page in Self::ALL {
             let _ = write!(html, "<a href={}", page.path());
@@ -122,6 +128,7 @@ impl Page {
             Self::Workers => "M4 20v-3a4 4 0 0 1 8 0v3M8 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6M14 20v-3a4 4 0 0 1 8 0v3M18 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6",
             Self::Usage => "M4 20V4M4 20h17M8 16v-4M13 16V8M18 16V5",
             Self::Chat(_) => ui::CHAT_ICON,
+            Self::Goal => "M12 3v3M12 18v3M3 12h3M18 12h3M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8",
         }
     }
 }

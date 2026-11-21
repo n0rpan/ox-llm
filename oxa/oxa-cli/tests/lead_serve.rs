@@ -388,6 +388,7 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
         ("/workers", "Workers"),
         ("/usage", "Usage"),
         ("/chat", "Chat with lead"),
+        ("/goal", "Owner goal"),
     ] {
         for fragment in [false, true] {
             let path = if fragment {
@@ -1034,6 +1035,7 @@ fn frame_pages_render(port: u16, authority: &str) {
         ("/workers", "Workers"),
         ("/usage", "Usage"),
         ("/chat", "Chat with lead"),
+        ("/goal", "Owner goal"),
     ] {
         for fragment in [false, true] {
             let path = if fragment {
