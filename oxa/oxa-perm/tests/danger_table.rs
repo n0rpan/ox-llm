@@ -1021,6 +1021,12 @@ const ROWS: &[Row] = &[
         expect: RM,
     },
     Row {
+        name: "env_chain_resolves_each_directory_after_the_previous_one",
+        cmd: "env -C / env -C var/tmp pwd",
+        cwd: ".",
+        expect: NONE,
+    },
+    Row {
         name: "env_chain_back_inside_the_workspace",
         cmd: "env -C sub env -C .. rm -rf build",
         cwd: ".",

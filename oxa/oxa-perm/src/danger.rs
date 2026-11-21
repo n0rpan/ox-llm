@@ -1784,16 +1784,19 @@ fn skip_positional(words: &[String], from: usize, with_arg: &[&str]) -> usize {
 /// Skips `env`'s options and `NAME=value` words. `env -S 'cmd ...'` runs that string.
 fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dirs: &mut Vec<String>) -> usize {
     let mut i = from;
+    let mut moved = false;
     while i < words.len() {
         let w = words[i].as_str();
         if let Some(value) = w.strip_prefix("--chdir=") {
             dirs.push(value.to_string());
+            moved = true;
             i += 1;
             continue;
         }
         if matches!(w, "-C" | "--chdir") && i + 1 < words.len() {
             // The wrapped command runs in this directory, not in the current one.
             dirs.push(words[i + 1].clone());
+            moved = true;
             i += 2;
             continue;
         }
@@ -1818,7 +1821,14 @@ fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>, dirs: &mut 
             break;
         }
     }
-    i.min(words.len())
+    i = i.min(words.len());
+    // `env -C a env -C b cmd` runs in `a` then in `b`: the nested wrapper's directory is relative to the one
+    // this `env` moved to, so it composes here (`b` is resolved against `a` by the caller's chain) rather than
+    // standing alone against the shell's own directory (#1768).
+    if moved && words.get(i).is_some_and(|w| w == "env") {
+        i = skip_env(words, i + 1, inline, dirs);
+    }
+    i
 }
 
 /// The word after the first of `flags` at or after `from`.
