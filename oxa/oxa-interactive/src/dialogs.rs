@@ -694,9 +694,17 @@ pub fn access_prompt(a: &Access) -> (String, String) {
     match a {
         Access::Read(p) => ("Allow read?".to_string(), format!("Read {}", p.display())),
         Access::Write(p) => ("Allow write?".to_string(), format!("Write to {}", p.display())),
-        Access::Exec { command, net } => {
+        Access::Exec {
+            command,
+            net,
+            background,
+        } => {
             let scope = if *net { "network on" } else { "no network" };
-            ("Allow command?".to_string(), format!("Run {command} ({scope})"))
+            let execution = if *background { ", background" } else { "" };
+            (
+                "Allow command?".to_string(),
+                format!("Run {command} ({scope}{execution})"),
+            )
         }
         Access::Net { host } => ("Allow network?".to_string(), format!("Connect to {host}")),
         Access::Mcp { server, tool, class } => (

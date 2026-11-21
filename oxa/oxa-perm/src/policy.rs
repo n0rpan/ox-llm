@@ -449,14 +449,20 @@ impl ModePolicy {
     /// The classified hits of `a` minus the keys a session or always grant covers. Inspect
     /// the whole command for dynamic input because an earlier stage can affect a later hit.
     fn danger_open(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
-        let (Access::Exec { command, .. }, Some(rules)) = (a, &self.danger) else {
+        let (
+            Access::Exec {
+                command, background, ..
+            },
+            Some(rules),
+        ) = (a, &self.danger)
+        else {
             return Vec::new();
         };
         let mut found = rules.classify(command, cwd, &self.guard);
-        // A segment a built-in rule already names (a force push) is asked and granted under that
-        // rule's key alone; the publish rule adds the rest.
-        for hit in rules.publish_classify(command, cwd) {
-            if !found.iter().any(|h| h.segment == hit.segment) {
+        // A foreground segment already named by a built-in rule is granted under that key
+        // alone. Background publication needs its own key, not a grant for foreground work.
+        for hit in rules.publish_classify_exec(command, cwd, *background) {
+            if *background || !found.iter().any(|h| h.segment == hit.segment) {
                 found.push(hit);
             }
         }
@@ -504,12 +510,14 @@ impl ModePolicy {
                 Access::Exec {
                     command: gc,
                     net: true,
+                    background: gb,
                 },
                 Access::Exec {
                     command: c,
                     net: true,
+                    background: b,
                 },
-            ) => gc == c,
+            ) => gc == c && gb == b,
             (Access::Exec { net: false, .. }, Access::Exec { net: false, .. }) => true,
             (Access::Net { host: gh }, Access::Net { host }) => gh == host,
             (
@@ -555,7 +563,7 @@ fn table(mode: Mode, a: &Access, cwd: &Path) -> Decision {
             }
             Mode::Ask => Decision::Ask,
         },
-        Access::Exec { command, net } => match (mode, *net) {
+        Access::Exec { command, net, .. } => match (mode, *net) {
             (Mode::Plan, false) => {
                 if is_read_only_command(command) {
                     Decision::Allow
@@ -793,13 +801,19 @@ impl Policy for ModePolicy {
         let grant = match a {
             Access::Read(p) => Access::Read(grant_scope(p)),
             Access::Write(p) => Access::Write(grant_scope(p)),
-            Access::Exec { command, net: true } => Access::Exec {
+            Access::Exec {
+                command,
+                net: true,
+                background,
+            } => Access::Exec {
                 command: command.clone(),
                 net: true,
+                background: *background,
             },
             Access::Exec { net: false, .. } => Access::Exec {
                 command: String::new(),
                 net: false,
+                background: false,
             },
             Access::Net { host } => Access::Net { host: host.clone() },
             Access::Mcp { server, tool, class } => Access::Mcp {

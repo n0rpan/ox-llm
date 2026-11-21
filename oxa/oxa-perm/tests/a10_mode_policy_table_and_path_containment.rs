@@ -14,6 +14,7 @@ fn exec(command: &str, net: bool) -> Access {
     Access::Exec {
         command: command.to_string(),
         net,
+        background: false,
     }
 }
 

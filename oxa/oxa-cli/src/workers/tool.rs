@@ -1348,6 +1348,7 @@ fn worker_access(args: &Value, cwd: &Path, external: bool) -> Result<Vec<Access>
                 Access::Exec {
                     command: COMMAND.to_string(),
                     net: true,
+                    background: false,
                 },
                 Access::Write(path),
             ];
@@ -1360,6 +1361,7 @@ fn worker_access(args: &Value, cwd: &Path, external: bool) -> Result<Vec<Access>
         _ => Ok(vec![Access::Exec {
             command: COMMAND.to_string(),
             net: false,
+            background: false,
         }]),
     }
 }
@@ -2944,6 +2946,7 @@ mod tests {
             vec![Access::Exec {
                 command: COMMAND.to_string(),
                 net: false,
+                background: false,
             }]
         );
     }

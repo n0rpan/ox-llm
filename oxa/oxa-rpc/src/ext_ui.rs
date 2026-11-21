@@ -180,8 +180,15 @@ fn describe(a: &Access) -> String {
     match a {
         Access::Read(p) => format!("read {}", p.display()),
         Access::Write(p) => format!("write {}", p.display()),
-        Access::Exec { command, net: true } => format!("run `{command}` with network access"),
-        Access::Exec { command, net: false } => format!("run `{command}`"),
+        Access::Exec {
+            command,
+            net,
+            background,
+        } => {
+            let network = if *net { " with network access" } else { "" };
+            let execution = if *background { " in the background" } else { "" };
+            format!("run `{command}`{network}{execution}")
+        }
         Access::Net { host } => format!("connect to {host}"),
         Access::Mcp { server, tool, .. } => format!("call the MCP tool {server}/{tool}"),
     }

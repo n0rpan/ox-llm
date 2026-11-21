@@ -244,6 +244,7 @@ impl Tool for ExtTool {
             ToolClass::Exec => vec![Access::Exec {
                 command: format!("extension tool {}", self.reg.spec.name),
                 net: false,
+                background: false,
             }],
             ToolClass::Net => vec![Access::Net {
                 host: "*".to_string(),

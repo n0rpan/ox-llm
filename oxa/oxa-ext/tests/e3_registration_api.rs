@@ -284,7 +284,8 @@ fn registered_tool_runs_through_policy_and_shape() {
             boom.access(&json!({}), cx).unwrap(),
             vec![Access::Exec {
                 command: "extension tool boom".to_string(),
-                net: false
+                net: false,
+                background: false,
             }]
         );
         let flagged = ExtTool::new(r.tool("flagged"), r.st.clone(), r.th.clone(), None);

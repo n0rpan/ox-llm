@@ -32,6 +32,10 @@ fn decide(cwd: &Path, level: Autonomy, command: &str) -> Decision {
 }
 
 fn decide_in(cwd: &Path, mode: Mode, level: Autonomy, command: &str) -> Decision {
+    decide_exec(cwd, mode, level, command, false)
+}
+
+fn decide_exec(cwd: &Path, mode: Mode, level: Autonomy, command: &str, background: bool) -> Decision {
     let guard = PathGuard::new(
         Path::new("/home/u"),
         Path::new("/home/u/.oxa/agent"),
@@ -46,6 +50,7 @@ fn decide_in(cwd: &Path, mode: Mode, level: Autonomy, command: &str) -> Decision
         &Access::Exec {
             command: command.into(),
             net: false,
+            background,
         },
         cwd,
     )
@@ -398,6 +403,8 @@ fn wrapper_semantics_keep_the_publish_floor() {
         "env git push origin HEAD",
         "env -i git push origin HEAD",
         "HOME=./scratch cargo fmt --check",
+        "env -C . cargo fmt --check",
+        "xargs grep TODO < files.txt",
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Allow, "{c}");
     }
@@ -458,6 +465,8 @@ fn unordered_pushes_and_ref_writing_plumbing_ask() {
         "(sleep 1; git push origin HEAD) & git switch main",
         "git push origin HEAD &",
         "coproc git push origin HEAD",
+        "flock lock git push origin HEAD",
+        "watch --exec git push origin HEAD",
         "setsid -f flock lock git push origin HEAD; git switch main",
         "command time -o timing.txt gh pr view && git push origin HEAD",
         "command time --output=timing.txt gh pr view && git push origin HEAD",
@@ -465,6 +474,61 @@ fn unordered_pushes_and_ref_writing_plumbing_ask() {
     ] {
         assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Ask, "{c}");
     }
+}
+
+#[test]
+fn background_bash_publish_asks_but_local_jobs_do_not() {
+    let cwd = repo("my-branch");
+    for level in [Autonomy::Standard, Autonomy::Auto] {
+        for (command, expected) in [
+            ("git push origin HEAD", Decision::Ask),
+            ("git status", Decision::Allow),
+        ] {
+            assert_eq!(
+                decide_exec(&cwd, Mode::Workspace, level, command, true),
+                expected,
+                "{command}"
+            );
+        }
+    }
+    assert_eq!(
+        decide_exec(
+            &cwd,
+            Mode::Workspace,
+            Autonomy::Yolo,
+            "git push origin HEAD",
+            true
+        ),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn foreground_publish_approval_does_not_cover_a_background_job() {
+    let cwd = repo("my-branch");
+    let command = "git push origin HEAD:main";
+    let mut policy = ModePolicy::new()
+        .with_yolo(YoloSwitch::new(Autonomy::Auto))
+        .with_danger(Arc::new(DangerRules::builtin()), Vec::new());
+    let foreground = Access::Exec {
+        command: command.into(),
+        net: false,
+        background: false,
+    };
+    let background = Access::Exec {
+        command: command.into(),
+        net: false,
+        background: true,
+    };
+    let keys: Vec<_> = policy
+        .danger_ask(&foreground, &cwd)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert!(!keys.is_empty());
+    policy.grant_danger(&keys);
+    assert_eq!(policy.decide(Mode::Workspace, &foreground, &cwd), Decision::Allow);
+    assert_eq!(policy.decide(Mode::Workspace, &background, &cwd), Decision::Ask);
 }
 
 #[test]

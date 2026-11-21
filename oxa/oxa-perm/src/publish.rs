@@ -179,8 +179,8 @@ enum Kind {
     Other,
 }
 /// The segments of `stages` that need an approval, re-joined by the caller's `segment`.
-pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
-    let unordered = stages.iter().any(|st| st.background || st.mark.is_some());
+pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path, background: bool) -> Vec<String> {
+    let unordered = background || stages.iter().any(|st| st.background || st.mark.is_some());
     let pipeline = stages.iter().any(|st| st.pipe_in);
     let pipeline_mutation = pipeline && stages.iter().any(|st| mutates_repo_state(&st.words));
     let kinds: Vec<(usize, Kind)> = {
@@ -328,27 +328,53 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
     // basename is an executable of the caller's choice; `env -C` runs the wrapped command in
     // another directory; an inline script (`env -S`, `su -c`, `watch`) is a whole command line
     // this path does not classify; `xargs` appends arguments the command line does not show.
-    if !peeled.exact || peeled.dir.is_some() || !peeled.inline.is_empty() || peeled.unknown {
+    let args = &words[peeled.start..];
+    // Plain xargs appends arguments but cannot change the fixed executable. Treat a
+    // known local command normally, but do not exempt option-bearing xargs invocations.
+    let plain_local_xargs = peeled.start == 1
+        && words.first().is_some_and(|w| w == "xargs")
+        && args.first().is_some_and(|w| LOCAL.contains(&w.as_str()));
+    if !peeled.exact || !peeled.inline.is_empty() || (peeled.unknown && !plain_local_xargs) {
         return Kind::Unsafe;
     }
-    let args: Vec<String> = words[peeled.start..].to_vec();
-    let Some(name) = args.first().cloned() else {
+    let args = if plain_local_xargs { words } else { args };
+    let kind = argv_kind(words, args, cwd, moved);
+    // Assignments inside a wrapper reach Git or gh; the leading scan stops at it.
+    let unsafe_assignment = words[..peeled.start]
+        .iter()
+        .any(|w| is_assignment(w) && assignment_unsafe(w));
+    if peeled.dir.is_some() {
+        let known_local = !args.is_empty()
+            && (is_local(args, &[])
+                || matches!(args, [program, sub, ..] if program == "cargo" && matches!(sub.as_str(), "fmt" | "check")));
+        if !peeled.publish_transparent || unsafe_assignment || kind != Kind::Other || !known_local {
+            return Kind::Unsafe;
+        }
+    }
+    if kind != Kind::Other && (!peeled.publish_transparent || unsafe_assignment) {
+        return Kind::Unsafe;
+    }
+    if kind == Kind::Other && !peeled.publish_transparent && args.len() != words.len() {
+        // An opaque wrapper may not pass the argv the peel inferred. Keep looking for
+        // publication intent in the original words before returning Other.
+        let original = &words[words.iter().take_while(|w| is_assignment(w)).count()..];
+        if argv_kind(words, original, cwd, moved) != Kind::Other {
+            return Kind::Unsafe;
+        }
+    }
+    kind
+}
+
+fn argv_kind(words: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
+    let Some(name) = args.first().map(String::as_str) else {
         return Kind::Other;
     };
-    // Assignments inside a wrapper reach git or gh, but the leading scan stops at the wrapper.
-    if matches!(name.as_str(), "git" | "gh")
-        && words[..peeled.start]
-            .iter()
-            .any(|w| is_assignment(w) && assignment_unsafe(w))
-    {
+    if matches!(base(name), "git" | "gh") && !matches!(name, "git" | "gh") {
         return Kind::Unsafe;
     }
-    if matches!(base(&name), "git" | "gh") && !matches!(name.as_str(), "git" | "gh") {
-        return Kind::Unsafe;
-    }
-    match name.as_str() {
-        "git" => git_kind(words, &args, cwd, moved),
-        "gh" => gh_kind(words, &args, cwd, moved),
+    match name {
+        "git" => git_kind(words, args, cwd, moved),
+        "gh" => gh_kind(words, args, cwd, moved),
         // A wrapper or interpreter that carries git push / gh in its words hides it.
         _ => {
             // Preserve git's argv boundaries when a wrapper such as `env` passes them
@@ -365,7 +391,7 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
             }
             // Only a direct, unambiguous shell file operand is not inline text. Leave
             // the argv checks, other operands and the mixed-command check unchanged.
-            let script_file = if first_word(words) == Some(name.as_str()) && SHELLS.contains(&base(&name)) {
+            let script_file = if first_word(words) == Some(name) && SHELLS.contains(&base(name)) {
                 let i = if args.get(1).is_some_and(|w| w == "--") {
                     2
                 } else {

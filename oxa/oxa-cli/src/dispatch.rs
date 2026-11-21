@@ -3479,6 +3479,7 @@ mod session_scratch_tests {
         let dangerous = Access::Exec {
             command: "git push --force origin main".into(),
             net: false,
+            background: false,
         };
         env.write(
             "work/.oxa/settings.json",

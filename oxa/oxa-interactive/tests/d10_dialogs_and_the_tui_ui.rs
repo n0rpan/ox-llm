@@ -558,7 +558,8 @@ fn access_prompt_text() {
     assert_eq!(
         access_prompt(&Access::Exec {
             command: "ls -la".to_string(),
-            net: false
+            net: false,
+            background: false,
         }),
         (
             "Allow command?".to_string(),
@@ -642,6 +643,7 @@ fn danger_request(reply: std::sync::mpsc::Sender<DangerAnswer>) -> UiRequest {
         access: Access::Exec {
             command: "git push --force origin main".into(),
             net: false,
+            background: false,
         },
         reasons: vec!["git-push-force: git push with a force flag".into()],
         keys: vec![DANGER_KEY.into()],

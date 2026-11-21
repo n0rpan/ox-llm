@@ -195,7 +195,11 @@ fn server_access(cfg: &ServerConfig) -> Access {
                 command.push(' ');
                 command.push_str(a);
             }
-            Access::Exec { command, net: true }
+            Access::Exec {
+                command,
+                net: true,
+                background: false,
+            }
         }
         ServerKind::Http(h) => Access::Net {
             host: url_host(&h.url),
@@ -491,6 +495,7 @@ pub fn run_value_command(
     let access = Access::Exec {
         command: command.to_string(),
         net: true,
+        background: false,
     };
     if !gate(&access) {
         return Err(OxaError::new(

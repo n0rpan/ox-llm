@@ -9,6 +9,7 @@ fn headless_ui_ask_dangerous_defaults_to_deny() {
     let a = Access::Exec {
         command: "git push --force origin main".into(),
         net: false,
+        background: false,
     };
     assert_eq!(
         ui.ask_dangerous(&a, &["git-push-force: force".into()], &[]),

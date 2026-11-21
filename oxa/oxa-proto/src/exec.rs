@@ -16,6 +16,8 @@ pub enum Access {
     Exec {
         command: String,
         net: bool,
+        /// The caller explicitly starts the command detached from the requesting turn.
+        background: bool,
     },
     Net {
         host: String,

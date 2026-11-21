@@ -1081,7 +1081,11 @@ fn gate_at(
 ) -> Result<(), OxaError> {
     let session_cwd = st.cwd.clone();
     match a {
-        Access::Exec { command, net } if cwd != session_cwd => {
+        Access::Exec {
+            command,
+            net,
+            background,
+        } if cwd != session_cwd => {
             let located = Access::Exec {
                 command: format!(
                     "cd {} && cd {} && {command}",
@@ -1089,6 +1093,7 @@ fn gate_at(
                     shell_quote(&cwd.to_string_lossy())
                 ),
                 net: *net,
+                background: *background,
             };
             // The wrapper keeps the session directory as the classifier's workspace boundary.
             // `exec_gated` supplies a canonical cwd, so that real directory is also part of the
@@ -1196,6 +1201,7 @@ fn exec_gated(st: &mut SessionState, mut spec: ExecSpec, ui: &mut dyn Ui) -> Res
         &Access::Exec {
             command: spec.command.clone(),
             net: spec.net,
+            background: false,
         },
         &spec.cwd,
         ui,
@@ -1732,6 +1738,7 @@ mod tests {
         let dangerous = Access::Exec {
             command: "git push --force origin main".into(),
             net: false,
+            background: false,
         };
         let mut ui = DangerUi {
             answer: DangerAnswer::Once,
@@ -1751,6 +1758,7 @@ mod tests {
         let plain = Access::Exec {
             command: "cargo build".into(),
             net: false,
+            background: false,
         };
         assert!(gate_pinned(&mut f.st, &plain, &mut headless).is_ok());
     }
@@ -1775,6 +1783,7 @@ mod tests {
         let dangerous = Access::Exec {
             command: "git push --force origin main".into(),
             net: false,
+            background: false,
         };
         let mut headless = HeadlessUi::default();
         let err = gate_pinned(&mut f.st, &dangerous, &mut headless).expect_err("not run");
@@ -1810,6 +1819,7 @@ mod tests {
         let dangerous = Access::Exec {
             command: "git push --force origin main".into(),
             net: false,
+            background: false,
         };
         let mut headless = HeadlessUi::default();
         let err =
@@ -1840,7 +1850,11 @@ mod tests {
                     .and_then(oxa_proto::Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                Ok(vec![Access::Exec { command, net: false }])
+                Ok(vec![Access::Exec {
+                    command,
+                    net: false,
+                    background: false,
+                }])
             }
             fn run(
                 &self,
@@ -1902,6 +1916,7 @@ mod tests {
         let outside = Access::Exec {
             command: format!("rm -rf {}", other.join("victim").display()),
             net: false,
+            background: false,
         };
         let mut ui = DangerUi {
             answer: DangerAnswer::Deny,
@@ -1916,6 +1931,7 @@ mod tests {
         let relative = Access::Exec {
             command: "rm -rf victim".into(),
             net: false,
+            background: false,
         };
         let err = gate_at(&mut f.st, &relative, &other, &mut headless).expect_err("outside");
         assert_eq!(err.code, codes::DENIED);
@@ -1925,6 +1941,7 @@ mod tests {
         let build = Access::Exec {
             command: "rm -rf build".into(),
             net: false,
+            background: false,
         };
         assert!(gate_at(&mut f.st, &build, &inside, &mut headless).is_ok());
     }

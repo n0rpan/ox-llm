@@ -1436,6 +1436,7 @@ fn a_child_cwd_outside_the_session_is_a_write_access_for_the_permission_layer() 
     let exec = Access::Exec {
         command: "subagent".to_string(),
         net: false,
+        background: false,
     };
     let work = env.work();
     std::fs::create_dir_all(work.join("sub")).unwrap();
@@ -1531,7 +1532,8 @@ fn child_cwd_preserves_symlink_parent_semantics_for_access_and_spawn() {
         vec![
             Access::Exec {
                 command: "subagent".into(),
-                net: false
+                net: false,
+                background: false,
             },
             Access::Write(outside.join("sibling")),
         ],

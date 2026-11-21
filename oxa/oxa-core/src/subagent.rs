@@ -868,6 +868,7 @@ impl Tool for SubagentTool {
         let mut out = vec![Access::Exec {
             command: TOOL_NAME.to_string(),
             net: false,
+            background: false,
         }];
         let mut cwds: Vec<&str> = Vec::new();
         for key in ["chain", "tasks"] {

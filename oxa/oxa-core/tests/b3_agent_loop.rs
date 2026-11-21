@@ -1703,6 +1703,7 @@ fn prepare_dangerous_unattended_error_names_rule() {
             Ok(vec![Access::Exec {
                 command: "git push --force origin main".to_string(),
                 net: false,
+                background: false,
             }])
         }),
         Box::new(move |_a: &Value, _c: &ToolCtx| {

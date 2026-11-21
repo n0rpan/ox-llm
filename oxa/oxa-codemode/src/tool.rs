@@ -303,6 +303,7 @@ impl Tool for CodemodeTool {
             Some(_) => Ok(vec![Access::Exec {
                 command: "codemode script".to_string(),
                 net: false,
+                background: false,
             }]),
             None => Err("codemode needs a `code` string argument".to_string()),
         }

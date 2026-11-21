@@ -179,19 +179,38 @@ impl DangerRules {
     /// cannot turn it off. A hit is a git push or gh command beyond the session's own
     /// non-default branch, or any command chained with a publish command (see `publish.rs`).
     pub fn publish_classify(&self, command: &str, cwd: &Path) -> Vec<DangerHit> {
+        self.publish_classify_exec(command, cwd, false)
+    }
+
+    pub(crate) fn publish_classify_exec(
+        &self,
+        command: &str,
+        cwd: &Path,
+        background: bool,
+    ) -> Vec<DangerHit> {
         crate::publish::record_baseline(cwd);
+        let rule = if background {
+            "publish-background"
+        } else {
+            "publish-unsafe"
+        };
         let Some(stages) = parse_line(command) else {
             return vec![DangerHit {
-                rule: "publish-unsafe".to_string(),
+                rule: rule.to_string(),
                 reason: "the publish approval floor could not safely parse this command".to_string(),
                 segment: command.trim().to_string(),
             }];
         };
-        crate::publish::publish_hits(&stages, cwd)
+        let reason = if background {
+            "publication or an opaque command running in a background Bash job"
+        } else {
+            "git push beyond the session's own non-default branch, gh merge/release/repo changes, or a command chained with a publish command"
+        };
+        crate::publish::publish_hits(&stages, cwd, background)
             .into_iter()
             .map(|segment| DangerHit {
-                rule: "publish-unsafe".to_string(),
-                reason: "git push beyond the session's own non-default branch, gh merge/release/repo changes, or a command chained with a publish command".to_string(),
+                rule: rule.to_string(),
+                reason: reason.to_string(),
                 segment,
             })
             .collect()
@@ -1631,6 +1650,9 @@ pub(crate) struct Peeled {
     pub(crate) dir: Option<String>,
     /// Every wrapper word was the exact trusted name (`env`, not `./env`).
     pub(crate) exact: bool,
+    /// Only wrappers with a supported synchronous launch shape were peeled. The caller
+    /// must still check assignments, directories, inline code and unknown arguments.
+    pub(crate) publish_transparent: bool,
 }
 
 /// Skips assignments, reserved words and the wrappers that run another command.
@@ -1643,6 +1665,7 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
         dirs: Vec::new(),
         dir: None,
         exact: true,
+        publish_transparent: true,
     };
     let mut i = 0usize;
     loop {
@@ -1725,6 +1748,15 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
         if words[at].contains('/') {
             out.exact = false;
         }
+        // Do not infer publication authority from the Effects parser's ability to locate
+        // argv. Launchers can delay, repeat, detach, or otherwise alter its execution.
+        out.publish_transparent &= match words[at].as_str() {
+            "command" => i == at + 1 || (i == at + 2 && words[at + 1] == "--"),
+            "env" => !words[at + 1..i]
+                .iter()
+                .any(|word| matches!(word.as_str(), "-u" | "--unset")),
+            _ => false,
+        };
     }
     out.start = i.min(words.len());
     out.dir = out.dirs.last().cloned();

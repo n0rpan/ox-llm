@@ -26,6 +26,7 @@ fn asked_in_workspace(env: &TestEnv) -> Vec<Access> {
         Access::Exec {
             command: "curl https://example.invalid".to_string(),
             net: true,
+            background: false,
         },
         Access::Net {
             host: "example.invalid".to_string(),
@@ -76,6 +77,7 @@ fn off_asks_and_on_allows_every_kind_and_counts() {
         Access::Exec {
             command: "ls".to_string(),
             net: false,
+            background: false,
         },
         Access::Mcp {
             server: "srv".to_string(),
@@ -184,7 +186,8 @@ fn git_files_plan_mode_and_project_config_keep_their_answers() {
             Mode::Plan,
             &Access::Exec {
                 command: "rm -rf x".to_string(),
-                net: false
+                net: false,
+                background: false,
             },
             &cwd
         ),
@@ -325,7 +328,8 @@ fn plan_mode_still_refuses_writes_under_yolo() {
             Mode::Plan,
             &Access::Exec {
                 command: "rm -rf x".to_string(),
-                net: false
+                net: false,
+                background: false,
             },
             &cwd
         ),

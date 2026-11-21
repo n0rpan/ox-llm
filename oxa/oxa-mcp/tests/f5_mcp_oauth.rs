@@ -516,6 +516,7 @@ fn configured_client_secret_command_asks_the_gate() {
         vec![Access::Exec {
             command: "printf s3cret".to_string(),
             net: true,
+            background: false,
         }]
     );
     assert!(io.opened.is_none(), "the browser was not asked");
@@ -581,10 +582,11 @@ fn manager_login_secret_command_asks_the_manager_gate() {
 
     assert_eq!(err.code, codes::DENIED, "{err:?}");
     assert!(
-        asked
-            .lock()
-            .unwrap()
-            .contains(&Access::Exec { command, net: true }),
+        asked.lock().unwrap().contains(&Access::Exec {
+            command,
+            net: true,
+            background: false
+        }),
         "the gate was asked for the command"
     );
     assert!(!marker.exists(), "the denied command did not run");

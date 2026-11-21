@@ -542,10 +542,16 @@ impl Tool for BashTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
-    /// `[Access::Exec { command, net: false }]` for a run; nothing for a job read.
+    /// An exec carrying the requested execution mode for a run; nothing for a job read.
     fn access(&self, args: &Value, _cx: &ToolCtx) -> Result<Vec<Access>, String> {
         match parse(args)? {
-            BashArgs::Run { command, .. } => Ok(vec![Access::Exec { command, net: false }]),
+            BashArgs::Run {
+                command, background, ..
+            } => Ok(vec![Access::Exec {
+                command,
+                net: false,
+                background,
+            }]),
             BashArgs::Job { .. } => Ok(Vec::new()),
         }
     }
@@ -1747,16 +1753,19 @@ echo '\''a'\'''"#
             tune: Default::default(),
             hidden: None,
         };
-        let got = BashTool::new()
-            .access(&json!({"command": "cargo test"}), &cx)
-            .expect("access");
-        assert_eq!(
-            got,
-            vec![Access::Exec {
-                command: "cargo test".to_string(),
-                net: false
-            }]
-        );
+        for background in [false, true] {
+            let got = BashTool::new()
+                .access(&json!({"command": "cargo test", "background": background}), &cx)
+                .expect("access");
+            assert_eq!(
+                got,
+                vec![Access::Exec {
+                    command: "cargo test".to_string(),
+                    net: false,
+                    background,
+                }]
+            );
+        }
     }
 
     #[test]
