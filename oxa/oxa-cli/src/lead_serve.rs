@@ -657,6 +657,9 @@ struct Source {
     /// keeps showing this last good value with its age and cause instead of
     /// blanking the page. Bounded: exactly one sample, replaced on each good read.
     last_good: Mutex<Option<LastGood>>,
+    /// The owner's merges-per-hour target (`oxa.lead.target.merges_per_hour`),
+    /// read once at start; the page never hard-codes it (#2346).
+    target: u32,
 }
 
 /// The board-derived part of one good observation, retained across a failed read.
@@ -667,6 +670,10 @@ struct LastGood {
     alarms: crate::lead_page::Alarms,
     app_quota: Option<oxa_work::shadow::AppQuota>,
     quota_deferred: Vec<oxa_work::shadow::Deferral>,
+    /// The merge history and Restricts holds of the same good sample (#2346),
+    /// retained with it so a transient read failure keeps the whole projection.
+    merges: crate::lead_projection::MergeHistory,
+    restricts_held: Option<Vec<u64>>,
 }
 /// The stable part of the worker bindings: a status age that merely grows each second
 /// is not a change, only crossing the stale mark is.
@@ -718,6 +725,7 @@ impl Source {
             sampler: None,
             capacity_settings: None,
             last_good: Mutex::new(None),
+            target: crate::lead_projection::DEFAULT_TARGET,
         })
     }
 
@@ -809,12 +817,29 @@ impl Source {
                 alarms: std::mem::take(&mut o.alarms),
                 app_quota: o.app_quota.take(),
                 quota_deferred: std::mem::take(&mut o.quota_deferred),
+                merges: std::mem::take(&mut o.merges),
+                restricts_held: o.restricts_held.take(),
             });
         }
         let good = last_good.as_ref();
         let board_retained = cause.is_some() && good.is_some();
         let github_quotas = good.and_then(|g| {
             crate::lead_quota::GitHubQuotas::from_app_sample(g.app_quota?, g.board.observed_at, now)
+        });
+        // Throughput and stuck work (#2346): one pure projection of the same good
+        // sample, built once per render and never re-read. Unpublished acceptances
+        // need a runner situation; without one the No-PR count stays unknown.
+        let unpublished: Option<Vec<String>> = observation
+            .as_ref()
+            .filter(|o| o.situation.is_some())
+            .map(|o| o.unpublished().iter().map(|a| a.task.clone()).collect());
+        let work = good.map(|g| crate::lead_projection::Work {
+            throughput: crate::lead_projection::Throughput::project(&g.merges, self.target),
+            stuck: crate::lead_projection::Stuck::project(
+                Some(&g.board),
+                g.restricts_held.as_deref(),
+                unpublished.as_deref(),
+            ),
         });
         use crate::lead_page::Page;
         let approvals_page = matches!(page, Page::Home | Page::Board | Page::BoardQuery(_));
@@ -911,6 +936,7 @@ impl Source {
             // Stuck-work signals from the same protected record, with each
             // unobserved source explicit in the view (#1391).
             alarms: good.map(|g| &g.alarms),
+            work: work.as_ref(),
             board_cause: cause,
             board_retained,
             fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
@@ -1024,6 +1050,13 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     let mut source = Source::new(env, uid)?;
     source.agent_dir = dirs.agent_dir.clone();
     source.sessions_dir = dirs.sessions_dir.clone();
+    // The owner's merge target, read once at start; an unset or invalid value
+    // keeps the default and never refuses the service (#2346).
+    source.target = Settings::load(dirs, cwd, false)
+        .user_value("oxa.lead.target.merges_per_hour")
+        .and_then(|value| value.as_u64())
+        .map(|target| target.min(u64::from(u32::MAX)) as u32)
+        .unwrap_or(crate::lead_projection::DEFAULT_TARGET);
     // The per-host capacity is read live from the owner's user settings (#2369).
     source.capacity_settings = Some((dirs.clone(), cwd.to_path_buf()));
     // The approval desk is read on every board render; a desk that cannot open shows as unavailable.

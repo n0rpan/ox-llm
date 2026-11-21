@@ -52,6 +52,12 @@ pub(crate) struct Reader<'a> {
     optional: Cell<Option<&'static str>>,
     probed: Cell<bool>,
     deferred: RefCell<Vec<Deferral>>,
+    /// PRs held by a `Restricts:` line without `owner-accepted`, derived from the
+    /// body and labels the same snapshot already fetches (#2346). No extra read.
+    restricts_held: Vec<u64>,
+    /// Some row's body or labels were truncated, so the hold signal of the whole
+    /// snapshot is unobserved: an absent flag must never read as "none held".
+    restricts_truncated: bool,
 }
 
 /// The message of a read the reserve deferred; callers treat it as a recorded skip.
@@ -163,6 +169,19 @@ impl<'a> Reader<'a> {
             optional: Cell::new(None),
             probed: Cell::new(false),
             deferred: RefCell::new(Vec::new()),
+            restricts_held: Vec::new(),
+            restricts_truncated: false,
+        }
+    }
+
+    /// The recorded Restricts signal of the last snapshot: `None` when any row's
+    /// evidence was truncated, so a page that cannot see a hold never reports zero.
+    fn restricts_signal(&mut self) -> Option<Vec<u64>> {
+        if self.restricts_truncated {
+            self.restricts_held.clear();
+            None
+        } else {
+            Some(std::mem::take(&mut self.restricts_held))
         }
     }
 
@@ -588,6 +607,51 @@ pub(crate) fn check_outcome(check: &Value) -> Option<&str> {
     }
 }
 
+/// A PR is held for the owner when its body carries a `Restricts:` line and the
+/// `owner-accepted` label is absent (AGENTS.md, "Restrictions"). The line may be
+/// a bullet; a mention mid-line is not a restriction line. This is a display
+/// signal for the lead web stuck counts (#2346): it never gates a merge, and the
+/// merge-queue policy keeps its own authority.
+pub(crate) fn restricts_hold(body: &str, labels: &[&str]) -> bool {
+    let restricts = body.lines().any(|line| {
+        let line = line.trim_start();
+        let line = line
+            .strip_prefix("- ")
+            .or_else(|| line.strip_prefix("* "))
+            .unwrap_or(line);
+        line.starts_with("Restricts:")
+    });
+    restricts && !labels.contains(&"owner-accepted")
+}
+
+/// One row's Restricts evidence. `Truncated` means the row cannot prove whether
+/// the owner accepted: the sample's whole signal then stays unobserved (`None`),
+/// never an observed zero that a truncated page could contradict.
+pub(crate) enum RestrictsEvidence {
+    Held,
+    Clear,
+    Truncated,
+}
+
+pub(crate) fn restricts_evidence(body: Option<&str>, labels: &Value) -> RestrictsEvidence {
+    let Some(body) = body else {
+        return RestrictsEvidence::Truncated;
+    };
+    let nodes = labels["nodes"].as_array();
+    let complete = labels["totalCount"].as_u64() == Some(nodes.map_or(0, |nodes| nodes.len()) as u64);
+    if !complete {
+        return RestrictsEvidence::Truncated;
+    }
+    let names: Vec<&str> = nodes
+        .map(|nodes| nodes.iter().filter_map(|l| l["name"].as_str()).collect())
+        .unwrap_or_default();
+    if restricts_hold(body, &names) {
+        RestrictsEvidence::Held
+    } else {
+        RestrictsEvidence::Clear
+    }
+}
+
 /// The required check contexts of one base ref: its classic protection plus active
 /// repository and organization rulesets. Shared by the PR snapshot and the main
 /// panels projection.
@@ -620,6 +684,10 @@ pub(crate) fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> 
 
 impl Reader<'_> {
     fn acquire(&mut self) -> Result<(Vec<PullRequest>, Vec<Incomplete>), SnapshotError> {
+        // A consistency retry re-runs acquisition: the display signal starts fresh
+        // with the rows, never accumulating across attempts.
+        self.restricts_held.clear();
+        self.restricts_truncated = false;
         // Verify the complete paginated identity set before publishing any details.
         let (list, first) = self.listing()?;
         let has_queue = list["mergeQueue"].is_object();
@@ -714,6 +782,16 @@ impl Reader<'_> {
                         return Err(SnapshotError::Changed("PR changed during snapshot; retry later"));
                     }
                     _ => return Err(SnapshotError::from("invalid PR state")),
+                }
+                // The Restricts hold is a display signal from facts this query
+                // already carries. Truncated body or label evidence leaves the
+                // whole signal unobserved: an absent flag is not "none held".
+                if let Some(number) = pr["number"].as_u64() {
+                    match restricts_evidence(row["body"].as_str(), &row["labels"]) {
+                        RestrictsEvidence::Held => self.restricts_held.push(number),
+                        RestrictsEvidence::Truncated => self.restricts_truncated = true,
+                        RestrictsEvidence::Clear => {}
+                    }
                 }
                 if let Some(connection) = over_page_limit(row, reviews) {
                     let (number, head) = identity(row)?;
@@ -833,6 +911,8 @@ impl GitHub for Reader<'_> {
     fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.deadline.set(Instant::now() + Duration::from_secs(120));
         self.bytes.set(0);
+        self.restricts_held.clear();
+        self.restricts_truncated = false;
         if let Some(quota) = &mut self.app_quota {
             *quota.get_mut() = GitHubQuotas::default();
         }
@@ -853,63 +933,6 @@ impl GitHub for Reader<'_> {
     fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
         self.snapshot().map(|snapshot| snapshot.pull_requests)
     }
-}
-
-/// Whether the serving project is trusted for a sample. The same check the command runs,
-/// with the notices discarded: the page reports a refusal as its own cause.
-pub(crate) fn sampler_trusted(root: &Path, dirs: &oxa_config::Dirs) -> bool {
-    // Private single-key read of the user settings, like the capacity read: the service must
-    // not fail the trust check on the serving user's unrelated settings.
-    if oxa_config::Settings::load(dirs, root, false).layer_failed() {
-        return false;
-    }
-    let mut notices = Vec::new();
-    crate::dispatch::project_trusted(
-        &crate::Args::default(),
-        &oxa_config::Env::from_process(),
-        dirs,
-        root,
-        &oxa_perm::gated_resources(root),
-        false,
-        &mut notices,
-    )
-    .unwrap_or(false)
-}
-
-/// The one fixed line the page shows for a failed sample: never a path, token or raw error
-/// byte, only this allow-list of causes.
-pub(crate) fn sample_cause(error: &str) -> String {
-    let cause = if error == DEFERRED {
-        "the GitHub App reserve deferred this sample"
-    } else if error.contains("not trusted") || error.contains("needs_trust") {
-        "the serving project is not trusted; approve it in an interactive oxa"
-    } else if error.contains("RATE_LIMITED") || error.contains("rate limit") {
-        "GitHub rate-limited this sample"
-    } else if error.contains("deadline") || error.contains("byte limit") {
-        "the GitHub sample reached its size or time bound"
-    } else if error.contains("capture refused") {
-        "the sample could not start its GitHub read"
-    } else if error.contains("HTTP 401") || error.contains("HTTP 403") || error.contains("FORBIDDEN") {
-        "GitHub refused the sample; check the App installation"
-    } else if error.contains("HTTP 4") {
-        "GitHub refused the sample"
-    } else if error.contains("GitHub read failed")
-        || error.contains("HTTP 5")
-        || error.contains("GitHub GraphQL error")
-    {
-        "GitHub failed the read"
-    } else if error.contains("changed") {
-        "the open PR set changed during the read"
-    } else if error.contains("token") {
-        "the GitHub App token source failed"
-    } else if error.contains("gh executable") {
-        "no trusted gh executable for the sample"
-    } else if error.contains("private") || error.contains("log") || error.contains("storage") {
-        "the board log cannot be written by this service"
-    } else {
-        "the GitHub sample failed"
-    };
-    format!("{cause}; the next attempt is scheduled")
 }
 
 pub(crate) fn run(
@@ -986,7 +1009,7 @@ pub(crate) fn run(
     let review_settings = review_file
         .map(|path| review::Settings::read(Path::new(path)))
         .transpose()?;
-    let report_settings = report_file
+    let mut report_settings = report_file
         .map(|path| landing::report::Settings::read(Path::new(path)))
         .transpose()?;
     let inherited = (!streamed)
@@ -1012,8 +1035,9 @@ pub(crate) fn run(
         .create(&storage)
         .map_err(|_| "cannot create shadow storage")?;
     oxa_work::require_private_directory(&storage)?;
+    let mut log = oxa_work::shadow::open_log(&storage.join("board-shadow.jsonl"))?;
     let source = SampleSource {
-        gh,
+        gh: gh.clone(),
         repo: repo.to_owned(),
         path: &policy.host_path,
         root,
@@ -1026,7 +1050,6 @@ pub(crate) fn run(
         quota_shadow,
         reserve,
     };
-    let mut log = oxa_work::shadow::open_log(&storage.join("board-shadow.jsonl"))?;
     oxa_work::shadow::run_with_landing(
         &mut log,
         once,
@@ -1049,8 +1072,8 @@ pub(crate) fn run(
 
 /// One `oxa work board --shadow` sample, shared with the lead web's in-process sampler
 /// (`crate::lead_sampler`, #2262) instead of a second copy. One call is one protected record
-/// with its own GraphQL `Reader`, bounds and lead alarms. The log is opened and written by
-/// `shadow::run_with_landing` through the caller's closure, as before.
+/// with its own GraphQL `Reader`, bounds, lead alarms and stuck-work evidence. The log is
+/// opened and written by `shadow::run_with_landing` through the caller's closure, as before.
 struct SampleSource<'a> {
     gh: std::path::PathBuf,
     repo: String,
@@ -1086,15 +1109,15 @@ impl SampleSource<'_> {
             Board::read(&mut reader, &board_policy, &BTreeMap::new(), now)
                 .map(|board| (board, BTreeMap::new()))
         }?;
-        let mut queue_rejections =
-            if self.queue_evidence || self.landing_shadow || self.report_settings.is_some() {
-                oxa_work::board::queue::read(&board, |fields| reader.repository_read(fields))?
-            } else {
-                Vec::new()
-            };
         // One sample owns its report history: it writes back the attempts it verified, which
         // the next sample's command run starts from.
         let mut report_settings = self.report_settings.as_ref().map(landing::report::Settings::fork);
+        let mut queue_rejections = if self.queue_evidence || self.landing_shadow || report_settings.is_some()
+        {
+            oxa_work::board::queue::read(&board, |fields| reader.repository_read(fields))?
+        } else {
+            Vec::new()
+        };
         if let Some(settings) = &mut report_settings {
             match reader.optional("sample_test_reports", |r| {
                 r.sample_test_reports(&mut queue_rejections, settings)
@@ -1131,6 +1154,7 @@ impl SampleSource<'_> {
             (None, None)
         };
         reader.time_left().map_err(QueryError::message)?;
+        let restricts_held = reader.restricts_signal();
         Ok(oxa_work::shadow::LandingSample {
             board,
             reviews,
@@ -1139,6 +1163,7 @@ impl SampleSource<'_> {
             landing_main,
             panels,
             runs,
+            restricts_held,
             app_quota: reader
                 .app_quota
                 .as_ref()
@@ -1179,6 +1204,7 @@ pub(crate) fn sample_once(
         policy: None,
         review_settings: None,
         report_settings: None,
+        // The lead view's own record: the same flags the external timer uses.
         queue_evidence: false,
         landing_shadow: true,
         lead_alarms: true,
@@ -1202,6 +1228,195 @@ pub(crate) fn sample_once(
         std::thread::sleep,
     )?;
     sampled_at.ok_or_else(|| "the sample wrote nothing".into())
+}
+
+/// Whether the serving project is trusted for a sample. The same check the command runs, with
+/// the notices discarded: the page reports a refusal as its own cause. A user settings file that
+/// cannot be read also refuses: the service must not guess the owner's default.
+pub(crate) fn sampler_trusted(root: &Path, dirs: &oxa_config::Dirs) -> bool {
+    if oxa_config::Settings::load(dirs, root, false).layer_failed() {
+        return false;
+    }
+    let mut notices = Vec::new();
+    crate::dispatch::project_trusted(
+        &crate::Args::default(),
+        &oxa_config::Env::from_process(),
+        dirs,
+        root,
+        &oxa_perm::gated_resources(root),
+        false,
+        &mut notices,
+    )
+    .unwrap_or(false)
+}
+
+/// The one fixed line the page shows for a failed sample: never a path, token or raw error
+/// byte, only this allow-list of causes.
+pub(crate) fn sample_cause(error: &str) -> String {
+    let cause = if error == DEFERRED {
+        "the GitHub App reserve deferred this sample"
+    } else if error.contains("not trusted") || error.contains("needs_trust") {
+        "the serving project is not trusted; approve it in an interactive oxa"
+    } else if error.contains("RATE_LIMITED") || error.contains("rate limit") {
+        "GitHub rate-limited this sample"
+    } else if error.contains("deadline") || error.contains("byte limit") {
+        "the GitHub sample reached its size or time bound"
+    } else if error.contains("capture refused") {
+        "the sample could not start its GitHub read"
+    } else if error.contains("HTTP 401") || error.contains("HTTP 403") || error.contains("FORBIDDEN") {
+        "GitHub refused the sample; check the App installation"
+    } else if error.contains("HTTP 4") {
+        "GitHub refused the sample"
+    } else if error.contains("GitHub read failed")
+        || error.contains("HTTP 5")
+        || error.contains("GitHub GraphQL error")
+    {
+        "GitHub failed the read"
+    } else if error.contains("changed") {
+        "the open PR set changed during the read"
+    } else if error.contains("token") {
+        "the GitHub App token source failed"
+    } else if error.contains("gh executable") {
+        "no trusted gh executable for the sample"
+    } else if error.contains("private") || error.contains("log") || error.contains("storage") {
+        "the board log cannot be written by this service"
+    } else {
+        "the GitHub sample failed"
+    };
+    format!("{cause}; the next attempt is scheduled")
+}
+
+#[cfg(test)]
+mod restricts_tests {
+    use super::{restricts_evidence, restricts_hold, GitHub, Reader, RestrictsEvidence};
+    use serde_json::json;
+
+    #[test]
+    fn a_restricts_line_holds_until_the_owner_accepts() {
+        let body = "What and why.\n\nRestricts: a new refusal — reason — drawback\n";
+        assert!(restricts_hold(body, &[]));
+        assert!(restricts_hold(body, &["lead-web"]));
+        assert!(!restricts_hold(body, &["lead-web", "owner-accepted"]));
+        // Bullet and indented forms are the same line.
+        assert!(restricts_hold("- Restricts: x — y — z\n", &[]));
+        assert!(restricts_hold("  * Restricts: x — y — z\n", &[]));
+        // A mention inside prose is not a restriction line, and an empty body holds nothing.
+        assert!(!restricts_hold("See the Restricts: rule in AGENTS.md\n", &[]));
+        assert!(!restricts_hold("", &[]));
+        assert!(!restricts_hold("No restrictions here.\n", &["owner-accepted"]));
+    }
+
+    #[test]
+    fn truncated_evidence_stays_unobserved_instead_of_reading_as_clear() {
+        let held_body = "Restricts: a new refusal — reason — drawback\n";
+        let complete = json!({"totalCount": 1, "nodes": [{"name": "lead-web"}]});
+        assert!(matches!(
+            restricts_evidence(Some(held_body), &complete),
+            RestrictsEvidence::Held
+        ));
+        let accepted = json!({"totalCount": 2, "nodes": [{"name": "lead-web"}, {"name": "owner-accepted"}]});
+        assert!(matches!(
+            restricts_evidence(Some(held_body), &accepted),
+            RestrictsEvidence::Clear
+        ));
+        assert!(matches!(
+            restricts_evidence(Some("Plain body.\n"), &complete),
+            RestrictsEvidence::Clear
+        ));
+        // Labels beyond the fetched page cannot prove owner-accepted is absent.
+        let truncated = json!({"totalCount": 2, "nodes": [{"name": "lead-web"}]});
+        assert!(matches!(
+            restricts_evidence(Some(held_body), &truncated),
+            RestrictsEvidence::Truncated
+        ));
+        // A missing body or label connection is the same unobserved state.
+        assert!(matches!(
+            restricts_evidence(None, &complete),
+            RestrictsEvidence::Truncated
+        ));
+        assert!(matches!(
+            restricts_evidence(Some(held_body), &json!({})),
+            RestrictsEvidence::Truncated
+        ));
+    }
+
+    /// One scripted gh reply serves the listing, the detail page and the
+    /// verification listing: one open PR whose labels exceed their page.
+    fn reader_with_reply(reply: serde_json::Value) -> (oxa_fake::TestEnv, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let test = oxa_fake::TestEnv::new();
+        let gh = test.write(
+            "work/gh",
+            "#!/bin/sh\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n'\ncat \"$0.reply\"\n",
+        );
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o700)).unwrap();
+        test.write("work/gh.reply", &reply.to_string());
+        (test, gh)
+    }
+
+    fn pr_reply(labels: serde_json::Value) -> serde_json::Value {
+        let head = "a".repeat(40);
+        json!({"data": {"repository": {
+            "pullRequests": {"totalCount": 1, "nodes": [{"number": 7, "headRefOid": head}],
+                             "pageInfo": {"hasNextPage": false, "endCursor": "last"}},
+            "mergeQueue": null,
+            "p7": {
+                "number": 7, "headRefOid": head, "baseRefName": "main", "state": "OPEN",
+                "body": "Restricts: a new refusal — reason — drawback\n",
+                "isDraft": false, "reviewDecision": "REVIEW_REQUIRED",
+                "mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED",
+                "baseRef": {"refUpdateRule": null, "rules": {"totalCount": 0, "nodes": []}},
+                "labels": labels,
+                "files": {"totalCount": 0, "pageInfo": {"hasNextPage": false}, "nodes": []},
+                "reviewThreads": {"totalCount": 0, "nodes": []},
+                "latestOpinionatedReviews": {"totalCount": 0, "nodes": []},
+                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"totalCount": 0, "nodes": []}}}}]}
+            }
+        }}})
+    }
+
+    #[test]
+    fn a_truncated_snapshot_publishes_no_restricts_signal_not_an_empty_one() {
+        // Before the fix the Reader published Some([]) here: a real zero the
+        // truncated page could contradict. The signal must stay unobserved.
+        let (_test, gh) = reader_with_reply(pr_reply(
+            json!({"totalCount": 2, "nodes": [{"name": "lead-web"}]}),
+        ));
+        let mut reader = Reader::new(
+            &gh,
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            "example/repo",
+            "synthetic-app-token",
+        );
+        let snapshot = reader.snapshot().unwrap();
+        // The row's evidence is incomplete, and the hold signal stays unobserved.
+        assert_eq!(snapshot.incomplete.len(), 1);
+        assert_eq!(reader.restricts_signal(), None);
+
+        // Complete evidence keeps the real states: held, and observed-empty.
+        let (_test, gh) = reader_with_reply(pr_reply(
+            json!({"totalCount": 1, "nodes": [{"name": "lead-web"}]}),
+        ));
+        let mut reader = Reader::new(
+            &gh,
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            "example/repo",
+            "synthetic-app-token",
+        );
+        reader.snapshot().unwrap();
+        assert_eq!(reader.restricts_signal(), Some(vec![7]));
+        let (_test, gh) = reader_with_reply(pr_reply(
+            json!({"totalCount": 2, "nodes": [{"name": "lead-web"}, {"name": "owner-accepted"}]}),
+        ));
+        let mut reader = Reader::new(
+            &gh,
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            "example/repo",
+            "synthetic-app-token",
+        );
+        reader.snapshot().unwrap();
+        assert_eq!(reader.restricts_signal(), Some(vec![]));
+    }
 }
 
 #[cfg(test)]

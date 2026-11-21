@@ -614,6 +614,9 @@ impl Ui for PromptTap<'_> {
     fn secret(&mut self, title: &str, body: &str) -> Option<String> {
         self.inner.secret(title, body)
     }
+    fn secret_ask(&mut self, ask: &oxa_proto::SecretAsk<'_>) -> Option<oxa_proto::SecretValue> {
+        self.inner.secret_ask(ask)
+    }
 
     fn confirm_cancellable(
         &mut self,

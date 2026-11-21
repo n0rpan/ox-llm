@@ -202,7 +202,7 @@ fn is_git_oid(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn verified_main_merge_time(repo: &Value) -> Option<u64> {
+pub(crate) fn verified_main_merge_time(repo: &Value) -> Option<u64> {
     let repo_id = repo["id"].as_str().filter(|s| !s.is_empty())?;
     let target = &repo["main"]["target"];
     let head = target["oid"].as_str().filter(|s| is_git_oid(s))?;

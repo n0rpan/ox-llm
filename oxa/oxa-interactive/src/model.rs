@@ -704,12 +704,17 @@ pub enum UiRequest {
         placeholder: String,
         reply: Sender<Option<String>>,
     },
-    /// A masked input for a password a process of this session asks for (`Ui::secret`). Its
-    /// answer is never recorded or displayed.
+    /// A masked input for a password a process of this session asks for (`Ui::secret_ask`).
+    /// `body` is the asking process's own prompt; `command`, `pid` and `tool` say what asks (the
+    /// exact command, the sudo process oxa started and the tool that started it; empty and `0`
+    /// when not known). The answer is zeroed when dropped and never recorded or displayed.
     Secret {
         title: String,
         body: String,
-        reply: Sender<Option<String>>,
+        command: String,
+        pid: u32,
+        tool: String,
+        reply: Sender<Option<oxa_proto::SecretValue>>,
     },
     Editor {
         title: String,

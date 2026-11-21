@@ -402,6 +402,7 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
         ("/workers", "Workers"),
         ("/usage", "Usage"),
         ("/chat", "Chat with lead"),
+        ("/goal", "Owner goal"),
     ] {
         for fragment in [false, true] {
             let path = if fragment {
@@ -1048,6 +1049,7 @@ fn frame_pages_render(port: u16, authority: &str) {
         ("/workers", "Workers"),
         ("/usage", "Usage"),
         ("/chat", "Chat with lead"),
+        ("/goal", "Owner goal"),
     ] {
         for fragment in [false, true] {
             let path = if fragment {
@@ -1062,6 +1064,51 @@ fn frame_pages_render(port: u16, authority: &str) {
         }
         assert!(get(port, path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
     }
+}
+
+/// The document names its stylesheet and script at content-hashed paths; a second visit
+/// revalidates the document in one request and needs no asset request at all.
+#[test]
+fn healthy_frame_reuses_hashed_assets_and_revalidates_unchanged_pages() {
+    with_frame("healthy", |port, authority, _| {
+        let document = get(port, "/", authority, "");
+        assert!(document.starts_with("HTTP/1.1 200"), "{document}");
+        assert!(document.contains("Cache-Control: no-store"), "{document}");
+        let header = |head: &str, name: &str| {
+            head.lines()
+                .filter_map(|line| line.split_once(": "))
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.to_owned())
+        };
+        let tag = header(&document, "ETag").expect("a page carries a validator");
+        for asset in ["/a/", "style.css", "live.js"] {
+            assert!(document.contains(asset), "{asset} is not named: {document:.400}");
+        }
+        let style = document
+            .split("href=")
+            .nth(1)
+            .and_then(|rest| rest.split('>').next())
+            .filter(|path| path.starts_with("/a/") && path.ends_with("style.css"))
+            .expect("the stylesheet is a hashed asset");
+        let served = get(port, style, authority, "");
+        assert!(served.starts_with("HTTP/1.1 200"), "{served}");
+        assert!(served.contains("Cache-Control: public, max-age=31536000, immutable"));
+        // An unchanged document answers 304 with no body, after the same authorization.
+        let repeat = get(port, "/", authority, &format!("If-None-Match: {tag}\r\n"));
+        assert!(repeat.starts_with("HTTP/1.1 304 Not Modified"), "{repeat}");
+        assert!(repeat.contains("Content-Length: 0"), "{repeat}");
+        assert!(
+            repeat.contains("Content-Security-Policy: default-src 'none'"),
+            "{repeat}"
+        );
+        // Without the token the same validator buys nothing.
+        let refused = get_raw(port, "/", authority, &format!("If-None-Match: {tag}\r\n"));
+        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+        assert!(!refused.contains("ETag"), "{refused}");
+        // A fragment update is cheaper than a document: still one request.
+        let fragment = get(port, "/?fragment=1", authority, "");
+        assert!(fragment.starts_with("HTTP/1.1 200"), "{fragment}");
+    });
 }
 
 #[test]
@@ -1251,6 +1298,265 @@ fn failed_board_replacement_degrades_explicitly_and_a_fresh_sample_recovers() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Throughput and stuck work (#2346). A synthetic multi-record board log — the native wire
+// format the Reader writes — renders through the real route: twelve hourly bars against the
+// owner's target, four distinct stuck counts, unknowns explicit, and the whole card retained
+// with the last good sample when a read fails. The projection reads no GitHub and no extra file.
+// ---------------------------------------------------------------------------------------------
+
+/// One native Reader record. `merged` verifies the record's main head as a merge commit
+/// at that Unix time; without it the record still carries a main head (a main sample).
+fn work_record(
+    at: u64,
+    head: &str,
+    merged: Option<u64>,
+    entries: serde_json::Value,
+    restricts: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut record = serde_json::json!({
+        "schema_version": 1,
+        "observed_at": at,
+        "board": {"observed_at": at, "entries": entries},
+        "landing_main": head,
+    });
+    if let Some(merged) = merged {
+        let iso = format!("{}Z", &oxa_session::iso_from_ms(merged * 1000)[..19]);
+        record["panels"] = serde_json::json!({
+            "id": "example-repo",
+            "main": {
+                "refUpdateRule": null,
+                "rules": {"totalCount": 0, "nodes": []},
+                "target": {
+                    "oid": head,
+                    "associatedPullRequests": {
+                        "pageInfo": {"hasNextPage": false},
+                        "nodes": [{"repository": {"id": "example-repo"}, "baseRefName": "main",
+                                   "mergedAt": iso, "mergeCommit": {"oid": head}}]
+                    }
+                }
+            },
+            "mergeQueue": null,
+        });
+    }
+    if let Some(restricts) = restricts {
+        record["restricts_held"] = restricts;
+    }
+    record
+}
+
+/// Serve a 14-record synthetic history ending 30 s ago. Heads advance at fixed hourly
+/// offsets from the newest record, so each merge's bucket is the same at any wall-clock
+/// minute: buckets 1, 7, 8, 10 and 11 hold one merge each, the rest are observed zeros.
+fn with_work_log(
+    target: Option<u64>,
+    situation: Option<serde_json::Value>,
+    run: impl FnOnce(u16, &str, &std::path::Path),
+) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let observed = now - 30;
+    let advances = [0usize, 1, 3, 4, 10, 12];
+    let entries = serde_json::json!([
+        {"number": 201, "head": "a".repeat(40), "release_pinned": false, "action": "wait_review",
+         "lease": null, "attempts_today": 0, "eligible": true},
+        {"number": 202, "head": "b".repeat(40), "release_pinned": false, "action": "wait_review",
+         "lease": null, "attempts_today": 0, "eligible": true},
+        {"number": 203, "head": "c".repeat(40), "release_pinned": false, "action": "fix_required_ci",
+         "lease": null, "attempts_today": 0, "eligible": true},
+        {"number": 204, "head": "d".repeat(40), "release_pinned": false, "action": "ready",
+         "lease": null, "attempts_today": 0, "eligible": true},
+    ]);
+    let mut records = Vec::new();
+    let mut head = "0".repeat(40);
+    let mut ordinal = 0u64;
+    for i in (0..=13usize).rev() {
+        let at = observed - i as u64 * 3600;
+        let merged = advances.contains(&i).then(|| {
+            ordinal += 1;
+            head = format!("{ordinal:040x}");
+            at
+        });
+        let (rows, restricts) = if i == 0 {
+            (entries.clone(), Some(serde_json::json!([204])))
+        } else {
+            (serde_json::json!([]), None)
+        };
+        records.push(work_record(at, &head, merged, rows, restricts));
+    }
+    let test = TestEnv::new();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    let mut lead = serde_json::json!({"serve": {"enabled": true, "port": port}});
+    if let Some(target) = target {
+        lead["target"] = serde_json::json!({"merges_per_hour": target});
+    }
+    test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa": {"lead": lead}}).to_string(),
+    );
+    let directory = test.root().join("inputs");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let board = directory.join("board.jsonl");
+    let log = records
+        .iter()
+        .map(|record| format!("{record}\n"))
+        .collect::<String>();
+    std::fs::write(&board, log).unwrap();
+    std::fs::set_permissions(&board, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let situation_path = situation.map(|mut document| {
+        document["data"]["at_ms"] = serde_json::json!((now - 20) * 1000);
+        let bytes = serde_json::to_vec(&document).unwrap();
+        let snapshot = oxa_proto::work::Snapshot::from_json(&bytes).expect("a native situation document");
+        let path = directory.join("situation.json");
+        std::fs::write(&path, snapshot.to_json().unwrap()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    });
+    drop(reservation);
+    let _server = start_with_situation(&test, &board, situation_path.as_deref());
+    let authority = format!("127.0.0.1:{port}");
+    run(port, &authority, &directory);
+}
+
+#[test]
+fn work_card_renders_twelve_bars_the_target_and_distinct_stuck_counts() {
+    with_work_log(None, None, |port, authority, _inputs| {
+        let home = get(port, "/", authority, "");
+        assert!(home.starts_with("HTTP/1.1 200"), "{home}");
+        assert!(home.contains("id=work"));
+        // Twelve hourly bars, every hour covered by the synthetic history: none unknown.
+        assert_eq!(home.matches("<rect").count(), 12);
+        assert!(!home.contains("class=unknown"));
+        assert!(home.contains("role=img aria-label=\"Merges per hour, last 12 hours:"));
+        // The headline compares the last full hour (one merge) with the default target.
+        assert!(home.contains("<span class=num>1</span> merged last full hour · target 10/h"));
+        assert!(home.contains("below target"));
+        assert!(home.contains("5 observed main merges in 12 h"));
+        assert!(home.contains("two merges between samples count once"));
+        // Distinct stuck counts from the same record, each linking to its work.
+        assert!(home.contains("No review</span><span class=\"v num\">2</span>"));
+        assert!(home.contains("Red CI</span><span class=\"v num\">1</span>"));
+        assert!(home.contains("Held Restricts:</span><span class=\"v num\">1</span>"));
+        assert!(home.contains("href=\"/board?f=waiting\""));
+        assert!(home.contains("href=\"/board?f=fix\""));
+        // No runner situation: the No-PR count stays unknown and says so, never zero.
+        assert!(home.contains("No PR yet</span><span class=\"v num\">–</span>"));
+        assert!(home.contains("Unobserved counts:</b> No PR yet"));
+        // The Board keeps its own single table; the card adds no duplicate kanban.
+        let board = get(port, "/board", authority, "");
+        assert!(board.contains("#201") && board.contains("Observed board items"));
+        assert!(!board.contains("id=work"));
+    });
+}
+
+#[test]
+fn the_merge_target_comes_from_owner_settings_not_a_hard_coded_value() {
+    with_work_log(Some(3), None, |port, authority, _inputs| {
+        let home = get(port, "/", authority, "");
+        assert!(home.contains("merged last full hour · target 3/h"), "{home}");
+        assert!(!home.contains("target 10/h"));
+        assert!(home.contains("below target"));
+    });
+}
+
+#[test]
+fn a_failed_read_retains_the_whole_work_card_with_the_last_good_sample() {
+    with_work_log(None, None, |port, authority, inputs| {
+        let board = inputs.join("board.jsonl");
+        let good = std::fs::read(&board).unwrap();
+        assert!(get(port, "/", authority, "").contains("5 observed main merges in 12 h"));
+        std::fs::write(&board, b"not a board sample\n").unwrap();
+        let degraded = get(port, "/", authority, "");
+        assert!(degraded.contains("Board is last-good"));
+        assert_eq!(degraded.matches("<rect").count(), 12);
+        assert!(degraded.contains("5 observed main merges in 12 h"));
+        assert!(degraded.contains("No review</span><span class=\"v num\">2</span>"));
+        assert!(!degraded.contains("not a board sample"));
+        std::fs::write(&board, &good).unwrap();
+        let recovered = get(port, "/", authority, "");
+        assert!(!recovered.contains("Board is last-good"));
+        assert!(recovered.contains("5 observed main merges in 12 h"));
+    });
+}
+
+#[test]
+fn unpublished_acceptances_count_as_no_pr_from_the_runner_situation() {
+    let mut situation = fixture("healthy")["situation"].clone();
+    situation["data"]["local_accepted"] = serde_json::json!([
+        {"task": "task-unpublished", "commit": "f".repeat(40),
+         "evidence": {"kind": "local_check", "id": "local-synthetic"}}
+    ]);
+    situation["data"]["published"] = serde_json::json!([]);
+    with_work_log(None, Some(situation), |port, authority, _inputs| {
+        let home = get(port, "/", authority, "");
+        assert!(
+            home.contains("No PR yet</span><span class=\"v num\">1</span>"),
+            "{home}"
+        );
+        assert!(home.contains("href=\"/workers\""));
+        assert!(!home.contains("Unobserved counts:</b> No PR yet"));
+    });
+}
+
+#[test]
+fn projection_decode_stays_bounded_on_a_full_sample_tail() {
+    // Worst case: a full 1 MiB tail of complete records, every one a verified main
+    // merge. The decode shares the board read's single tail; the projection is pure.
+    // The bound is generous for shared CI runners and catches an algorithmic
+    // regression (a re-read or a per-render parse), not a microsecond difference.
+    let test = TestEnv::new();
+    let directory = test.root().join("inputs");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = directory.join("board.jsonl");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut log = String::new();
+    let count = 128;
+    for i in 0..count {
+        let at = now - 30 - (count - 1 - i) * 60;
+        let head = format!("{:040x}", i + 1);
+        let mut record = work_record(at, &head, Some(at), serde_json::json!([]), None);
+        record["padding"] = serde_json::json!("x".repeat(7_500));
+        log.push_str(&record.to_string());
+        log.push('\n');
+    }
+    assert!(log.len() as u64 > oxa_work::shadow::MAX_LEAD_SAMPLE_BYTES / 2);
+    std::fs::write(&path, &log).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let uid = std::fs::metadata(test.home()).unwrap().uid();
+    let started = std::time::Instant::now();
+    let sample = oxa_cli::lead_input::sample(&path, uid).unwrap();
+    let work = oxa_cli::lead_projection::Work {
+        throughput: oxa_cli::lead_projection::Throughput::project(&sample.merges, 10),
+        stuck: oxa_cli::lead_projection::Stuck::project(
+            Some(&sample.board),
+            sample.restricts_held.as_deref(),
+            None,
+        ),
+    };
+    let elapsed = started.elapsed();
+    println!(
+        "full-tail decode + projection: {elapsed:?} ({} records, {} merges, {} bytes)",
+        sample.merges.main_samples,
+        sample.merges.merges.len(),
+        log.len()
+    );
+    assert_eq!(sample.merges.merges.len(), count as usize);
+    assert_eq!(work.throughput.observed, count as u32); // every merge falls inside the 12 h window
+    assert!(
+        elapsed < std::time::Duration::from_millis(250),
+        "projection cost regressed: {elapsed:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
 // The in-process sampler (#2262). The server samples GitHub itself: a fake trusted `gh` on the
 // test's PATH answers a well-formed empty sample, a mint helper prints a fresh token for every
 // sample, and the board log is the owner's own private file.
@@ -1278,10 +1584,16 @@ exit 0
 /// The top bar's sampler line, so a test asserts what the owner reads, not the markup.
 fn sampler_line(page: &str) -> String {
     let start = page
-        .split("class=sampler>")
+        .split("id=connection")
         .nth(1)
         .expect("the top bar names the sample");
-    start.split("</b>").next().unwrap_or_default().trim().to_owned()
+    // The attributes after the id are whatever the header renders; the text follows them.
+    start
+        .split_once('>')
+        .map(|(_, text)| text)
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
 }
 
 /// A lead on the healthy synthetic frame with `configure` written into its user settings.
@@ -1360,6 +1672,14 @@ fn wait_for(mut check: impl FnMut() -> bool) -> bool {
     false
 }
 
+fn last_observed(text: &str) -> u64 {
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|value| value["observed_at"].as_u64())
+        .max()
+        .unwrap_or(0)
+}
+
 #[test]
 fn an_unauthorized_retry_starts_no_sample_and_the_top_bar_names_the_timer() {
     with_fixed_chat(|port, authority, _stderr| {
@@ -1374,32 +1694,25 @@ fn an_unauthorized_retry_starts_no_sample_and_the_top_bar_names_the_timer() {
 }
 
 #[test]
-fn the_server_samples_retry_samples_at_once_and_a_refused_token_keeps_the_board() {
+fn the_server_samples_and_retry_samples_at_once() {
     with_configured_lead(
         |_, home| std::fs::write(home.join("sampled-at"), "").unwrap(),
-        |port, authority, test, board| {
+        |port, authority, _test, board| {
             // The server samples on its own interval, with a fresh token, into the owner's log.
             assert!(
                 wait_for(|| samples(board) >= 2),
                 "the server did not sample the board"
             );
             let first = std::fs::read_to_string(board).unwrap();
-            let rows = |text: &str| {
-                text.lines()
-                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                    .filter_map(|v| v["board"]["entries"].as_array().map(Vec::len))
-                    .max()
-                    .unwrap_or(0)
-            };
-            // A sample that ran is a whole record with the frame's rows; the fixture's older
-            // line stays untouched.
-            assert!(rows(&first) > 0, "{first}");
+            assert!(
+                first.lines().last().unwrap().contains("\"observed_at\":"),
+                "{first}"
+            );
             assert!(
                 !first.contains("synthetic-sampler-token"),
                 "the token reached the log"
             );
-            let page = get(port, "/", authority, "");
-            let line = sampler_line(&page);
+            let line = sampler_line(&get(port, "/", authority, ""));
             assert!(
                 line.contains("Sample ") && line.contains("every second"),
                 "{line}"
@@ -1424,7 +1737,12 @@ fn the_server_samples_retry_samples_at_once_and_a_refused_token_keeps_the_board(
             }
         },
     );
-    // The mint helper is replaced for a second lead, so the sample's token is refused.
+}
+
+#[test]
+fn a_refused_token_keeps_the_last_board_and_names_its_cause() {
+    // The mint helper prints a token GitHub refuses: the board keeps its last sample and the
+    // top bar says why and when the next attempt is.
     with_configured_lead(
         |settings, home| {
             let revoked = home.join("revoked-token");
@@ -1456,14 +1774,6 @@ fn the_server_samples_retry_samples_at_once_and_a_refused_token_keeps_the_board(
             assert!(page.contains("Board"), "the last board sample stays on the page");
         },
     );
-}
-
-fn last_observed(text: &str) -> u64 {
-    text.lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter_map(|value| value["observed_at"].as_u64())
-        .max()
-        .unwrap_or(0)
 }
 
 #[test]
