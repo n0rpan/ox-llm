@@ -691,16 +691,16 @@ fn asks(html: &mut String, view: &View<'_>, now: u64) {
 pub const STYLE: &str = concat!(
     include_str!("lead_page/style.css"),
     r#"
-/* Board phone rows; the desktop table stays on a wide screen (#2350). */
+/* Board phone rows; the desktop table stays on a wide screen. */
 .board-rows{display:none;list-style:none;margin:8px 0;padding:0;gap:8px}
 .board-rows li{padding:12px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
 .board-rows .row-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .board-rows dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:8px 0 0}
 .board-rows dt{color:var(--muted);font-size:var(--t-sm)}.board-rows dd{margin:0}
 @media(max-width:899.98px){.board-rows{display:grid}#board .scroll{display:none}}
-/* Workers host groups (#2350). */
+/* Workers host groups. */
 #lanes .host{margin:14px 0 6px;font-size:var(--t-md);color:var(--muted)}
-/* Item detail list (#2350). */
+/* Item detail list. */
 .item-detail{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:8px 0 0}
 .item-detail dt{color:var(--muted);font-size:var(--t-sm)}.item-detail dd{margin:0}
 "#
