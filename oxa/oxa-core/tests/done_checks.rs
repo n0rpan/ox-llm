@@ -173,7 +173,16 @@ fn failing_check_feeds_model_then_passes() {
     assert!(last_user.content.as_ref().unwrap().contains("MISSING-FIXED"));
     assert_eq!(engine.remaining(), 0);
     // What reached the model, for a later failure's message.
-    eprintln!("REPAIR {:?}", last_user(&engine, 2));
+    let repair = |i: usize| -> String {
+        engine.requests()[i]
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == oxa_proto::Role::User)
+            .and_then(|m| m.content.clone())
+            .unwrap_or_default()
+    };
+    eprintln!("REPAIR {:?}", repair(2));
 }
 
 #[test]
