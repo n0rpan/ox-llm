@@ -155,6 +155,22 @@ commands! {
         },
         requirements: NO_REQUIREMENTS,
     },
+    PrThreads {
+        path: &["pr", "threads"],
+        aliases: &[],
+        summary: "List a pull request's review threads with full bodies, ids, state and severity (read-only)",
+        arguments: &[
+            Argument { name: "n", kind: ArgumentKind::Word, required: true },
+            Argument { name: "json", kind: ArgumentKind::Flag, required: false },
+        ],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("Review threads are read from the command line"),
+            menu: Availability::Exception("The menu has no pr command"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
     WorkStatus {
         path: &["work", "status"],
         aliases: &[],
@@ -565,6 +581,26 @@ mod tests {
         assert_eq!(parsed.command.arguments[1].name, "search");
         assert_eq!(parsed.command.arguments[1].kind, ArgumentKind::Word);
         assert!(dispatch_slash(&input).is_none());
+    }
+
+    #[test]
+    fn pr_threads_declares_its_number_word_json_flag_and_cli_only_surface() {
+        let input = words("pr threads 7 --json");
+        let parsed = parse_cli(&input).expect("pr threads resolves on the CLI");
+        assert_eq!(parsed.command.id, CommandId::PrThreads);
+        assert_eq!(parsed.args, &input[2..]);
+        assert_eq!(parsed.command.arguments[0].name, "n");
+        assert_eq!(parsed.command.arguments[0].kind, ArgumentKind::Word);
+        assert!(parsed.command.arguments[0].required);
+        assert_eq!(parsed.command.arguments[1].name, "json");
+        assert_eq!(parsed.command.arguments[1].kind, ArgumentKind::Flag);
+        assert!(!parsed.command.arguments[1].required);
+        assert!(!parsed.command.requirements.owner_only);
+        assert!(dispatch_slash(&input).is_none());
+        for surface in [Surface::Slash, Surface::Menu, Surface::Web] {
+            assert!(!entries(surface).any(|e| e.id == CommandId::PrThreads));
+        }
+        assert!(entries(Surface::Cli).any(|e| e.id == CommandId::PrThreads));
     }
 
     #[test]

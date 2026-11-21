@@ -177,6 +177,14 @@ A returned row also carries an `engine` block when the reply reported timings: t
 
 The capture keeps one prior fingerprint snapshot, allows up to 4,096 messages and 4 MiB of fingerprint input per snapshot, and stops collecting after 64 rows. It never limits chat. The report contains no message text, tool data, token IDs, fingerprints or session, model or request identifiers. It is not added to saved sessions, hook events, or `oxa cache` output. Provider serialization, engine tokens, provider or engine retries, and cache ownership are outside this observation. Neither a matching wire prefix nor a cached-token count proves which request was reused or why a cache missed, and no cache-miss cause is derived from it.
 
+### Pull request review threads
+
+Run `oxa pr threads <n>` to read the review threads of pull request `<n>` in the `origin` repository, or add `--json` for one versioned `oxa_pr_threads` object. It is read-only: it never resolves, replies to, or edits a thread, and it sends one fixed, bounded GraphQL query through the same trusted `gh` path the [wait probes](security.md) use. Your GitHub token stays outside the sandbox.
+
+Each thread carries its GraphQL id, file path and line anchor, whether it is resolved or outdated, and every comment's author, timestamp, database id, commit and full body. Thread and comment ids are kept in full after a shape check (never scrubbed), so a follow-up can reference the exact thread. Bodies are scrubbed of credentials and cut at 32,000 characters with an explicit marker; `body_chars` keeps the original length and `body_cut` says whether it was cut. A `severity` (the highest `P0`–`P3` word) and a `security` flag are heuristics over the review text, not GitHub fields. Remote review text is labelled as data, not instructions.
+
+The read is bounded: at most two pages of 100 threads, each with up to 100 comments. Evidence beyond the bound is reported as incomplete (`incomplete` with a reason, or `comments_incomplete` on a thread), never silently dropped. The command refuses with `--offline` and in a runner-owned `oxa work` worker session, where the runner owns every GitHub call.
+
 ### Local models
 
 `oxa local add <model.gguf>` lets the owner wire one local model into the native local engine. Run it outside an agent tool. It needs no hand-written limits:
