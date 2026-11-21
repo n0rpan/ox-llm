@@ -8,6 +8,7 @@ use crate::app::{
     refresh_status, resolve_ui_theme, theme_name, view_settings, ViewEnv,
 };
 use crate::dialogs::trust_question;
+use crate::effects::{self, append_always, Export, Notice};
 use crate::selectors::{
     cycle_model, cycle_thinking, setting_items, ForkPointSelector, ModelChoice, ModelSelector, Outcome,
     ScopedModelsSelector, SessionPick, SessionPicker, SettingsSelector, ThemeSelector, ThinkingSelector,
@@ -27,8 +28,9 @@ use crate::{
     ScrollbarMode, SelectEvent, SelectorKind, SessionCmd, SessionInfo, SlashCx, SoftWrap, StatusModel,
     TranscriptSearch, TrustChoice, UiRequest, ViewCx, ViewModel, ViewSettings, Viewport, WorkerMsg,
 };
-use oxa_config::{Dirs, Keymap, Settings};
+use oxa_config::Keymap;
 use oxa_core::Handle;
+#[cfg(test)]
 use oxa_export::default_output_name;
 use oxa_proto::{
     AgentEvent, Autonomy, DangerAnswer, Level, Mode, OxaError, Part, PermissionMode, ThinkingLevel, Value,
@@ -775,15 +777,8 @@ impl<'a> Loop<'a> {
         }
         if save {
             let cwd = self.cwd();
-            let value = Value::String(mode.as_str().to_string());
-            match self
-                .opts
-                .settings
-                .set(&self.opts.dirs, &cwd, "permissions.defaultMode", value, false)
-            {
-                Ok(()) => self.push_notice(Level::Info, format!("Default mode saved: {}", mode.as_str())),
-                Err(e) => self.push_notice(Level::Error, e.to_string()),
-            }
+            let saved = effects::save_permission_mode(&mut self.opts.settings, &self.opts.dirs, &cwd, mode);
+            self.notice(Notice::of(saved));
         }
     }
 
@@ -847,6 +842,11 @@ impl<'a> Loop<'a> {
     fn push_notice(&mut self, level: Level, text: String) {
         push_notice(&mut self.vm, level, text);
         self.dirty = true;
+    }
+
+    /// Show what a front-end-neutral effect reported (`effects.rs`).
+    fn notice(&mut self, notice: Notice) {
+        self.push_notice(notice.level, notice.text);
     }
 
     fn cwd(&self) -> PathBuf {
@@ -2403,9 +2403,9 @@ impl<'a> Loop<'a> {
                     sel.set_sessions(self.list_sessions(), self.picker_all);
                 }
                 Outcome::Done(SessionPick::Delete(sref)) => {
-                    let (is_error, msg) = self.delete_session(&sref);
+                    let deleted = self.delete_session(&sref);
                     sel.set_sessions(self.list_sessions(), self.picker_all);
-                    sel.set_status(is_error, &msg);
+                    sel.set_status(deleted.level == Level::Error, &deleted.text);
                 }
                 Outcome::Done(SessionPick::ToggleScope) => {
                     self.picker_all = !self.picker_all;
@@ -2590,45 +2590,20 @@ impl<'a> Loop<'a> {
             self.send(SessionCmd::SetName(name.to_string()));
             return;
         }
-        let store = self.opts.store.clone();
-        let result = store.load(session).and_then(|entries| {
-            let leaf = entries.last().map(|e| e.id.clone()).unwrap_or_default();
-            oxa_session::set_name(store.as_ref(), session, &leaf, name)
-        });
-        if let Err(e) = result {
+        // The terminal shows the new name in the picker; only a failure gets a notice.
+        if let Err(e) = effects::rename_session(self.opts.store.as_ref(), session, name) {
             self.push_notice(Level::Error, e.to_string());
         }
     }
 
     /// pi `onDeleteSession`: the picker's status line says what happened.
-    fn delete_session(&mut self, session: &SessionRef) -> (bool, String) {
-        if session.id == self.session.id {
-            return (true, "Cannot delete the currently active session".to_string());
-        }
-        let removed = match oxa_session::remove_session_preserving_spills(
+    fn delete_session(&mut self, session: &SessionRef) -> Notice {
+        effects::delete_session(
             self.opts.store.as_ref(),
             &self.opts.dirs.tmp_dir,
+            &self.session.id,
             session,
-        ) {
-            Ok(removed) => removed,
-            Err(e) => return (true, format!("Failed to delete: {}", e.message)),
-        };
-        // P6: the session's spill files go with it (`<tmp_dir>/<id>`), so they do not outlive it,
-        // unless a fork or clone of it still names them (#576).
-        if let Err(e) = oxa_session::remove_spill_dir_unless_forked(
-            self.opts.store.as_ref(),
-            &self.opts.dirs.tmp_dir,
-            session,
-        ) {
-            return (
-                true,
-                format!("Session removed, but its spill files were not: {}", e.message),
-            );
-        }
-        match removed {
-            oxa_session::Removed::Trashed => (false, "Session moved to trash".to_string()),
-            oxa_session::Removed::Deleted => (false, "Session deleted".to_string()),
-        }
+        )
     }
 
     fn ask_trust(&mut self) {
@@ -2652,24 +2627,12 @@ impl<'a> Loop<'a> {
     }
 
     fn save_trust(&mut self, choice: TrustChoice) {
-        if choice == TrustChoice::Skip {
-            return;
-        }
         let Some(save) = self.opts.save_trust.as_mut() else {
             return;
         };
-        match save(choice) {
-            Ok(()) => {
-                let what = match choice {
-                    TrustChoice::Trust => "This project is trusted",
-                    TrustChoice::TrustParent => "The parent directory is trusted",
-                    TrustChoice::NoTrust | TrustChoice::Skip => "This project is not trusted",
-                };
-                self.push_notice(
-                    Level::Info,
-                    format!("{what}. Saved; it applies the next time oxa starts here."),
-                );
-            }
+        match effects::save_trust(save, choice) {
+            Ok(Some(notice)) => self.notice(notice),
+            Ok(None) => {}
             Err(e) => self.push_notice(Level::Error, e.to_string()),
         }
     }
@@ -2705,33 +2668,32 @@ impl<'a> Loop<'a> {
                 scope_project,
             } => {
                 let cwd = self.cwd();
-                match self
-                    .opts
-                    .settings
-                    .set(&self.opts.dirs, &cwd, &key, value, scope_project)
-                {
-                    Ok(()) => {
-                        self.refresh_view_settings();
-                        self.push_notice(Level::Info, format!("Saved {key}"));
-                    }
-                    Err(e) => self.push_notice(Level::Error, e.to_string()),
+                let saved = effects::save_setting(
+                    &mut self.opts.settings,
+                    &self.opts.dirs,
+                    &cwd,
+                    &key,
+                    value,
+                    scope_project,
+                );
+                if saved.is_ok() {
+                    self.refresh_view_settings();
                 }
+                self.notice(Notice::of(saved));
             }
             AppAction::SetTheme { name, persist } => {
                 match resolve_ui_theme(&*self.opts, &name, self.caps, self.term_colors.as_ref()) {
                     Ok(theme) => {
                         self.install_theme(theme);
                         if persist {
-                            self.theme_name = name.clone();
                             let cwd = self.cwd();
-                            let value = Value::String(name);
+                            // The new theme on screen is the confirmation; only a failure is said.
                             if let Err(e) =
-                                self.opts
-                                    .settings
-                                    .set(&self.opts.dirs, &cwd, "theme", value, false)
+                                effects::persist_theme(&mut self.opts.settings, &self.opts.dirs, &cwd, &name)
                             {
                                 self.push_notice(Level::Error, e.to_string());
                             }
+                            self.theme_name = name;
                         }
                     }
                     Err(e) => self.push_notice(Level::Error, e.to_string()),
@@ -2743,9 +2705,8 @@ impl<'a> Loop<'a> {
             ),
             AppAction::RenameSession { session, name } => self.rename_session(&session, &name),
             AppAction::DeleteSession { session } => {
-                let (is_error, msg) = self.delete_session(&session);
-                let level = if is_error { Level::Error } else { Level::Info };
-                self.push_notice(level, msg);
+                let deleted = self.delete_session(&session);
+                self.notice(deleted);
             }
             AppAction::SetTrust(trusted) => self.save_trust(if trusted {
                 TrustChoice::Trust
@@ -2784,49 +2745,13 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// `/export [path]` (pi): HTML by default, JSONL when the path ends in `.jsonl` (a copy of
-    /// the session file). A relative path is taken from the working directory; with no path the
-    /// HTML goes to the default name (`default_output_name`, as `--export` and RPC do).
+    /// `/export [path]` (pi): the rules are `effects::export`; an HTML export is written by
+    /// the session thread.
     fn export(&mut self, path: Option<PathBuf>) {
-        use std::os::unix::fs::MetadataExt;
-
-        let Some(source) = self.session.file.clone() else {
-            self.push_notice(
-                Level::Warning,
-                "/export: this session is not saved to a file.".to_string(),
-            );
-            return;
-        };
         let cwd = self.cwd();
-        let target = path
-            .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
-            .unwrap_or_else(|| default_output_name(Some(&source), &self.session.id, &cwd));
-        let aliases_source = source == target
-            || match (std::fs::metadata(&source), std::fs::metadata(&target)) {
-                (Ok(source), Ok(target)) => source.dev() == target.dev() && source.ino() == target.ino(),
-                _ => false,
-            };
-        if aliases_source {
-            self.push_notice(
-                Level::Error,
-                "/export: destination is the session file; choose a different path.".to_string(),
-            );
-            return;
-        }
-        match target {
-            target if target.extension().is_some_and(|e| e == "jsonl") => {
-                match std::fs::copy(&source, &target) {
-                    Ok(_) => self.push_notice(
-                        Level::Info,
-                        format!("Exported the session to {}", target.display()),
-                    ),
-                    Err(e) => {
-                        let err = OxaError::io(&format!("cannot write {}", target.display()), &e);
-                        self.push_notice(Level::Error, err.to_string());
-                    }
-                }
-            }
-            path => self.send(SessionCmd::Export { path }),
+        match effects::export(self.session.file.as_deref(), &self.session.id, &cwd, path) {
+            Export::Done(notice) => self.notice(notice),
+            Export::Html(path) => self.send(SessionCmd::Export { path }),
         }
     }
 
@@ -2855,16 +2780,8 @@ impl<'a> Loop<'a> {
             format!("capabilities: {:?}", self.caps),
             debug_dump(&[], cols, rows, &self.vm),
         ];
-        match oxa_core::write_bug_report(&self.opts.dirs, description, &facts) {
-            Ok(path) => self.push_notice(
-                Level::Info,
-                format!(
-                    "Bug report written to {} (review it before you share it)",
-                    path.display()
-                ),
-            ),
-            Err(e) => self.push_notice(Level::Error, e.to_string()),
-        }
+        let written = effects::bug_report(&self.opts.dirs, description, &facts);
+        self.notice(Notice::of(written));
     }
 
     // -----------------------------------------------------------------------------------------
@@ -3588,38 +3505,6 @@ mod running_tests {
 // ---------------------------------------------------------------------------------------------
 // The trust question before a session exists
 // ---------------------------------------------------------------------------------------------
-
-/// The user setting that lists the keys of "always allow" (#1512 S2); user settings only.
-const APPROVAL_ALWAYS: &str = "oxa.approval.always";
-
-/// #1512 S2: save `keys` to the user settings' `oxa.approval.always`, each key once. The list is
-/// read from the user layer only, so a project's value is never copied into the user file.
-pub fn append_always(
-    settings: &mut Settings,
-    dirs: &Dirs,
-    _cwd: &Path,
-    keys: &[String],
-) -> Result<(), OxaError> {
-    // Under the user file's write lock, merge into the list the FILE holds now: two sessions
-    // saving at once keep each other's keys (#1772).
-    settings.update_user(dirs, APPROVAL_ALWAYS, |current| {
-        let mut list: Vec<String> = current
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        for key in keys {
-            if !list.contains(key) {
-                list.push(key.clone());
-            }
-        }
-        Ok(Value::Array(list.into_iter().map(Value::String).collect()))
-    })
-}
 
 /// The project trust question (D10 `ask_trust`'s question) drawn directly on `term`, for the
 /// one question asked before the session (and with it the app loop) exists. `None` when

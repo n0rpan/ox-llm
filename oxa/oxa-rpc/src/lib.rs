@@ -17,6 +17,9 @@
 //!   `steer`, `follow_up`, `abort`, `abort_retry`, `clear_queue`, `get_state` are answered
 //!   while a prompt runs (through `Handle`), other commands answer `busy`-style errors as pi
 //!   does. stdin close = shutdown.
+//! * Reading records back: `event_from_json` is the inverse of `event_to_json` for a client
+//!   (the desktop app on a remote session). Encoding the decoded event gives the same record;
+//!   a record that is not a known event is `None` (`events_decode.rs`).
 #![forbid(unsafe_code)]
 
 #[cfg(target_os = "linux")]
@@ -26,6 +29,7 @@ mod client;
 mod cmd_run;
 mod cmd_session;
 mod events;
+mod events_decode;
 mod ext_ui;
 mod print;
 mod server;
@@ -35,6 +39,7 @@ pub use events::{
     entry_to_json, event_to_json, message_to_json, session_header_record, state_to_json, write_record,
     JsonSink,
 };
+pub use events_decode::event_from_json;
 pub use ext_ui::{confirm_before_start, RpcUi, UiRouter};
 #[cfg(target_os = "linux")]
 pub use print::run_json_outcome_with_steering_authority;

@@ -1,0 +1,1 @@
+- Internal: the parts of the interactive actions that need no terminal (saving a setting, the default permission mode or a theme, renaming and deleting a session, export, the bug report, the trust decision) moved to `oxa_interactive::effects`, so the desktop app will run the same code as the terminal. Nothing users see changes.

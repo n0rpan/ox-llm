@@ -1,5 +1,6 @@
 //! B14: session metadata, search and sort for the picker.
 // ported from pi packages/coding-agent/src/core/session-manager.ts (buildSessionInfo) and modes/interactive/components/session-selector-search.ts
+use crate::index::order_threads;
 use crate::{SessionHeader, SessionMeta, SessionRef};
 use oxa_proto::{Entry, EntryBody, Role};
 use std::collections::HashMap;
@@ -137,6 +138,7 @@ pub fn sort_sessions(metas: &[SessionMeta], indices: &mut Vec<usize>, sort: Sess
 }
 
 /// Newest first, each session followed by its children (also newest first) when they are in `idx`.
+/// The order itself is `order_threads`, the one function behind [`crate::thread_order`] as well.
 fn threaded(metas: &[SessionMeta], idx: &[usize]) -> Vec<usize> {
     let by_path: HashMap<String, usize> = idx
         .iter()
@@ -147,56 +149,9 @@ fn threaded(metas: &[SessionMeta], idx: &[usize]) -> Vec<usize> {
             .parent_session
             .as_ref()
             .and_then(|p| by_path.get(p).copied())
-            .filter(|&p| p != i)
     };
-    // Newest modification in each subtree (a thread's rank).
-    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut roots = Vec::new();
-    for &i in idx {
-        match parent_of(i) {
-            Some(p) => children.entry(p).or_default().push(i),
-            None => roots.push(i),
-        }
-    }
-    let mut out = Vec::with_capacity(idx.len());
-    let mut seen = vec![false; metas.len()];
-    fn walk(
-        i: usize,
-        children: &HashMap<usize, Vec<usize>>,
-        metas: &[SessionMeta],
-        seen: &mut [bool],
-        out: &mut Vec<usize>,
-    ) {
-        if seen[i] {
-            return;
-        }
-        seen[i] = true;
-        out.push(i);
-        let mut kids = children.get(&i).cloned().unwrap_or_default();
-        kids.sort_by(|&a, &b| metas[b].modified_ms.cmp(&metas[a].modified_ms));
-        for k in kids {
-            walk(k, children, metas, seen, out);
-        }
-    }
-    // The rank of a root is the newest member of its subtree.
-    fn subtree_newest(i: usize, children: &HashMap<usize, Vec<usize>>, metas: &[SessionMeta]) -> u64 {
-        let mut best = metas[i].modified_ms;
-        for &k in children.get(&i).map(Vec::as_slice).unwrap_or(&[]) {
-            best = best.max(subtree_newest(k, children, metas));
-        }
-        best
-    }
-    roots.sort_by_key(|&a| std::cmp::Reverse(subtree_newest(a, &children, metas)));
-    for r in roots {
-        walk(r, &children, metas, &mut seen, &mut out);
-    }
-    // Members of a parent cycle are reached from no root; keep them at the end.
-    for &i in idx {
-        if !seen[i] {
-            walk(i, &children, metas, &mut seen, &mut out);
-        }
-    }
-    out
+    let order = order_threads(metas.len(), idx, parent_of, |i| metas[i].modified_ms);
+    order.into_iter().map(|(i, _)| i).collect()
 }
 
 // ---------------------------------------------------------------------------------------------

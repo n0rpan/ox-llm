@@ -57,7 +57,14 @@ attended, unsandboxed, direct foreground sudo launch. The broker pins the runnin
 by device and inode and checks that the helper uses that inode and writes to sudo's pipe. It accepts
 one request bound to the exact sudo child started by that bash call, and revokes delivery when the
 call stops being foreground. The password travels owner -> broker -> helper -> sudo, never to the
-model, tool output, transcript or logs. Neither typed chat nor yolo can answer the dialog.
+model, tool output, transcript or logs. Neither typed chat nor yolo can answer the dialog. The
+dialog gets the request context the broker itself holds (`Ui::secret_ask`: the process's prompt, the
+exact command, the pid of the sudo process oxa started, the tool), so a UI can show what asks. The
+answer is a `SecretValue`: no `Debug`, `Display`, `Clone` or serialisation, zeroed on drop, and the
+broker writes it to the helper's socket from that one buffer without a formatted copy. The buffer is
+not locked against swap, and the terminal dialog's edit field and the short-lived helper process hold
+ordinary strings; a path that skips `SecretValue` for the broker's copy is hardening (P3), a password
+in a record, log, transcript or `Debug` output is high severity.
 
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.

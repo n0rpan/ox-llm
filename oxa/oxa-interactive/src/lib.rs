@@ -17,6 +17,9 @@
 //!          events out through an mpsc EventSink; dialogs through UiProxy (blocks the worker)
 //!  Any thread: oxa_core::Handle::{steer, follow_up, abort} (Send + Clone)
 //! ```
+//! The part of an [`AppAction`] that needs no terminal (saving a setting, the permission mode
+//! or a theme, renaming and deleting a session, export, the bug report, the trust decision)
+//! is in [`effects`]. The terminal driver calls it, and so does the desktop app.
 //! Data flows one way: `AgentEvent` -> [`ViewModel`] -> lines. Views never call the session.
 //!
 //! ## Contracts
@@ -40,6 +43,7 @@ pub mod command_registry;
 mod dialogs;
 mod draft_trigger;
 mod driver;
+pub mod effects;
 mod external;
 mod fullscreen;
 mod model;
@@ -55,7 +59,8 @@ pub use app::*;
 pub use chrome::*;
 pub use clipboard::*;
 pub use dialogs::*;
-pub use driver::{append_always, ask_trust_interactive, ask_trust_on};
+pub use driver::{ask_trust_interactive, ask_trust_on};
+pub use effects::append_always;
 pub use external::*;
 pub use fullscreen::*;
 pub use model::*;
