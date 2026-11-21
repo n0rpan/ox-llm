@@ -1176,6 +1176,7 @@ dependencies = [
 name = "oxa-cli"
 version = "0.2.1"
 dependencies = [
+ "flate2",
  "libc",
  "oxa-a2a",
  "oxa-codemode",

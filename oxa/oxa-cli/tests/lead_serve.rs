@@ -388,6 +388,7 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
         ("/workers", "Workers"),
         ("/usage", "Usage"),
         ("/chat", "Chat with lead"),
+        ("/goal", "Owner goal"),
     ] {
         for fragment in [false, true] {
             let path = if fragment {
@@ -1034,6 +1035,7 @@ fn frame_pages_render(port: u16, authority: &str) {
         ("/workers", "Workers"),
         ("/usage", "Usage"),
         ("/chat", "Chat with lead"),
+        ("/goal", "Owner goal"),
     ] {
         for fragment in [false, true] {
             let path = if fragment {
@@ -1048,6 +1050,51 @@ fn frame_pages_render(port: u16, authority: &str) {
         }
         assert!(get(port, path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
     }
+}
+
+/// The document names its stylesheet and script at content-hashed paths; a second visit
+/// revalidates the document in one request and needs no asset request at all.
+#[test]
+fn healthy_frame_reuses_hashed_assets_and_revalidates_unchanged_pages() {
+    with_frame("healthy", |port, authority, _| {
+        let document = get(port, "/", authority, "");
+        assert!(document.starts_with("HTTP/1.1 200"), "{document}");
+        assert!(document.contains("Cache-Control: no-store"), "{document}");
+        let header = |head: &str, name: &str| {
+            head.lines()
+                .filter_map(|line| line.split_once(": "))
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.to_owned())
+        };
+        let tag = header(&document, "ETag").expect("a page carries a validator");
+        for asset in ["/a/", "style.css", "live.js"] {
+            assert!(document.contains(asset), "{asset} is not named: {document:.400}");
+        }
+        let style = document
+            .split("href=")
+            .nth(1)
+            .and_then(|rest| rest.split('>').next())
+            .filter(|path| path.starts_with("/a/") && path.ends_with("style.css"))
+            .expect("the stylesheet is a hashed asset");
+        let served = get(port, style, authority, "");
+        assert!(served.starts_with("HTTP/1.1 200"), "{served}");
+        assert!(served.contains("Cache-Control: public, max-age=31536000, immutable"));
+        // An unchanged document answers 304 with no body, after the same authorization.
+        let repeat = get(port, "/", authority, &format!("If-None-Match: {tag}\r\n"));
+        assert!(repeat.starts_with("HTTP/1.1 304 Not Modified"), "{repeat}");
+        assert!(repeat.contains("Content-Length: 0"), "{repeat}");
+        assert!(
+            repeat.contains("Content-Security-Policy: default-src 'none'"),
+            "{repeat}"
+        );
+        // Without the token the same validator buys nothing.
+        let refused = get_raw(port, "/", authority, &format!("If-None-Match: {tag}\r\n"));
+        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+        assert!(!refused.contains("ETag"), "{refused}");
+        // A fragment update is cheaper than a document: still one request.
+        let fragment = get(port, "/?fragment=1", authority, "");
+        assert!(fragment.starts_with("HTTP/1.1 200"), "{fragment}");
+    });
 }
 
 #[test]

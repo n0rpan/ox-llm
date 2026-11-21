@@ -35,6 +35,7 @@ mod in_process;
 mod key_hints;
 pub mod lead;
 pub mod lead_access;
+pub(crate) mod lead_assets;
 pub(crate) mod lead_attach;
 pub(crate) mod lead_chat;
 pub mod lead_http;

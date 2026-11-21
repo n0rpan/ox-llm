@@ -63,6 +63,35 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("</section>");
 }
 
+/// The compact Home row (#2345): a link to the full `/goal` page with the recorded
+/// state and start time. The acceptance tree stays on `/goal`; this row carries no
+/// form, button or full acceptance section, and an absent or inconsistent
+/// observation says so rather than promoting acceptance.
+pub(super) fn row(html: &mut String, view: &View<'_>, now: u64) {
+    html.push_str("<section class=goal-row><h2>Owner goal</h2>");
+    let unavailable =
+        "<p class=muted>Goal observation unavailable. <a href=/goal>Open the goal page</a>.</p></section>";
+    let Some((goal, observation)) = view.owner_goal else {
+        html.push_str(unavailable);
+        return;
+    };
+    if observation.revision == 0 || observation.status != Some(goal.status) || goal.validate().is_err() {
+        html.push_str(unavailable);
+        return;
+    }
+    let state = if goal.status == GoalStatus::Done && goal.plan.is_none() {
+        "done reported; acceptance plan unavailable"
+    } else {
+        goal.status.as_str()
+    };
+    let _ = write!(
+        html,
+        "<p><a href=/goal>{}</a></p><p class=muted>{state} · Started {} · <a href=/goal>Acceptance detail</a></p></section>",
+        escape(&goal.objective),
+        human_time(goal.started_ms / 1000, now)
+    );
+}
+
 fn checks(html: &mut String, checks: &[GoalCheck], now: u64) {
     html.push_str("<ul>");
     for check in checks {

@@ -6,16 +6,17 @@
 //!
 //! ## Artifacts already verified in this run (#2295)
 //!
-//! When a `bash` call fails and a `done` check passes after it in the same batch, and a file
-//! this run wrote successfully is still there, the repair message names those files before the
-//! failure text: they are the last verified result, so the fix is the part that differs (a
-//! diff against it), not a rebuild from scratch. The files are the batch's own successful
-//! `write`/`edit` paths: relative to the session folder (an absolute one inside it works),
-//! deduplicated at each file's last write, newest [`ARTIFACT_SHOWN`], each at most
-//! [`ARTIFACT_PATH_CAP`] bytes, nothing outside the folder. No file content is read, no lookup
-//! runs, a path that is gone is dropped quietly, and nothing is refused or asked: without a
-//! failed `bash` call and a passing check in the same batch, the repair text is unchanged. A run
-//! with no `done` checks to run (or a project's `done` in an untrusted folder) keeps nothing.
+//! When a `bash` call fails and a check (`crate::think::executed_check`) has passed after the
+//! run's last write to a file that is still there, the repair message names those files before
+//! the failure text: they are the result the run verified, so the fix is the part that differs
+//! (a diff against it), not a rebuild from scratch. The entry is recorded in call order: a
+//! passing check moves the files written before it into the verified set, and a later write
+//! stays out until another check covers it. Paths are relative to the session folder (an
+//! absolute one inside it works), deduplicated at each file's last write, newest
+//! [`ARTIFACT_SHOWN`], each at most [`ARTIFACT_PATH_CAP`] bytes; a path with `..`, outside the
+//! folder or gone from disk is dropped. No file content is read, no lookup runs, and nothing is
+//! refused or asked: without a failed `bash` call and a verified file, the repair text is
+//! unchanged. A run with no `done` checks to run keeps nothing.
 use crate::exec::CallResult;
 use crate::SessionState;
 use oxa_proto::{
@@ -71,8 +72,10 @@ pub(crate) struct DoneState {
     /// Distinct paths the run's successful `edit`/`write` calls named, in first-use order
     /// (#2297). Tool-observed only; reported once at the end as acceptance evidence.
     changed_paths: Vec<String>,
-    /// #2295: the files the current batch wrote successfully, in call order.
+    /// #2295: the files this run wrote whose last write a passing check covered, newest last.
     written: Vec<String>,
+    /// #2295: the paths written since the last passing check (not verified yet).
+    unchecked_writes: Vec<String>,
     /// #2295: a `bash` call of the current batch failed.
     failed_command: bool,
 }
@@ -243,6 +246,13 @@ fn artifact_line(cwd: &Path, written: &[String]) -> Option<String> {
         let Some(rel) = inside.to_str() else {
             continue;
         };
+        // A path that climbs out of the folder (`..`) is not inside it.
+        if inside
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+        {
+            continue;
+        }
         // An absolute path outside the folder, a control character, an over-long path, or a
         // file a later command deleted is not a result to compare against.
         if inside == Path::new(raw) && Path::new(raw).is_absolute()
@@ -268,6 +278,17 @@ fn artifact_line(cwd: &Path, written: &[String]) -> Option<String> {
          rebuilding the files from scratch.",
         shown[from..].join(", ")
     ))
+}
+
+/// #2295: `paths` with each file once at its last write, newest [`ARTIFACT_SHOWN`].
+fn newest(paths: &[String]) -> Vec<String> {
+    let mut last: Vec<&str> = Vec::new();
+    for path in paths {
+        last.retain(|p| *p != path.as_str());
+        last.push(path);
+    }
+    let from = last.len().saturating_sub(ARTIFACT_SHOWN);
+    last[from..].iter().map(|p| (*p).to_string()).collect()
 }
 
 /// #2295: the path argument of a successful `write`/`edit` call (`None`: not a string).
@@ -312,11 +333,6 @@ impl Proof {
     /// Any passing check ran in this run (T6 `Toolchain::unverified`).
     pub(crate) fn passed_at_all(&self) -> bool {
         self.passed_any
-    }
-
-    /// A passing check ran after the last change (the verified-artifact line, #2295).
-    pub(crate) fn checked(&self) -> bool {
-        self.checked
     }
 
     /// A file changed in this run (FH-N2: a closing question after edits is not an open task).
@@ -485,8 +501,9 @@ impl DoneState {
 
     /// One batch, in call order (`calls` and `results` line up): a successful edit or write is a
     /// change; a successful bash call that runs a test or check after the last change proves it.
-    /// A failed command is kept for the next repair (#2295); [`Self::note_artifacts`] then keeps
-    /// the batch's written files.
+    /// #2295: a passing check folds the files written before it into the verified result, so a
+    /// write after the last passing check stays unverified; a failed command is kept for the
+    /// next repair.
     pub(crate) fn note_proof(&mut self, calls: &[ToolCall], results: &[CallResult]) {
         self.failed_command = false;
         for (call, res) in calls.iter().zip(results) {
@@ -502,7 +519,7 @@ impl DoneState {
                         if !self.changed_paths.contains(&path) {
                             self.changed_paths.push(path.clone());
                         }
-                        self.written.push(path);
+                        self.unchecked_writes.push(path);
                     }
                 }
                 "read" => {
@@ -524,6 +541,8 @@ impl DoneState {
                             .is_some_and(|args| crate::think::executed_check(&call.name, args).is_some());
                         if is_check {
                             self.proof.passed();
+                            // The check covers every file written before it.
+                            self.written.append(&mut self.unchecked_writes);
                         }
                         // After the one image nudge, any successful command counts as the
                         // cross-check the model was asked to run: a render-and-diff or an
@@ -538,32 +557,29 @@ impl DoneState {
         }
     }
 
-    /// #2295: with `keep` (the run has `done` checks to run, [`checks_run`]), keep this batch's
-    /// successful `write`/`edit` paths as the verified result a repair names, newest
-    /// [`ARTIFACT_SHOWN`], each file once at its last write. The failure signal and the passing
-    /// check are judged where the check runs ([`Self::verified_artifacts`]).
+    /// #2295: with `keep` (the run has `done` checks to run, [`checks_run`]), keep the verified
+    /// paths newest [`ARTIFACT_SHOWN`], each file once at its last write, and keep the files
+    /// written since the last passing check (a later check still covers them). The failure
+    /// signal and the passing check are judged where the check runs
+    /// ([`Self::verified_artifacts`]).
     pub(crate) fn note_artifacts(&mut self, keep: bool) {
         if !keep {
             self.written.clear();
+            self.unchecked_writes.clear();
             return;
         }
-        let mut last: Vec<&str> = Vec::new();
-        for path in &self.written {
-            last.retain(|p| *p != path.as_str());
-            last.push(path);
-        }
-        let from = last.len().saturating_sub(ARTIFACT_SHOWN);
-        self.written = last[from..].iter().map(|p| (*p).to_string()).collect();
+        self.written = newest(&self.written);
     }
 
-    /// #2295: the verified-artifact line for a failed-check repair, only when the batch that
-    /// ran the check also failed a command after writing the file; older writes are the parts a
-    /// check or a formatter may already have rewritten, so they are not claimed here.
+    /// #2295: the verified-artifact line for a failed-check repair. A file is named only when a
+    /// check passed after its last write and a command failed: the failure is the signal and
+    /// the check is this run's verification of the files. A write after the last passing check
+    /// stays out ([`Self::note_proof`]), so the set holds exactly the covered files.
     pub(crate) fn verified_artifacts(&self, cwd: &Path) -> Option<String> {
-        if !self.failed_command || !self.proof.checked() {
+        if !self.failed_command || self.written.is_empty() {
             return None;
         }
-        artifact_line(cwd, &self.written)
+        artifact_line(cwd, &newest(&self.written))
     }
 
     /// Start of a run: remember the tree, so a later `bash` change can be told apart.
@@ -1793,12 +1809,20 @@ mod tests {
         failed_batch(&mut state, &env.work(), &["a.txt"]);
         state.failed_command = false;
         assert_eq!(state.verified_artifacts(&env.work()), None);
-        // A failure and a written file, but no check passed after it.
+        // A failure and a written file, but no check passed after it: the write stays
+        // unverified.
         let mut state = DoneState::default();
-        failed_batch(&mut state, &env.work(), &["b.txt"]);
-        state.proof.checked = false;
+        std::fs::write(env.work().join("b.txt"), "written by this run").unwrap();
+        let calls = [write_call("w", "b.txt"), command_call("b", "sqlite3 db .dump")];
+        let results = [
+            result("w", "write", None, false),
+            result("b", "bash", Some(1), true),
+        ];
+        state.note_proof(&calls, &results);
+        state.note_artifacts(true);
+        assert_eq!(state.written, Vec::<String>::new());
         assert_eq!(state.verified_artifacts(&env.work()), None);
-        // A failure and a check, but this batch wrote no file (an older write is not claimed).
+        // A failure and a check, but this batch wrote no file, so nothing is verified here.
         let mut state = DoneState::default();
         state.proof.changed();
         state.note_proof(
@@ -1815,6 +1839,58 @@ mod tests {
         state.note_artifacts(false);
         state.proof.passed();
         assert_eq!(state.verified_artifacts(&env.work()), None);
+    }
+
+    #[test]
+    fn a_write_after_the_last_passing_check_is_not_named() {
+        let env = oxa_fake::TestEnv::new();
+        let work = env.work();
+        for name in ["checked.txt", "later.txt"] {
+            std::fs::write(work.join(name), "written by this run").unwrap();
+        }
+        let mut state = DoneState::default();
+        // This batch: a write, a failing command, a passing check, then a second write.
+        let calls = [
+            write_call("w1", "checked.txt"),
+            command_call("b", "sqlite3 db .dump"),
+            command_call("c", "cargo test"),
+            write_call("w2", "later.txt"),
+        ];
+        let results = [
+            result("w1", "write", None, false),
+            result("b", "bash", Some(1), true),
+            result("c", "bash", Some(0), false),
+            result("w2", "write", None, false),
+        ];
+        state.note_proof(&calls, &results);
+        state.note_artifacts(true);
+        let line = state
+            .verified_artifacts(&work)
+            .expect("a verified result is named");
+        assert!(line.contains("checked.txt"), "{line}");
+        assert!(
+            !line.contains("later.txt"),
+            "a write after the last passing check is unverified: {line}"
+        );
+    }
+
+    #[test]
+    fn a_check_before_the_write_does_not_verify_it() {
+        let env = oxa_fake::TestEnv::new();
+        let work = env.work();
+        std::fs::write(work.join("after.txt"), "written by this run").unwrap();
+        let mut state = DoneState::default();
+        // The check passed before this batch's write, and nothing passed after it.
+        state.proof.changed();
+        state.proof.passed();
+        let calls = [write_call("w", "after.txt"), command_call("b", "do-the-thing")];
+        let results = [
+            result("w", "write", None, false),
+            result("b", "bash", Some(1), true),
+        ];
+        state.note_proof(&calls, &results);
+        state.note_artifacts(true);
+        assert_eq!(state.verified_artifacts(&work), None);
     }
 
     #[test]
@@ -1840,6 +1916,8 @@ mod tests {
         std::fs::write(env.work().join(&long), "x").unwrap();
         state.written.push(long.clone());
         state.written.push("/etc/passwd".to_string());
+        // It exists (so `exists()` cannot be what drops it), one level above the folder.
+        std::fs::write(env.root().join("outside.txt"), "x").unwrap();
         state.written.push("../outside.txt".to_string());
         let line = state.verified_artifacts(&env.work()).unwrap();
         assert!(line.contains("first.txt"), "{line}");

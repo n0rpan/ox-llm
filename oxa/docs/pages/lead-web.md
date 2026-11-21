@@ -24,17 +24,36 @@ a sixth Chat entry, and the floating button hides.
 - Pages no longer end with a "not connected yet" footer; what chat can do is
   shown on the chat page itself.
 
-The home page's attention block reports the five stuck-work signals from the board
+The home page answers three questions in order, above the fold first. A banner at the
+top says whether anything is wrong: a firing stuck-work signal reads red ("Alarm"), open
+owner decisions or asks read amber ("Needs you"), a fully observed quiet system reads one
+green sentence ("All clear"), and anything less reads "Can't tell yet" rather than green.
+The banner never invents health: it is green only when every alarm source is observed and
+quiet, the board sample is fresh and not a retained last-good value, and no decision or
+ask is open. It is a status, not an alert, unless an alarm is actually firing.
+
+Below the banner, the attention block reports the five stuck-work signals from the board
 log's protected record: main required-check failures, no verified main merge for 45
 minutes, over-age merge-queue membership at the exact PR head, workflow runs queued
 over 15 minutes, and unanswered owner decisions. Each source is rendered from its own
 observation: a source the record does not carry is never shown as healthy. The missing
 sources collapse into one line ("Not in this sample: …") that names them, instead of one
-bullet per source, and a routine healthy read renders no attention block at all. With
-`owner_chat` enabled, open owner asks are additionally read live from the authorized
+bullet per source, and a routine healthy read renders no attention block at all. Open
+owner decisions render as rows with the same inline approve forms as the approvals page.
+With `owner_chat` enabled, open owner asks are additionally read live from the authorized
 durable Lead Session on every render, with their original revisions, through the
 registered owner-bound caller; an unauthorized or absent session leaves that source
 unavailable rather than quietly empty.
+
+Then four read-only tiles navigate to the full pages, each with one factual line from the
+same observation the destination renders: Board (the observed item count and whether the
+snapshot is current, stale or last-good), Workers (how many are running at the
+observation), Merge queue (how many PRs are in it) and Release (the checked and total
+release-checklist items). A tile whose source is absent names the gap instead of showing a
+number; no tile carries a form, button or inline handler. The owner goal collapses to one
+row that links to `/goal`, where the full acceptance tree lives: the home row shows the
+objective, its recorded state and start time, or says the goal observation is unavailable.
+Live workers and the observed-work details follow, as before.
 
 ## Last-known data, age and cause
 
@@ -227,12 +246,22 @@ Board sample (board, alarms, GitHub App quota, thread holds and the quota deferr
 owner's reserve recorded) and the runner situation named by `OXA_LEAD_SITUATION`, which
 the pages did not read before. The server no longer makes its own partial read.
 
-- **Workers** shows the Lead session's live workers first: name, lane (branch), model,
-  state and how old the worker's status file is (a Dead worker, a Stopped worker and a
-  stale status show as such), then the runner situation rows. The parent is the session
-  of the Lead owner binding, never a session list. No workers recorded and no runner
-  observation render the "Lane status unavailable" text; a corrupt registry renders
-  "Live workers refused" and is left untouched.
+- **Board** lists the observed PRs with their next action, priority, lease and attempts
+  today, under counted filter chips that narrow the list by next action. A wide screen
+  shows a table; a phone shows the same rows as cards. A stale or
+  absent board observation is named explicitly, never shown as empty healthy work.
+- **Item** names the next action and the observed state: priority, lease, attempts today
+  and the observed time. Title, checks, review state, findings and diff are not part of
+  this observation, so each is shown as "Unavailable in this snapshot" rather than guessed.
+- **Workers** shows the Lead session's live workers under "This host" first: name, lane
+  (branch), model, a state chip and how old the worker's status file is (a Dead worker, a
+  Stopped worker and a stale status show as such). The runner situation tasks are then
+  grouped by their host, each with a state chip (Stall reported, Busy at observation, or
+  Idle reported for a host with no running task); within a host the reported stalls come
+  first and the observation order is otherwise kept. The parent is the session of the Lead
+  owner binding, never a session list. No workers recorded and no runner observation render
+  the "Lane status unavailable" text; a corrupt registry renders "Live workers refused" and
+  is left untouched.
 - **Capacity** (home and Workers pages) shows the owner's user-only `oxa.lead.capacity`
   map next to observed use: one row per host as `running workers / configured capacity`,
   for example `host-a 2/6`. A host the owner did not configure shows an unknown capacity;
@@ -257,6 +286,38 @@ the pages did not read before. The server no longer makes its own partial read.
   changed digest after an update reloads the page. Streams use the existing
   16-connection pool and per-write deadline. The one-shot `/events` route and the
   polling fallback remain for listeners without the route.
+
+## Transport: one request for a repeat page
+
+The stylesheet and the script are served at URLs that name their bytes:
+`/a/<first eight hex digits of SHA-256>/style.css` and `/a/<sha8>/live.js`. The
+document links them there, so a repeat visit reuses the browser's copy without a
+request (`Cache-Control: public, max-age=31536000, immutable`); a new build changes
+the digest and therefore the URL, so a cached asset is never a stale one. These two
+files are the only shared, cacheable answers: they hold no page data, identity or
+session, and a page is still `no-store`.
+
+A page or a `?fragment=1` answer carries an `ETag` of its exact bytes. A browser that
+sends the same `ETag` back in `If-None-Match` gets `304 Not Modified` with no body and
+the same CSP, referrer, `nosniff` and `no-store` headers. An unchanged page therefore
+costs one revalidated request. The `ETag` is compared only after the request is
+authorized: a refused request never learns whether a page changed, and gets no
+validator. A `*` or a weak tag never answers `304` for a page, because the bytes, not
+the page's identity, are what the client needs to hold. Each asset representation
+(raw or gzip) has its own validator, so a `304` never names bytes the client does not
+have.
+
+Pages, fragments and assets are gzipped (`flate2`, level 6) when the request's
+`Accept-Encoding` allows it and the result is smaller; the raw bytes are served
+otherwise, and a body that would grow is never compressed. The compression happens
+per response for a page and once at start for an asset. The one-shot `/events` route
+and the live stream are not compressed.
+
+Sizes measured against a running `oxa lead serve` on an owner machine with the
+healthy fixture frame (`curl -s -o /dev/null -w '%{size_download}'`): Home is 5,421
+bytes raw and 1,661 bytes with `Accept-Encoding: gzip`; the stylesheet 16,350 raw and
+4,439 gzip; the script 5,581 raw and 1,955 gzip. A repeat visit fetches the document
+only, so it carries about 1.7 KB instead of 27 KB.
 
 ## Synthetic fixture frames
 

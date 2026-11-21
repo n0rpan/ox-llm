@@ -45,6 +45,7 @@ mod hook;
 mod key;
 mod local;
 mod provider_history;
+mod secret;
 mod tool;
 mod ui;
 mod wire;
@@ -68,6 +69,7 @@ pub use hook::*;
 pub use key::*;
 pub use local::*;
 pub use provider_history::*;
+pub use secret::*;
 pub use tool::*;
 pub use ui::*;
 pub use wire::*;
@@ -76,7 +78,7 @@ pub use wire::*;
 pub use serde_json::Value;
 
 /// Version of this frozen interface. Bumped only by the architect.
-pub const PROTO_VERSION: u32 = 4;
+pub const PROTO_VERSION: u32 = 5;
 
 /// The version this build reports to its owner (`oxa --version`, status, headers).
 ///
