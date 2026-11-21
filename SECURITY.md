@@ -29,8 +29,10 @@ immediately before the run, plus the run and session. After a commit, a reset or
 the same text asks again; facts that cannot be resolved (computed words, unreadable repository) are
 refused for unattended replay. An interactive session grant and the owner's `always` line stay
 exact-text keys by the owner's own choice. `oxa.approval.rootActions` (user settings only, never a
-project file, never given to a worker, subagent or headless run) names literal `sudo` commands oxa
-does not ask about. Shell expansion or a custom shell or prefix keeps the approval prompt. Sudo
+project file, never given to a worker, subagent or headless run) names literal `/usr/bin/sudo` commands oxa does not ask about. The target must be a canonical
+absolute executable under a root-owned hierarchy with no group or other write access. Its device
+and inode are pinned when the action is loaded and checked before it can bypass the prompt. Bare
+names, shell expansion and a custom shell or prefix keep the approval prompt. Sudo
 still decides whether a password is needed. On Linux the masked dialog is available only for an
 attended, unsandboxed, direct foreground sudo launch. The broker pins the running oxa executable
 by device and inode and checks that the helper uses that inode and writes to sudo's pipe. It accepts

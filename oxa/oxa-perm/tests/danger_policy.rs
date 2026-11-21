@@ -226,10 +226,11 @@ fn a_grant_covers_only_the_command_line_it_was_approved_in() {
 /// #784: an owner-named root action skips oxa's own `sudo` question for exactly that command; a
 /// compound line, a computed word or a redirect keeps it, and a policy built without the list (a
 /// worker) still asks.
+#[cfg(unix)]
 #[test]
 fn a_named_root_action_skips_only_the_sudo_question() {
     let guard = guard();
-    let entries = vec!["boot: bootctl set-default *".to_string()];
+    let entries = vec!["check: /usr/bin/true *".to_string()];
     let (rules, warnings) = DangerRules::builtin().with_root_actions(&entries);
     assert!(warnings.is_empty(), "{warnings:?}");
     let ids = |rules: &DangerRules, command: &str| -> Vec<String> {
@@ -239,31 +240,60 @@ fn a_named_root_action_skips_only_the_sudo_question() {
             .map(|hit| hit.rule)
             .collect()
     };
-    assert!(ids(&rules, "sudo bootctl set-default arch.conf").is_empty());
-    assert!(ids(&rules, "sudo -n bootctl set-default arch.conf").is_empty());
+    assert!(ids(&rules, "/usr/bin/sudo /usr/bin/true a").is_empty());
+    assert!(ids(&rules, "/usr/bin/sudo -n /usr/bin/true a").is_empty());
     for command in [
-        "sudo bootctl set-default a; rm -rf /",
-        "sudo bootctl set-default $X",
-        "sudo bootctl set-default {a,b}",
-        "sudo bootctl set-default *.conf",
-        "sudo bootctl set-default slot?",
-        "sudo bootctl set-default slot[12]",
-        "sudo bootctl set-default ~",
-        "sudo bootctl set-default a > /etc/x",
+        "/usr/bin/sudo /usr/bin/true a; rm -rf /",
+        "/usr/bin/sudo /usr/bin/true $X",
+        "/usr/bin/sudo /usr/bin/true {a,b}",
+        "/usr/bin/sudo /usr/bin/true *.conf",
+        "/usr/bin/sudo /usr/bin/true slot?",
+        "/usr/bin/sudo /usr/bin/true slot[12]",
+        "/usr/bin/sudo /usr/bin/true ~",
+        "/usr/bin/sudo /usr/bin/true a > /etc/x",
         "sudo rm -rf /srv",
-        "sudo bootctl set-default a b",
-        "sudo ./bootctl set-default a",
-        "sudo -u root bootctl set-default a",
+        "/usr/bin/sudo /usr/bin/true a b",
+        "/usr/bin/sudo ./true a",
+        "/usr/bin/sudo -u root /usr/bin/true a",
+        "sudo /usr/bin/true a",
+        "/usr/bin/sudo true a",
     ] {
         assert!(ids(&rules, command).contains(&"sudo".to_string()), "{command}");
     }
     // A policy built without the list (the worker path) still asks.
     let plain = DangerRules::builtin();
     assert_eq!(
-        ids(&plain, "sudo bootctl set-default arch.conf"),
+        ids(&plain, "/usr/bin/sudo /usr/bin/true a"),
         vec!["sudo".to_string()]
     );
-    // A malformed entry is ignored with a warning.
-    let (_, warnings) = DangerRules::builtin().with_root_actions(&["no colon here".to_string()]);
+    let (legacy, warnings) = DangerRules::builtin().with_root_actions(&["check: true *".into()]);
+    assert_eq!(ids(&legacy, "sudo true a"), vec!["sudo".to_string()]);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
+    for entry in [
+        "no colon here",
+        "check: /usr/bin/../bin/true *",
+        "check: /usr/bin *",
+    ] {
+        let (_, warnings) = DangerRules::builtin().with_root_actions(&[entry.into()]);
+        assert_eq!(warnings.len(), 1, "{entry}: {warnings:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_named_root_action_rejects_a_writable_executable_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = oxa_fake::TestEnv::new();
+    let dir = env.work().canonicalize().unwrap();
+    let target = dir.join("fixture");
+    std::fs::write(&target, b"not executed").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let (rules, warnings) =
+        DangerRules::builtin().with_root_actions(&[format!("fixture: {}", target.display())]);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(rules
+        .classify(&format!("/usr/bin/sudo '{}'", target.display()), &dir, &guard())
+        .iter()
+        .any(|hit| hit.rule == "sudo"));
 }

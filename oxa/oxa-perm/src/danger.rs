@@ -92,8 +92,8 @@ impl DangerHit {
 pub struct DangerRules {
     builtin: Vec<&'static str>,
     custom: Vec<Vec<String>>,
-    /// Owner-named root actions (`oxa.approval.rootActions`): the command words of each entry.
-    root_actions: Vec<Vec<String>>,
+    /// Owner-named root actions (`oxa.approval.rootActions`), pinned to protected executables.
+    root_actions: Vec<RootAction>,
 }
 
 /// Recursion cap for nested `$( )`, backticks and `sh -c` strings.
@@ -173,25 +173,24 @@ impl DangerRules {
 
     /// The owner's named root actions (`oxa.approval.rootActions`, user settings only): each
     /// entry is `<name>: <command words>`, where `*` matches exactly one word. A line that is
-    /// exactly one simple command, `sudo` (optionally `-n`) and a listed command, raises no
-    /// `sudo` hit; every other rule still applies to it. Sudo itself still decides whether a
-    /// password is needed. Malformed entries are ignored and reported in the warnings.
+    /// exactly one simple command, `/usr/bin/sudo` (optionally `-n`) and a listed command,
+    /// raises no `sudo` hit; every other rule still applies. Sudo itself still decides whether
+    /// a password is needed. Invalid entries are ignored and reported in the warnings.
     pub fn with_root_actions(mut self, entries: &[String]) -> (DangerRules, Vec<String>) {
         let mut warnings = Vec::new();
         for entry in entries {
-            let words: Option<Vec<String>> = entry
+            let action = entry
                 .split_once(':')
                 .filter(|(name, _)| !name.trim().is_empty())
-                .map(|(_, command)| command.split_whitespace().map(str::to_string).collect())
-                .filter(|words: &Vec<String>| !words.is_empty() && words.iter().all(|w| !has_dynamic(w)));
-            match words {
-                Some(words) => {
-                    if !self.root_actions.contains(&words) {
-                        self.root_actions.push(words);
+                .and_then(|(_, command)| RootAction::parse(command));
+            match action {
+                Some(action) => {
+                    if !self.root_actions.contains(&action) {
+                        self.root_actions.push(action);
                     }
                 }
                 None => warnings.push(format!(
-                    "{SETTING_ROOT_ACTIONS}: entry `{}` ignored (expected `<name>: <command words>`)",
+                    "{SETTING_ROOT_ACTIONS}: entry `{}` ignored (expected `<name>: <protected absolute executable> [arguments]`)",
                     entry.trim()
                 )),
             }
@@ -199,7 +198,7 @@ impl DangerRules {
         (self, warnings)
     }
 
-    /// `true` for a listed root action invoked as literal `sudo` (or `sudo -n`).
+    /// `true` for a listed action invoked via the absolute system sudo path.
     fn is_root_action(&self, command: &str, stages: &[Stage]) -> bool {
         if self.root_actions.is_empty() {
             return false;
@@ -208,7 +207,8 @@ impl DangerRules {
             return false;
         };
         let argv: &[String] = match words {
-            [sudo, rest @ ..] if sudo == "sudo" => match rest {
+            // Even a call that cannot use the foreground broker must not resolve sudo via PATH.
+            [sudo, rest @ ..] if sudo == "/usr/bin/sudo" => match rest {
                 [flag, tail @ ..] if flag == "-n" => tail,
                 _ => rest,
             },
@@ -216,12 +216,7 @@ impl DangerRules {
         };
         // The launcher chain must be just that `sudo`: the same argv comes out of `effects::of`.
         let fx = effects::of(words, &[], false);
-        fx.privileged
-            && fx.argv == argv
-            && self
-                .root_actions
-                .iter()
-                .any(|action| root_action_matches(action, argv))
+        fx.privileged && fx.argv == argv && self.root_actions.iter().any(|action| action.matches(argv))
     }
 
     /// Every simple command of `command` that matches an enabled rule. `cwd` is the workspace
@@ -1069,11 +1064,67 @@ impl DangerRules {
     }
 }
 
-/// `argv` equals the words of a root action; `*` stands for exactly one word. The command name
-/// must be the listed word itself (not a path): `sudo` resolves it on its own secure path, so a
-/// script in the workspace named like the action is never matched.
-fn root_action_matches(action: &[String], argv: &[String]) -> bool {
-    action.len() == argv.len() && action.iter().zip(argv).all(|(a, w)| a == "*" || a == w)
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RootAction {
+    words: Vec<String>,
+    identity: (u64, u64),
+}
+
+impl RootAction {
+    fn parse(command: &str) -> Option<Self> {
+        let words: Vec<String> = command.split_whitespace().map(str::to_string).collect();
+        if words.iter().any(|word| has_dynamic(word)) {
+            return None;
+        }
+        let identity = protected_executable(words.first()?)?;
+        Some(Self { words, identity })
+    }
+
+    fn matches(&self, argv: &[String]) -> bool {
+        let Some((program, args)) = argv.split_first() else {
+            return false;
+        };
+        let (expected, pattern) = self.words.split_first().expect("validated root action");
+        program == expected
+            && pattern.len() == args.len()
+            && pattern.iter().zip(args).all(|(a, w)| a == "*" || a == w)
+            && protected_executable(program) == Some(self.identity)
+    }
+}
+
+#[cfg(unix)]
+fn protected_executable(program: &str) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    let path = Path::new(program);
+    // Match the actual absolute argv, not an alias sudo might resolve differently. Unlike
+    // canonicalizing a tool we launch ourselves, we must reject symlink spellings here.
+    if !path.is_absolute() || path.canonicalize().ok()?.as_os_str() != path.as_os_str() {
+        return None;
+    }
+    // Walk from the root: once a parent is verified, the model cannot swap its child entry.
+    let chain: Vec<_> = path.ancestors().collect();
+    let mut identity = None;
+    for entry in chain.into_iter().rev() {
+        let info = std::fs::symlink_metadata(entry).ok()?;
+        if info.uid() != 0 || info.mode() & 0o022 != 0 {
+            return None;
+        }
+        if entry == path {
+            if !info.is_file() || info.mode() & 0o111 == 0 {
+                return None;
+            }
+            identity = Some((info.dev(), info.ino()));
+        } else if !info.is_dir() {
+            return None;
+        }
+    }
+    identity
+}
+
+#[cfg(not(unix))]
+fn protected_executable(_: &str) -> Option<(u64, u64)> {
+    None
 }
 
 /// Literal argv for a direct sudo invocation. Shared by named root actions and the
