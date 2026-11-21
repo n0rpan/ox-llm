@@ -1745,6 +1745,14 @@ fn restore_locked(
     attach_ids(st);
     attach_hosts(st, sink, ui);
     apply_branch_counts(&mut st.stats, &branch);
+    // #2292: restore the branch's last explicit preservation requirement, so a resumed
+    // session's danger floor keeps the checkpoint note without a new prompt.
+    for entry in branch.iter().rev() {
+        if let Some(requirement) = crate::agent_loop::preservation_of(entry) {
+            st.policy.set_preservation(Some(&requirement));
+            break;
+        }
+    }
     st.stats.context_tokens = st.transcript.context();
     if let Some(cli) = cli {
         let mut all = cli.builtins.clone();
@@ -2723,6 +2731,49 @@ mod tests {
             .expect("stored prompt");
         assert_eq!(crate::envnote::strip_note(&texts[1], parts), "now");
         assert!(s.st.next_turn.is_empty());
+    }
+
+    /// #2292: the branch's last explicit preservation requirement is restored on resume, so
+    /// the danger floor's checkpoint note survives a restart without a new prompt.
+    #[test]
+    fn preservation_requirement_is_restored_on_resume() {
+        let env = oxa_fake::TestEnv::new();
+        let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
+        let danger_deps = || {
+            let mut d = deps(&env, store.clone());
+            d.policy = Box::new(
+                oxa_perm::ModePolicy::new()
+                    .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()),
+            );
+            d
+        };
+        let mut s = Session::open(danger_deps(), Open::New).expect("open");
+        crate::append_entry(
+            &mut s.st,
+            EntryBody::Msg {
+                wire: WireMsg::user("clean up the repo, but keep commit abc123 exactly as it is"),
+                parts: Vec::new(),
+                tool: None,
+            },
+        )
+        .expect("append user");
+        let push = Access::Exec {
+            command: "git push --force origin main".to_string(),
+            net: false,
+        };
+        let noted = s.st.policy.danger_ask(&push, &s.st.cwd);
+        assert!(noted[0].1.contains("keep commit abc123"), "{noted:?}");
+        let sref = s.inner().sref.clone();
+        drop(s);
+        let reopened = Session::open(danger_deps(), Open::Resume(sref)).expect("resume");
+        let st = reopened.inner();
+        let hits = st.policy.danger_ask(&push, &st.cwd);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].1.contains("reversible checkpoint"), "{hits:?}");
+        assert!(
+            hits[0].1.contains("keep commit abc123 exactly as it is"),
+            "{hits:?}"
+        );
     }
 }
 

@@ -403,6 +403,11 @@ pub trait Policy: Send {
     /// #1512 S3/S5: the owner's session id for approval requests (bound once the session has
     /// its id). Never a grant by itself.
     fn set_session_id(&mut self, _id: &str) {}
+    /// #2292: the session's explicit preservation requirement, a bounded quote of the user's
+    /// own message (`None` clears it). The danger floor appends a reversible-checkpoint note
+    /// to a destructive command's existing question; no new prompt, refusal, cap or grant
+    /// change. Default: ignored.
+    fn set_preservation(&mut self, _requirement: Option<&str>) {}
     /// #1512 S5: in a run with no one to ask (`!Ui::interactive`) a dangerous command that
     /// needs an answer is not paused for. `Some(text)` is the tool error (a refusal, or a request
     /// the owner answers with `oxa send --approve`); `None` = no unattended answer, the caller
