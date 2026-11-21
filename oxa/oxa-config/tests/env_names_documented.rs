@@ -72,6 +72,18 @@ const ALLOWED: &[(&str, &str)] = &[
         "GIT_CONFIG_NOSYSTEM",
         "git: no system configuration in the sandbox",
     ),
+    (
+        "GIT_CONFIG_COUNT",
+        "git: one child-only setting for authenticated HTTPS publication",
+    ),
+    (
+        "GIT_CONFIG_KEY_0",
+        "git: child-only github.com HTTP extra-header key",
+    ),
+    (
+        "GIT_CONFIG_VALUE_0",
+        "git: child-only authorization header, never in argv or on disk",
+    ),
     ("GIT_CONFIG_SYSTEM", "git: pinned for committed-tree git runs"),
     ("GIT_INDEX_FILE", "git: private index for committed-tree git runs"),
     ("GIT_NO_LAZY_FETCH", "git: no lazy fetch in worker git runs"),

@@ -172,6 +172,7 @@ pub(crate) fn run(
             Some(&root),
             Some(&dirs.home),
         );
+        let user_settings = oxa_config::Settings::load(dirs, &root, false);
         let mut policy = oxa_work::RunPolicy {
             git_binary,
             host_path,
@@ -181,8 +182,14 @@ pub(crate) fn run(
             content_scan: None,
             offline: oxa_proto::offline(),
             runner_owns_github: false,
-            autonomy: runner_autonomy(&oxa_config::Settings::load(dirs, &root, false)),
-            worker_github: runner_worker_github(&oxa_config::Settings::load(dirs, &root, false)),
+            github_token_command: crate::netguard::github_token_command(&user_settings),
+            github_token_write_paths: crate::sandbox_layout::worker_token_write_paths(
+                &user_settings,
+                env,
+                dirs,
+            ),
+            autonomy: runner_autonomy(&user_settings),
+            worker_github: runner_worker_github(&user_settings),
             // Re-read for every launch, like the autonomy level: lowering
             // `permissions.defaultMode` (or pinning `runner`) revokes worker GitHub for the
             // tasks a running queue has not started yet.

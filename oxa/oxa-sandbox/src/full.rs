@@ -254,10 +254,7 @@ impl FullAccess {
         live: &mut dyn FnMut(&[u8]),
         run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
-        match &self.host_net {
-            Some(net) => net.sink(true, true, env, live, run),
-            None => NetSandbox::redact_host_output(None, env, live, run),
-        }
+        NetSandbox::redact_host_output(self.host_net.as_deref(), env, live, run)
     }
 }
 

@@ -44,7 +44,7 @@ pub enum Answer {
 }
 
 /// One sandboxed command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ExecSpec {
     /// Run as `bash -c <command>`.
     pub command: String,
@@ -56,6 +56,22 @@ pub struct ExecSpec {
     pub timeout_s: Option<u32>,
     /// Extra environment, applied after the sandbox's fixed base environment.
     pub env: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for ExecSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecSpec")
+            .field("command", &self.command)
+            .field("cwd", &self.cwd)
+            .field("writable", &self.writable)
+            .field("net", &self.net)
+            .field("timeout_s", &self.timeout_s)
+            .field(
+                "env_keys",
+                &self.env.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 /// Result of a sandboxed command. `output` is stdout and stderr interleaved as produced.

@@ -1,6 +1,6 @@
 //! Safety: guards on permissions, network and the bash sandbox (design section 5, row A2d).
 
-use super::{d, Apply, Control, Descriptor, Group, Item, WebEdit};
+use super::{d, Apply, Control, Descriptor, Group, Item, Unit, WebEdit};
 use crate::schema::Kind;
 
 /// The Safety entries, in display order.
@@ -132,6 +132,31 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
     .widens("Lets bash commands reach the network in workspace and ask modes."),
+    d(
+        "oxa.github.tokenCommand",
+        Group::Safety,
+        "GitHub",
+        "GitHub token command",
+        "Command that prints a GitHub token for the work runner, not for shell authentication. Operands must be trusted absolute executable paths. Empty uses `gh auth token`.",
+    )
+    .key(Kind::StringList, "[]")
+    .control(Control::List(Item::Text))
+    .user_only()
+    .apply(Apply::Reload)
+    .web(WebEdit::Confirm)
+    .widens("Runs this command outside the sandbox and lets the work runner authenticate to GitHub."),
+    d(
+        "oxa.github.tokenTtlSeconds",
+        Group::Safety,
+        "GitHub",
+        "GitHub token lifetime",
+        "Seconds between token lookups for networked bash (300 when unset, 0 on each use). Configured tokens are only used for masking.",
+    )
+    .key(Kind::Number, "null")
+    .number(Unit::Seconds)
+    .user_only()
+    .apply(Apply::Reload)
+    .web(WebEdit::Edit),
     d(
         "oxa.sandbox.allowHomeWrite",
         Group::Safety,

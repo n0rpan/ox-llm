@@ -3,13 +3,49 @@
 use oxa_config::{dirs_from_env, Env, Settings};
 use oxa_proto::{Level, OxaError, PermissionMode, Sandbox};
 use oxa_sandbox::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// O-167(b): the process sandbox with the bash network decision (`oxa.sandbox.net`, default
-/// on; always off while offline). Read once at startup.
-pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<NetSandbox> {
-    with_policy(sandbox, settings, true, GhLaunch::Direct, Vec::new())
+/// Paths that model-controlled commands may write. Use the layout that is actually passed
+/// to the sandbox, including a home workspace enabled by startup confirmation.
+#[derive(Clone)]
+pub(crate) struct TokenWorkspace {
+    cwd: PathBuf,
+    home: PathBuf,
+    writable_home: bool,
+    writes: Vec<PathBuf>,
+}
+
+impl TokenWorkspace {
+    pub(crate) fn new(cwd: &Path, home: &Path, layout: &oxa_sandbox::Layout) -> Self {
+        let mut writes = layout.write.clone();
+        writes.extend(layout.write.iter().filter_map(|path| path.canonicalize().ok()));
+        Self {
+            cwd: cwd.to_path_buf(),
+            home: home.to_path_buf(),
+            writable_home: layout.allow_home_write,
+            writes,
+        }
+    }
+}
+
+/// Network policy for a checkout run by the work supervisor.
+pub(crate) fn with_net(
+    sandbox: oxa_sandbox::Bwrap,
+    settings: &Settings,
+    source: &Path,
+    checkout: &Path,
+) -> Arc<NetSandbox> {
+    let mut workspace = TokenWorkspace::new(source, &sandbox.home, &sandbox.layout);
+    workspace.writes.push(checkout.to_path_buf());
+    with_policy(
+        Arc::new(sandbox),
+        settings,
+        true,
+        GhLaunch::Direct,
+        Vec::new(),
+        Some(workspace),
+    )
 }
 
 /// [`with_net`] for the run's [`ExecPolicy`](oxa_sandbox::ExecPolicy): credential discovery
@@ -21,6 +57,7 @@ pub(crate) fn with_net_policy(
     policy: &oxa_sandbox::ExecPolicy,
     env: &Env,
     engine_key: Option<&str>,
+    workspace: TokenWorkspace,
 ) -> Arc<NetSandbox> {
     with_policy(
         sandbox,
@@ -31,6 +68,7 @@ pub(crate) fn with_net_policy(
             .clone()
             .map_or(GhLaunch::Direct, GhLaunch::NoNet),
         host_secrets(env, engine_key),
+        Some(workspace),
     )
 }
 
@@ -45,21 +83,6 @@ fn host_secrets(env: &Env, engine_key: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn session_net(
-    sandbox: Arc<dyn Sandbox>,
-    settings: &Settings,
-    env: &Env,
-    engine_key: Option<&str>,
-) -> Arc<NetSandbox> {
-    with_policy(
-        sandbox,
-        settings,
-        true,
-        GhLaunch::Direct,
-        host_secrets(env, engine_key),
-    )
-}
-
 /// S11: yolo gives bash the network whatever `oxa.sandbox.net` says; the setting still applies to
 /// auto and standard. Say so at the start instead of ignoring the setting silently. Enforcement
 /// does not change, and an offline session has no bash network in any mode, so it is not noted.
@@ -70,7 +93,7 @@ pub(crate) fn yolo_net_notice(level: PermissionMode, net: Option<&str>, offline:
 
 /// Acceptance commands keep the user's network policy without GitHub authentication.
 pub(crate) fn without_github(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
-    with_policy(sandbox, settings, false, GhLaunch::Direct, Vec::new())
+    with_policy(sandbox, settings, false, GhLaunch::Direct, Vec::new(), None)
 }
 
 /// How credential discovery may start the owner's `gh` (#1952): the program is a PATH lookup
@@ -91,20 +114,20 @@ fn with_policy(
     github_auth: bool,
     requested_launch: GhLaunch,
     known: Vec<String>,
+    workspace: Option<TokenWorkspace>,
 ) -> Arc<NetSandbox> {
     let runner_owns_github = std::env::var_os(oxa_work::RUNNER_GITHUB_ENV).is_some_and(|value| value == "1");
     let on = !runner_owns_github && sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
     let offline = oxa_proto::offline();
     // The `gh` lookup can stall (a mise shim may try to install gh): run it lazily, at the first
     // bash command that has the network, never at startup.
-    let lookup = github_auth
-        && on
-        && !offline
+    let scrub_host = github_auth
         && !test_isolated(
             std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
                 .ok()
                 .as_deref(),
         );
+    let lookup = scrub_host && on && !offline;
     // Host-rights bash can read a file-backed login with the network off too, and `gh auth token
     // --user other` names any account: every credential is scrubbed from its output, so this
     // lookup does not depend on the network setting, nor on who owns GitHub for the run (a
@@ -121,21 +144,43 @@ fn with_policy(
     } else {
         GhLaunch::Direct
     };
-    let scrub_host = github_auth
-        && !test_isolated(
-            std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
-                .ok()
-                .as_deref(),
-        );
     let mut ns = NetSandbox::new(sandbox, on, offline);
-    if lookup {
-        ns = ns.with_gh_token_lazy(gh_token);
+    // A runner-owned or offline task never runs the owner's configured helper.
+    let mut command = (scrub_host && !runner_owns_github && !offline)
+        .then(|| github_token_command(settings))
+        .unwrap_or_default();
+    let workspace = workspace.map(|mut workspace| {
+        // A host-side lookup must not trust the shared cache even if this particular
+        // session does not mount it (for example, an interactive session).
+        if !command.is_empty() {
+            let cache = crate::worker_cache::cache_root(settings, &workspace.home, &Env::from_process());
+            workspace.writes.extend(cache.canonicalize().ok());
+            workspace.writes.push(cache);
+        }
+        workspace
+    });
+    if let Some(workspace) = workspace.clone().filter(|_| lookup) {
+        let command = std::mem::take(&mut command);
+        let ttl = github_token_ttl(settings);
+        ns = if command.is_empty() {
+            ns.with_gh_token_refreshing(move || gh_token(&command, &workspace), ttl)
+        } else {
+            // Only the runner's isolated GitHub transport authenticates with configured
+            // credentials. Keep masking them in command output without passing them to bash.
+            ns.with_gh_token_redaction_refreshing(move || gh_token(&command, &workspace), ttl)
+        };
     }
     if scrub_host || !known.is_empty() {
         ns = ns.with_host_secrets_lazy(move || {
             let mut secrets = known.clone();
             if scrub_host {
                 secrets.extend(gh_host_secrets(&launch));
+            }
+            // A host-rights command may start `gh` itself, or `env`, and read the owner's token
+            // that this session never loaded. Asking the same helper is the session's own call;
+            // a program the session never started cannot connect it to a prompt.
+            if let Some(workspace) = workspace.as_ref().filter(|_| !command.is_empty()) {
+                secrets.extend(gh_token(&command, workspace));
             }
             secrets
         });
@@ -293,6 +338,35 @@ fn parse_gh_hosts(text: &str) -> (Vec<String>, Vec<(String, String)>) {
     (tokens, accounts)
 }
 
+/// Owner setting: argv that prints the GitHub token. User layer only: a project file never
+/// names a program that runs outside the sandbox.
+pub(crate) const SETTING_GH_TOKEN_COMMAND: &str = "oxa.github.tokenCommand";
+/// Owner setting: seconds before the token is read again.
+pub(crate) const SETTING_GH_TOKEN_TTL: &str = "oxa.github.tokenTtlSeconds";
+/// Default lifetime of a read token, in seconds.
+const GH_TOKEN_TTL_DEFAULT: u64 = 300;
+
+pub(crate) fn github_token_command(settings: &Settings) -> Vec<String> {
+    settings
+        .user_value(SETTING_GH_TOKEN_COMMAND)
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn github_token_ttl(settings: &Settings) -> std::time::Duration {
+    let secs = settings
+        .user_value(SETTING_GH_TOKEN_TTL)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(GH_TOKEN_TTL_DEFAULT);
+    std::time::Duration::from_secs(secs)
+}
+
 /// Under test isolation (`OXA_TEST_ISOLATION=1`) the host's `gh` login is never consulted: a
 /// test must not read real credentials, and a slow `gh` (up to `GH_DEADLINE`) must not delay
 /// startup and skew timing tests.
@@ -300,16 +374,34 @@ fn test_isolated(v: Option<&str>) -> bool {
     v == Some("1")
 }
 
-/// #52: the GitHub CLI token for the networked sandbox, from `gh auth token` run once here,
-/// outside the sandbox, with a short timeout. Any failure (no `gh`, not logged in, slow) is
-/// `None`. The token is never logged.
-fn gh_token() -> Option<String> {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let exe = trusted_gh_for(
-        std::env::var_os("PATH").as_deref(),
-        std::env::current_dir().ok().as_deref(),
-        home.as_deref(),
-    )?;
+/// Read the token outside the sandbox through the owner's helper or `gh auth token`.
+/// Failures return `None`. The token is never logged.
+fn gh_token(command: &[String], workspace: &TokenWorkspace) -> Option<String> {
+    let path = std::env::var_os("PATH");
+    let cwd = workspace.cwd.as_path();
+    let home = workspace.home.as_path();
+    if let Some(program) = command.first() {
+        let project = cwd
+            .ancestors()
+            .filter(|dir| dir.join(".git").exists())
+            .last()
+            .or_else(|| (!oxa_sandbox::is_home_itself(cwd, home)).then_some(cwd));
+        let mut argv = command.to_vec();
+        if !program.contains('/') {
+            argv[0] = trusted_executable_for(program, path.as_deref(), Some(cwd), Some(home))?
+                .to_str()?
+                .to_owned();
+        }
+        let command = oxa_work::trusted_token_program(
+            &argv,
+            None,
+            project,
+            &workspace.writes,
+            workspace.writable_home.then_some(home),
+        )?;
+        return oxa_work::token_from_command(command, oxa_work::COMMAND_DEADLINE);
+    }
+    let exe = trusted_gh_for(path.as_deref(), Some(cwd), Some(home))?;
     gh_token_from(&exe, GH_DEADLINE)
 }
 
@@ -373,14 +465,13 @@ const GH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
 /// Run `exe auth token --hostname github.com` under one `deadline` that covers the process and
 /// the reading of its output.
 fn gh_token_from(exe: &Path, deadline: std::time::Duration) -> Option<String> {
-    let mut command = std::process::Command::new(exe);
+    let cwd = std::env::current_dir().ok();
+    let project = cwd
+        .as_deref()
+        .and_then(|cwd| cwd.ancestors().filter(|dir| dir.join(".git").exists()).last());
+    let mut command = oxa_work::token_helper_command(exe, project);
     command.args(["auth", "token", "--hostname", "github.com"]);
-    let (code, out) = oxa_work::command_runner(command, Some(4096), deadline)?;
-    if code != 0 {
-        return None;
-    }
-    let t = out.trim();
-    (!t.is_empty() && !t.chars().any(char::is_whitespace)).then(|| t.to_string())
+    oxa_work::token_from_command(command, deadline)
 }
 
 /// The host tool to run: the first executable with the requested name in an absolute `PATH` entry that is
@@ -555,6 +646,54 @@ mod tests {
 
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn token_command_is_user_only() {
+        let command =
+            serde_json::json!({"oxa": {"github": {"tokenCommand": ["/tmp/evil"], "tokenTtlSeconds": 1}}});
+        let project_only = Settings::from_values(serde_json::json!({}), command.clone());
+        assert!(github_token_command(&project_only).is_empty());
+        assert_eq!(
+            github_token_ttl(&project_only),
+            std::time::Duration::from_secs(300)
+        );
+        let user = Settings::from_values(command, serde_json::json!({}));
+        assert_eq!(github_token_command(&user), vec!["/tmp/evil".to_string()]);
+        assert_eq!(github_token_ttl(&user), std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn owner_token_command_supplies_the_token() {
+        let dir = tmp("token-command");
+        let project = dir.join("project");
+        std::fs::create_dir(&project).unwrap();
+        let workspace = TokenWorkspace::new(&project, &dir, &oxa_sandbox::Layout::default());
+        let source = script(&dir, "mint", "echo ghs_MINTED");
+        let argv = vec!["/bin/sh".to_string(), source.display().to_string()];
+        assert_eq!(gh_token(&argv, &workspace), Some("ghs_MINTED".to_string()));
+        let failing = script(&dir, "fail", "exit 3");
+        assert_eq!(gh_token(&[failing.display().to_string()], &workspace), None);
+    }
+
+    #[test]
+    fn token_command_rejects_a_writable_home_helper() {
+        let home = tmp("token-home-workspace");
+        let scripts = home.join("scripts");
+        std::fs::create_dir(&scripts).unwrap();
+        let mint = script(&scripts, "mint", "echo SYNTH_MINTED");
+        let argv = [mint.display().to_string()];
+        let read_only = TokenWorkspace::new(&home, &home, &oxa_sandbox::Layout::default());
+        assert_eq!(gh_token(&argv, &read_only).as_deref(), Some("SYNTH_MINTED"));
+        let writable = TokenWorkspace::new(
+            &home,
+            &home,
+            &oxa_sandbox::Layout {
+                allow_home_write: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(gh_token(&argv, &writable), None);
+    }
 
     #[test]
     fn test_isolation_skips_the_host_gh_login() {

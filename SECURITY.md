@@ -159,6 +159,24 @@ Each loopback listener that can start a model request or spend cloud budget need
 - **Project resource loading:** After the usual trust decision, folder policy loads changed gated resources and names their paths without printing their contents. The owner alone can select `projectTrustPolicy: "content"` for strict executable-content re-approval. A notice is not a content approval; neither policy widens managed-worktree inheritance, safe-path checks or user-only settings. Unattended project checks that cannot run for lack of trust report the saved owner approval route; invoking an unattended check does not itself grant trust.
 - **Re-adding an OS sandbox to interactive or yolo paths** is a regression, not a hardening.
 
+An owner-configured GitHub token command runs outside the sandbox. Its executable must resolve
+through a trusted absolute path or the vetted tool search path. Each operand must be a trusted
+absolute executable path, even when the program is not named like an interpreter. The same
+permission and symlink checks apply to every path: none may pass through the project, a worktree,
+a sandbox write mount (including implicit cache writes and the shared worker cache directory),
+or the writable parts of a home workspace. A configured token is never injected into a shell
+command's environment. Only the runner's isolated GitHub transport uses it for authentication.
+An unresolvable configured command yields no token and an error; it never falls back to ambient
+executable lookup and never to another source. The helper runs from `/` with a fixed system PATH
+and only vetted home/config directory variables, excluding paths inside the checkout or
+symlinks into it. The runner scans locally before obtaining a token and still verifies the
+exact commits missing from the destination. Configured tokens for publication are scoped to
+github.com HTTPS. Authenticated Git runs without checkout Git configuration, credential helpers,
+hooks, or redirects. The runner refreshes after owner confirmation and during lane polling without
+automatically replaying mutations. Tokens registered during refresh are masked in active command
+output as well as in the command that receives them, and the token of a configured source stays
+masked for that process from the command that first needs it, whether or not it loaded.
+
 ## Owner decisions (not findings)
 
 The following decisions set the policy for current review and planned changes; they do not claim that the open issues are implemented:
