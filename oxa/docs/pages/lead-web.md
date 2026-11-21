@@ -20,6 +20,25 @@ Optional user setting `oxa.lead.serve.fixed_prompts` defaults to false.
 It enables no-JS, same-origin/CSRF-protected fixed questions at zero model tokens.
 Private situation data needs browser proof separate from tool UIDs; absent inputs stay unavailable.
 
+## Attach to a running session
+
+With `owner_chat` on, the chat page can show and talk to a session that is running now (for
+example the lead you started in tmux) instead of a dedicated Lead session. Find the session id
+in the `id` field of the first line of its file under the sessions directory (the file name ends with it), then set the user-only
+`oxa.lead.attachSessionId` to it and restart the service. The service then needs no dedicated
+`oxa.lead.sessionId`; if both are set, attach wins.
+
+The `/chat` page shows the newest part of the session's transcript (user and assistant text, each
+tool call with a short masked argument preview, short result previews) and whether the session is
+running. It refreshes like the other pages, and the page says when older history is not shown.
+The message form sends exactly like `oxa send <id> <text>`: the text goes into the session's
+inbox as a steer: a busy session reads it after its running tool calls, an idle one starts a
+turn with it, also if it is not running yet. The service takes
+no session lock, opens no provider and spends no model tokens. A message is text for the
+model, never an approval: answer approvals on the approvals page. The same identity, origin and
+CSRF checks as before apply, the session file must stay private to your user, and a refused send
+is written to the service journal with stage `recheck`, reason `binding` or `inbox`.
+
 ## Waiting for your approval
 
 The verified owner can see "Waiting for your approval" on the board and home pages.
@@ -99,3 +118,31 @@ deployment can read them with `journalctl --user -u oxa-lead.service`. Each
 line contains the response status, a fixed stage and reason, and a suggested
 remedy. It omits the owner identity, message, token counts, URLs, headers,
 credentials and CSRF values.
+
+## One observation, live workers and live refresh
+
+Every page is rendered from the same observation the Lead loop uses: the protected
+Board sample (board, alarms, GitHub App quota, thread holds and the quota deferrals the
+owner's reserve recorded) and the runner situation named by `OXA_LEAD_SITUATION`, which
+the pages did not read before. The server no longer makes its own partial read.
+
+- **Workers** shows the Lead session's live workers first: name, lane (branch), model,
+  state and how old the worker's status file is (a Dead worker, a Stopped worker and a
+  stale status show as such), then the runner situation rows. The parent is the session
+  of the Lead owner binding, never a session list. No workers recorded and no runner
+  observation render the "Lane status unavailable" text; a corrupt registry renders
+  "Live workers refused" and is left untouched.
+- **Usage** adds a line for each optional GitHub read the reserve deferred
+  (`oxa.lead.github_reserve`), saying whether it waits for a window reset or for a first
+  observation. Model plan windows still render only from an observation that reached the
+  page; the provider-header retention that would feed them is not part of this version.
+- **Live refresh.** With the route installed (always for `oxa lead serve`) the document
+  advertises it and the page opens `GET /events/live`, behind the same authorization as
+  every other path. The server sends `retry: 5000` and a `lead-update` event at once and
+  again only when a fingerprint of the observation changes (board time, situation
+  sequence, ask revisions, worker states), polled once a second; a `: keep-alive`
+  comment goes out every 15 seconds and the stream ends after five minutes so the
+  client reconnects. The event carries the SHA-256 of the serving executable, so a
+  changed digest after an update reloads the page. Streams use the existing
+  16-connection pool and per-write deadline. The one-shot `/events` route and the
+  polling fallback remain for listeners without the route.

@@ -36,9 +36,11 @@ fn deps_engine(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<dyn oxa_
         hooks: Vec::new(),
         policy: Box::new(ModePolicy::new()),
         sandbox: Arc::new(NoSandbox),
-        // Exact prompt-byte fixtures select note-free queues/RPC/replay.
+        // Exact prompt-byte fixtures select note-free queues/RPC/replay. The older tests of this
+        // file drive goals that keep pursuing past idle replies and unknown usage, so they
+        // choose `warn`; the owner defaults (pause) are tested with [`deps_owner_defaults`].
         settings: Settings::from_values(
-            serde_json::json!({"oxa": {"envNote": false}}),
+            serde_json::json!({"oxa": {"envNote": false, "onExceed": {"goalIdle": "warn", "goalUnknownUsage": "warn"}}}),
             serde_json::json!({}),
         ),
         dirs: Dirs::under(env.root()),
@@ -51,6 +53,23 @@ fn deps_engine(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<dyn oxa_
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
     }
+}
+
+/// [`deps_engine`] with the settings an owner who chose nothing has, plus `user_oxa` (extra
+/// `oxa.*` user keys) and a project layer.
+fn deps_owner_defaults(
+    env: &TestEnv,
+    engine: Arc<dyn oxa_proto::Engine>,
+    user_oxa: serde_json::Value,
+    project: serde_json::Value,
+) -> Deps {
+    let mut d = deps_engine(env, Arc::new(MemStore::new()), engine);
+    let mut oxa = serde_json::json!({"envNote": false});
+    for (key, value) in user_oxa.as_object().into_iter().flatten() {
+        oxa[key] = value.clone();
+    }
+    d.settings = Settings::from_values(serde_json::json!({"oxa": oxa}), project);
+    d
 }
 
 /// [`deps`] with the owner's `oxa.goal.idlePause`: two replies without an action pause the goal.
@@ -1556,8 +1575,133 @@ fn a_reply_without_usage_charges_the_goal_as_uncertain() {
     );
 }
 
+/// The default (#1966): a goal with no other budget pauses after two replies without a tool
+/// call, with a recorded reason; a project file cannot switch that off.
 #[test]
-fn two_idle_replies_warn_and_the_goal_keeps_pursuing_by_default() {
+fn two_idle_replies_pause_a_goal_with_no_other_budget_by_default() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Idle"),
+        ScriptTurn::text("Still idle"),
+        ScriptTurn::text("Must not be requested"),
+    ]));
+    let project =
+        serde_json::json!({"oxa": {"onExceed": {"goalIdle": "warn"}, "goal": {"idlePause": false}}});
+    let mut session = Session::open(
+        deps_owner_defaults(&env, engine.clone(), serde_json::json!({}), project),
+        Open::New,
+    )
+    .unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    let _ = session.prompt(
+        "Start the stored goal".into(),
+        vec![],
+        &mut sink,
+        &mut HeadlessUi::default(),
+    );
+    assert_eq!(engine.requests().len(), 2, "no third request after the pause");
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.status, GoalStatus::Paused);
+    assert_eq!(
+        goal.pause_reason.as_deref(),
+        Some("two replies without an action")
+    );
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+/// A goal with a budget of its own ends at that budget; the idle replies only warn.
+#[test]
+fn a_goal_with_its_own_budget_does_not_pause_on_idle_replies() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Idle"),
+        ScriptTurn::text("Still idle"),
+        ScriptTurn::tool(
+            "finish",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Finished after two idle replies."}"#,
+        ),
+    ]));
+    let mut session = Session::open(
+        deps_owner_defaults(&env, engine.clone(), serde_json::json!({}), serde_json::json!({})),
+        Open::New,
+    )
+    .unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(
+            Some(objective(GoalBudget {
+                max_turns: Some(50),
+                ..Default::default()
+            })),
+            &mut sink,
+        )
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Done);
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+/// #1963: under a goal token cap, a reply without usage pauses the goal by default (`stop`
+/// blocks it), so the cap cannot be outrun by unmetered requests.
+fn unreported_usage_under_a_token_cap(action: Option<&str>) -> (GoalStatus, usize) {
+    let env = TestEnv::new();
+    let scripted = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("First answer."),
+        ScriptTurn::text("Must not be requested."),
+    ]));
+    let engine: Arc<dyn oxa_proto::Engine> = Arc::new(Unreported(scripted.clone()));
+    let user = action.map_or(
+        serde_json::json!({}),
+        |a| serde_json::json!({"onExceed": {"goalUnknownUsage": a}}),
+    );
+    let mut session = Session::open(
+        deps_owner_defaults(&env, engine, user, serde_json::json!({})),
+        Open::New,
+    )
+    .unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(
+            Some(objective(GoalBudget {
+                max_tokens: Some(1_000_000),
+                ..Default::default()
+            })),
+            &mut sink,
+        )
+        .unwrap();
+    let _ = session.prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default());
+    let status = session.goal().unwrap().status;
+    let notices = sink
+        .0
+        .iter()
+        .filter(|event| matches!(event, oxa_proto::AgentEvent::Notice { text, .. } if text.contains("no token usage")))
+        .count();
+    session.shutdown(&mut HeadlessUi::default());
+    (status, notices)
+}
+
+#[test]
+fn unknown_usage_under_a_token_cap_pauses_the_goal_by_default() {
+    let (status, notices) = unreported_usage_under_a_token_cap(None);
+    assert_eq!(status, GoalStatus::Paused);
+    assert_eq!(notices, 1, "one warning");
+}
+
+#[test]
+fn unknown_usage_under_a_token_cap_blocks_the_goal_when_the_owner_chose_stop() {
+    let (status, notices) = unreported_usage_under_a_token_cap(Some("stop"));
+    assert_eq!(status, GoalStatus::Blocked);
+    assert_eq!(notices, 1);
+}
+
+#[test]
+fn two_idle_replies_warn_and_the_goal_keeps_pursuing_when_the_owner_chose_warn() {
     let env = TestEnv::new();
     let engine = Arc::new(ScriptedEngine::new(vec![
         ScriptTurn::text("Idle"),
@@ -1672,4 +1816,230 @@ fn idle_pause_records_reason() {
     assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
     assert_eq!(session.goal().unwrap().pause_reason, None);
     session.shutdown(&mut HeadlessUi::default());
+}
+
+fn unknown_tool_answer(name: &str) -> String {
+    oxa_proto::tool_errors::UNKNOWN_TOOL.replace("{name}", name)
+}
+
+/// A resumed session pursuing a goal, driven only through the queue (what `oxa send`, queued
+/// input and job wakes do in the TUI), still has `wait` and `goal_done`.
+fn resumed_goal_parks_and_finishes_through_a_queued_run(model: Option<&str>) {
+    let env = TestEnv::new();
+    let store = Arc::new(MemStore::new());
+    let mut first = Session::open(
+        deps(&env, store.clone(), Arc::new(ScriptedEngine::new(vec![]))),
+        Open::New,
+    )
+    .unwrap();
+    first
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let sref = first.inner().sref.clone();
+    let prefix = first.inner().prefix.clone();
+    first.shutdown(&mut HeadlessUi::default());
+    drop(first);
+
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("w", "wait", r#"{"seconds":1,"reason":"synthetic"}"#),
+        ScriptTurn::tool(
+            "d",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic proof."}"#,
+        ),
+    ]));
+    let mut d = deps(&env, store, engine.clone());
+    d.model = model.map(str::to_owned);
+    let mut session = Session::open(d, Open::Resume(sref)).unwrap();
+    assert!(session.inner().active.get("goal_done").is_some());
+    assert!(session.inner().active.get("wait").is_some());
+    assert_eq!(session.inner().prefix, prefix, "a resume opens no epoch");
+
+    session.handle().follow_up("Synthetic inbox message".into());
+    let mut sink = VecSink::default();
+    session.run_queued(&mut sink, &mut HeadlessUi::default()).unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Done);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Done);
+    let unknown = ["wait", "goal_done"].map(unknown_tool_answer);
+    for request in engine.requests() {
+        for message in &request.messages {
+            if message.tool_call_id.is_some() {
+                let content = message.content.clone().unwrap_or_default();
+                assert!(!unknown.contains(&content), "{content}");
+            }
+        }
+    }
+}
+
+#[test]
+fn resumed_pursuing_goal_parks_and_finishes_through_a_queued_run() {
+    resumed_goal_parks_and_finishes_through_a_queued_run(None);
+}
+
+#[test]
+fn resumed_pursuing_goal_with_a_model_choice_parks_and_finishes_through_a_queued_run() {
+    resumed_goal_parks_and_finishes_through_a_queued_run(Some("fake-model"));
+}
+
+#[test]
+fn a_goal_whose_controls_were_deselected_pauses_with_a_reason_instead_of_looping() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("Nothing to do.")]));
+    let mut d = deps(&env, Arc::new(MemStore::new()), engine.clone());
+    d.selection = ToolSelection {
+        tools: Some(vec!["read".into()]),
+        ..ToolSelection::default()
+    };
+    let mut session = Session::open(d, Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.status, GoalStatus::Paused);
+    assert!(goal.pause_reason.is_some());
+    let continues = session
+        .inner()
+        .transcript
+        .wire()
+        .iter()
+        .filter(|m| m.content.as_deref() == Some(oxa_core::prompt::GOAL_CONTINUE))
+        .count();
+    assert_eq!(continues, 0);
+    assert_eq!(engine.requests().len(), 1);
+}
+
+/// #2183: what `oxa send` queues for a busy goal session. `steer` and `later` are admitted once,
+/// when the run starts; `slow_turn` holds that turn back (a slow tool boundary).
+struct InboxAtRunStart {
+    handle: oxa_core::Handle,
+    id: String,
+    steer: Option<&'static str>,
+    later: Option<&'static str>,
+    turns: u32,
+    slow_turn: u32,
+}
+
+impl oxa_proto::EventSink for InboxAtRunStart {
+    fn emit(&mut self, event: &oxa_proto::AgentEvent) {
+        match event {
+            oxa_proto::AgentEvent::AgentStart => {
+                if let Some(text) = self.steer.take() {
+                    assert!(self.handle.steer_for(&self.id, text.into()));
+                }
+                if let Some(text) = self.later.take() {
+                    assert!(self.handle.follow_up_for(&self.id, text.into()));
+                }
+            }
+            oxa_proto::AgentEvent::TurnStart => {
+                self.turns += 1;
+                if self.turns == self.slow_turn {
+                    std::thread::sleep(std::time::Duration::from_millis(1200));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn request_has(request: &oxa_fake::Recorded, text: &str) -> bool {
+    request
+        .messages
+        .iter()
+        .any(|m| m.role == oxa_proto::Role::User && m.content.as_deref() == Some(text))
+}
+
+/// #2183: an inbox steer reaches a busy goal session at its next tool boundary, before the next
+/// model request, while a plain follow-up sent at the same time waits for the reply that ends
+/// the pass.
+#[test]
+fn inbox_steer_arrives_at_the_next_tool_boundary_and_a_follow_up_waits() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("a", "peek", "{}"),
+        ScriptTurn::text("Noted."),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Both messages were read."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let mut sink = InboxAtRunStart {
+        handle: session.handle(),
+        id: session.inner().sref.id.clone(),
+        steer: Some("Steer now."),
+        later: Some("Later."),
+        turns: 0,
+        slow_turn: 0,
+    };
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(!request_has(&requests[0], "Steer now."));
+    assert!(
+        request_has(&requests[1], "Steer now."),
+        "the steer follows the tool result"
+    );
+    assert!(
+        !request_has(&requests[1], "Later."),
+        "the follow-up waits for the end of the pass"
+    );
+    assert!(request_has(&requests[2], "Later."));
+}
+
+/// #2183: a goal that keeps calling tools never ends its turn. A follow-up that has waited
+/// `oxa.goal.followUpMaxWaitSeconds` is delivered at the next tool boundary instead of staying
+/// queued behind that turn.
+#[test]
+fn follow_up_behind_a_goal_that_keeps_calling_tools_is_delivered_after_the_owner_wait() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("a", "peek", "{}"),
+        ScriptTurn::tool("b", "poke", "{}"),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"The follow-up was read."}"#,
+        ),
+    ]));
+    let mut d = deps(&env, Arc::new(MemStore::new()), engine.clone());
+    d.settings = Settings::from_values(
+        serde_json::json!({"oxa": {"envNote": false, "goal": {"followUpMaxWaitSeconds": 1}}}),
+        serde_json::json!({}),
+    );
+    let mut session = Session::open(d, Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let mut sink = InboxAtRunStart {
+        handle: session.handle(),
+        id: session.inner().sref.id.clone(),
+        steer: None,
+        later: Some("Later."),
+        turns: 0,
+        slow_turn: 2,
+    };
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        !request_has(&requests[1], "Later."),
+        "the first tool boundary only notes the follow-up"
+    );
+    assert!(
+        request_has(&requests[2], "Later."),
+        "the goal never stopped, and the follow-up still arrived"
+    );
 }

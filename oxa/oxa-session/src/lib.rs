@@ -26,8 +26,9 @@ mod lifecycle;
 mod lock;
 
 pub use inbox::{
-    remove_inbox, send_inbox, send_inbox_control, valid_inbox_id, Inbox, InboxItem, InboxRetry,
-    INBOX_MESSAGE_BYTES,
+    await_delivery, inbox_pending, remove_inbox, send_inbox, send_inbox_control, send_inbox_receipt,
+    send_inbox_steer, send_inbox_steer_receipt, valid_inbox_id, withdraw_inbox, Inbox, InboxItem, InboxRetry,
+    Outcome as DeliveryOutcome, INBOX_MESSAGE_BYTES,
 };
 mod meta;
 mod ops;
@@ -42,7 +43,7 @@ pub use goal::{
     OpenGoalAsk, PendingGoalSteer, SteeringLease, Subgoal, GOAL_ENTRY,
 };
 pub use lifecycle::SpillLifecycleLock;
-pub use lock::{lock_path_of, SessionLock, LOCKED};
+pub use lock::{lock_holder, lock_path_of, SessionLock, LOCKED};
 pub use meta::{search_sessions, sort_sessions, SessionSort};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
 pub use spill::{inherited_spill_dirs, remove_session_preserving_spills, remove_spill_dir_unless_forked};

@@ -32,6 +32,7 @@ fn keyless_discovery_is_sorted_and_uses_each_models_limits() {
         ModelInfo {
             id: "large",
             provider: Provider::Anthropic,
+            provider_name: "anthropic",
             context_window: 1_000_000,
             max_output: 32_768,
         }

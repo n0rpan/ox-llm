@@ -50,7 +50,12 @@ pub(crate) fn with_keyed_defaults<'a>(user: &'a Settings, dirs: &Dirs) -> Cow<'a
     let api_keyed = [Provider::OpenRouter, Provider::OpenAi, Provider::Anthropic]
         .into_iter()
         .any(|provider| keyed(dirs, provider));
-    if !(api_keyed || signed_in_chatgpt(dirs)) {
+    let named_keyed = super::named_sources(user.get("oxa.cloud.providers")).is_ok_and(|sources| {
+        sources
+            .iter()
+            .any(|source| secrets::read(&super::credential_path(dirs), source.key_name()).is_ok())
+    });
+    if !(api_keyed || named_keyed || signed_in_chatgpt(dirs)) {
         return Cow::Borrowed(user);
     }
     // An owner who set the switch on keeps it on; a key or sign-in only opens it when unset.
@@ -66,7 +71,9 @@ pub(crate) fn with_keyed_defaults<'a>(user: &'a Settings, dirs: &Dirs) -> Cow<'a
         .get("oxa.cloud.models")
         .and_then(Value::as_object)
         .is_some_and(|models| !models.is_empty());
-    if user.get("oxa.cloud.discover_models").is_none() && (explicit.is_none() || !routes_configured) {
+    if user.get("oxa.cloud.discover_models").is_none()
+        && (explicit.is_none() || !routes_configured || named_keyed)
+    {
         out = out.with_override("oxa.cloud.discover_models", Value::Bool(true));
     }
     Cow::Owned(out)

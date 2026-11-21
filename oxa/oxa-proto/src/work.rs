@@ -479,14 +479,21 @@ record!(
         at_ms: u64,
         checkpoint: Checkpoint,
         fact: Fact
-    } |s| {
-        require(s.seq > 0, "event sequence must be positive")?;
-        if let Fact::StandingChanged(change) = &s.fact {
-            require(s.checkpoint.source == "standing" && s.checkpoint.revision == change.revision, "standing checkpoint identity disagrees")?;
+    } | s
+        | {
+            require(s.seq > 0, "event sequence must be positive")?;
+            if let Fact::StandingChanged(change) = &s.fact {
+                require(
+                    s.checkpoint.source == "standing" && s.checkpoint.revision == change.revision,
+                    "standing checkpoint identity disagrees",
+                )?;
+            }
+            require(
+                s.checkpoint.source != "standing" || matches!(s.fact, Fact::StandingChanged(_)),
+                "standing source is reserved for standing revisions",
+            )?;
+            Ok(())
         }
-        require(s.checkpoint.source != "standing" || matches!(s.fact, Fact::StandingChanged(_)), "standing source is reserved for standing revisions")?;
-        Ok(())
-    }
 );
 record!(
     /// A bounded materialized read view, not task state. Never drop running/blocked/asks to fit.
