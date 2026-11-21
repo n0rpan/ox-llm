@@ -41,7 +41,7 @@ pub use run::{
     die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
     run_unsandboxed_stdin,
 };
-pub use scratch::{scratch_root, user_cache_home, Scratch};
+pub use scratch::{parse_scratch_warn, scratch_root, user_cache_home, Scratch, DEFAULT_SCRATCH_WARN};
 #[cfg(target_os = "linux")]
 pub use sudo::PeerLifetime;
 pub use sudo::{SudoLaunch, SUDO_LAUNCH_ENV};
@@ -62,7 +62,7 @@ pub const OWNER_CONFIRM_SOCK: &str = "/run/oxa-owner-confirm.sock";
 /// Environment variable carrying the host confirmation socket into the sandbox builder.
 pub const OWNER_CONFIRM_SOCK_ENV: &str = "OXA_CONFIRM_SOCK";
 
-use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
+use oxa_proto::{BashView, CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -134,6 +134,18 @@ impl Sandbox for Bwrap {
     }
     fn scratch_dir(&self) -> Option<&Path> {
         self.layout.scratch.as_ref().map(|s| s.path())
+    }
+    fn bash_view(&self, cwd: &Path, path: &Path, writable: bool) -> BashView {
+        let probe = ExecSpec {
+            command: String::new(),
+            cwd: cwd.to_path_buf(),
+            writable,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        };
+        bwrap::view_for(&probe, &self.home, &self.layout, bwrap::account_home().as_deref())
+            .view_of(&bwrap::canon_existing(path))
     }
     fn preserves_host_path(&self, path: &Path) -> bool {
         // File tools also name hidden home/agent files on the host (notably spill output).
@@ -343,7 +355,7 @@ impl Bwrap {
             }
         }
         let fds = sockets.iter().map(|(_, fd)| *fd).chain(args_fd).collect();
-        let res = run::run_argv_fds(
+        let mut res = run::run_argv_fds(
             &argv,
             stdin,
             fds,
@@ -355,6 +367,18 @@ impl Bwrap {
         if let Some(fd) = args_fd {
             // SAFETY: the read end is ours; the child has its own copy.
             unsafe { libc::close(fd) };
+        }
+        // #486: warn about a large session directory, once; the command's result is unchanged.
+        if let Some(line) = self
+            .layout
+            .scratch_warn
+            .zip(self.layout.scratch.as_ref())
+            .and_then(|(limit, sc)| sc.warning_with_cancel(limit, Some(c)))
+        {
+            live(line.as_bytes());
+            if capture || stdin.is_some() {
+                res.output.extend_from_slice(line.as_bytes());
+            }
         }
         res
     }

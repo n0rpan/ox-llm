@@ -1,0 +1,1 @@
+- Sandboxed online commands keep working DNS on systems whose `/etc/resolv.conf` points outside systemd-resolved (resolvconf, NetworkManager): the resolver file it resolves to is restored after the `/run` mask (#1765).

@@ -493,6 +493,8 @@ read its result; they never launch builds or tests.
 **Security invariants**
 - Inbox child creation, publication, scanning and privacy wipes must stay relative to opened
   no-follow directory descriptors on Linux and macOS. Do not re-resolve a saved pathname.
+- Sandbox scratch usage must walk through no-follow directory handles, honor command cancellation,
+  and keep the estimate advisory with entry, time and open-directory budgets.
 
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests; use synthetic fixtures.
   Do not open real credential files during review.

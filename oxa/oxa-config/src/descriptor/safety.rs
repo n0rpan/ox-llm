@@ -172,4 +172,16 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Restart)
     .web(WebEdit::Confirm)
     .widens("Lets bash use these host sockets; the docker socket gives root on this machine."),
+    d(
+        "oxa.sandbox.scratchWarnSize",
+        Group::Safety,
+        "Bash sandbox",
+        "Scratch size warning",
+        "Warn when the session's /tmp scratch grows past this size (20GiB, `off` for never).",
+    )
+    .key(Kind::String, "\"20GiB\"")
+    .text()
+    .user_only()
+    .apply(Apply::Restart)
+    .web(WebEdit::Edit),
 ];
