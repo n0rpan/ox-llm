@@ -2134,6 +2134,11 @@ pub(crate) fn refresh_status(dst: &mut StatusModel, fresh: StatusModel) {
         dst.last_prompt = None;
     }
     dst.model = fresh.model;
+    // R1 (#2256): where the model runs follows the session's active model, as the startup
+    // header's does. Only the model-switch event used to update these, so a footer (or a header
+    // printed again) kept `cloud · <provider>` after a switch to a local model.
+    dst.model_remote = fresh.model_remote;
+    dst.model_provider = fresh.model_provider;
     dst.thinking = fresh.thinking;
     dst.mode = fresh.mode;
     dst.session_name = fresh.session_name;
@@ -2654,7 +2659,31 @@ mod status_reset_tests {
         );
     }
 
-    /// The TUI path of `/new` (`WorkerMsg::Reopened` / `Status` -> `refresh_status`).
+    /// The TUI path of `/model` (`Status` -> `refresh_status`): the footer's location segment
+    /// must follow the session's active model.
+    #[test]
+    fn refresh_status_follows_the_active_model_location() {
+        // #2256: the session runs the local model now, while the footer still carries the
+        // cloud label of the model it started on.
+        let mut dst = StatusModel {
+            model: "openai/cloud-model".into(),
+            model_remote: true,
+            model_provider: Some("openai"),
+            ..StatusModel::default()
+        };
+        let fresh = StatusModel {
+            model: "local-model".into(),
+            model_remote: false,
+            model_provider: None,
+            context_tokens: 120,
+            ..StatusModel::default()
+        };
+        refresh_status(&mut dst, fresh);
+        assert_eq!(dst.model, "local-model");
+        assert!(!dst.model_remote, "a local model is shown as local");
+        assert_eq!(dst.model_provider, None);
+    }
+
     #[test]
     fn refresh_status_clears_cache_on_empty_session_and_keeps_it_otherwise() {
         let mut dst = stale();

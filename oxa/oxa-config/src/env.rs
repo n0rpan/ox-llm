@@ -368,6 +368,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::Set,
     },
     EnvVar {
+        name: "SUDO_ASKPASS",
+        pi_name: None,
+        description: "oxa sets it on the one foreground sudo child of a named root action to the path of the session's oxa-askpass helper, which asks the owner for the password over the owner confirm socket",
+        supported: true,
+        kind: EnvKind::Set,
+    },
+    EnvVar {
         name: "OXA_TOOL_CALL_ID",
         pi_name: None,
         description: "oxa sets it in the environment of an extension tool call to the id of that call",
@@ -448,6 +455,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         name: "OXA_NATIVE_STEERING_FD",
         pi_name: None,
         description: "oxa work passes the inherited descriptor number of the steering lease to a native worker; the worker verifies the held lock before it accepts the assignment",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
+        name: "OXA_SUDO_LAUNCH",
+        pi_name: None,
+        description: "the host runner puts a private selector in the environment of one foreground bash call to route it to the sudo launch it just registered; the selector is removed before the child starts and never reaches a model command",
         supported: true,
         kind: EnvKind::Internal,
     },

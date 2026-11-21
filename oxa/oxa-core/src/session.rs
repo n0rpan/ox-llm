@@ -2331,7 +2331,11 @@ pub(crate) fn budget_confirmed(st: &SessionState) -> bool {
 ///   budget is provisional, each limit the smaller of the previous one and the reported one,
 ///   and it is re-read before and after each run until the engine reports the target.
 /// * An `info` failure keeps the previous metadata (a notice says so); the policy is still
-///   recomputed so changed settings apply.
+///   recomputed so changed settings apply. It also drops the previous model's provider and
+///   keeps the remote flag ([`oxa_proto::EngineCaps::remote`]): the engine did not say where
+///   the switched-to model runs, so the session labels it remote but unverified rather than
+///   keeping the old model's `cloud · <provider>` label (`remote` without a provider). The
+///   next successful re-read replaces the flag.
 ///
 /// Auto-compaction: the runtime switch (`set_auto_compaction`) wins over the
 /// `compaction.enabled` setting. `prev_enabled` is that setting before a `/reload`: only when
@@ -2390,11 +2394,17 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             st.info.caps.remote = true;
             notice(sink, Level::Warning, e.to_string());
         }
-        Err(e) => notice(
-            sink,
-            Level::Warning,
-            format!("could not re-read the engine limits ({e}); keeping the previous ones"),
-        ),
+        Err(e) => {
+            notice(
+                sink,
+                Level::Warning,
+                format!("could not re-read the engine limits ({e}); keeping the previous ones"),
+            );
+            if st.info.limits_for != st.model {
+                st.info.caps.remote = true;
+                st.info.caps.remote_provider = None;
+            }
+        }
     }
     apply_budget_settings(st, prev_enabled);
 }

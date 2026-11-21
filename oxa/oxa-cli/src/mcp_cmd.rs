@@ -6,7 +6,6 @@ use oxa_mcp::{
     same_server, user_config_path, AddOptions, ConfigScope, ManagerOpts, McpConfig, McpManager, ServerConfig,
     ServerKind, ServerState, ServerStatus, TokenStore, AUTH_FILE,
 };
-use oxa_perm::TrustStore;
 use oxa_proto::{codes, OxaError, Value};
 use serde_json::json;
 use std::io::Write;
@@ -249,7 +248,7 @@ fn cmd_list(
     }
     let user_file = user_config_path(&dirs.agent_dir);
     let project_file = project_config_path(cwd);
-    let trusted = TrustStore::load(&dirs.trust_file()).trusted_as_approved(cwd);
+    let trusted = crate::approval::saved_project_resources(dirs, cwd, err)?;
     let config = load_config(&user_file, trusted.then_some(project_file.as_path()));
     if !trusted && project_file.exists() {
         writeln!(
@@ -541,7 +540,7 @@ fn cmd_sign_in(
         return Ok(0);
     }
 
-    let trusted = TrustStore::load(&dirs.trust_file()).trusted_as_approved(cwd);
+    let trusted = crate::approval::saved_project_resources(dirs, cwd, err)?;
     let single = McpConfig {
         servers: vec![server.clone()],
         ..McpConfig::default()

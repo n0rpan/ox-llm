@@ -83,6 +83,10 @@ fn wait_for(path: &Path, secs: u64) -> bool {
 #[test]
 fn a_model_written_mcp_json_does_not_run_on_the_next_start() {
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"projectTrustPolicy":"content"}"#,
+    );
     if !bwrap_usable(&env) {
         return;
     }
@@ -217,6 +221,10 @@ fn started_above_home_bash_gets_no_writable_directory_even_with_the_setting() {
 #[test]
 fn an_extension_cannot_approve_changed_project_code() {
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"projectTrustPolicy":"content"}"#,
+    );
     let work = env.work();
     env.write(
         "home/.oxa/agent/extensions/trust.js",

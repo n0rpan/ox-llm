@@ -390,6 +390,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_CODING_AGENT`, `AI_AGENT` | *set*: process markers; `OXA_CODING_AGENT` is `true` and `AI_AGENT` is `oxa` in child processes |
 | `OXA_CONFIRM_SOCK` | *set*: the path of the session's private owner confirm socket (directory 0700, socket 0600), through which oxa commands ask you for a yes |
 | `OXA_TOOL_CALL_ID` | *set*: the id of the running tool call, in the environment of an extension tool |
+| `SUDO_ASKPASS` | *set*: on the one foreground `sudo` child of a named root action, the path of the session's `oxa-askpass` helper, which asks you for the password over the owner confirm socket ([security.md](security.md#grants-named-root-actions-and-the-sudo-password)); it is never set for any other command |
 | `OXA_WORK_OWNER_CONFIRMED` | `1` from a surface that holds the owner's own confirmation: confirms the lane push of `oxa work` without the terminal question. Ignored while a coding-agent marker (`OXA_CODING_AGENT`, `AI_AGENT`, `OXA_SUBAGENT_DEPTH`) is set |
 | `OXA_WORK_OUTPUT_DIR` | *set*: `oxa work` sets it for done-check commands to the task's private output directory, when it has one |
 | `OXA_RUNNING_BIN` | *set*: inside the bash sandbox, the absolute path of the running `oxa` binary, when that file is readable there |
@@ -409,6 +410,7 @@ These are set by oxa for its own child processes, or are test hooks. They are no
 - `OXA_WORKTREE_TRUST_SOURCE`: `oxa work` names the trusted source checkout of a managed worktree; it counts only in `--mode json`, and only when the checkout, the trust record and the approved resources verify.
 - `OXA_RUNNER_OWNS_GITHUB`: `oxa work` sets `1` in a worker: the runner owns GitHub access, so the worker runs no `gh`.
 - `OXA_NATIVE_STEERING_FD`: `oxa work` passes the inherited descriptor of the steering lease to a native worker.
+- `OXA_SUDO_LAUNCH`: the host runner puts a private selector in the environment of one foreground bash call and routes that call to the sudo launch it just registered; the selector is removed before the child starts and never reaches a model command.
 - `OXE_API_KEY_FILE`: oxa sets it for a local engine child it starts: the private file with the child's bearer token.
 - `OXE_API_KEY`: oxa does not read it; a local engine profile that sets this name or `OXE_API_KEY_FILE` is refused.
 - `OXA_TEST_ISOLATION`, `OXA_TEST_PANIC`, `OXA_BRAVE_BASE_URL`: test hooks, honoured only in test processes (`OXA_BRAVE_BASE_URL` only for a loopback URL).

@@ -12,7 +12,7 @@ use crate::{
     run_unsandboxed_capture, run_unsandboxed_stdin, ExecDecision, ExecPolicy, ExecRole, Layout, NetSandbox,
 };
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -180,7 +180,18 @@ impl FullAccess {
         live: &mut dyn FnMut(&[u8]),
         capture: bool,
     ) -> ExecResult {
-        match self.decide(role) {
+        let decision = self.decide(role);
+        let mut stripped;
+        let s = if (role != ExecRole::ModelBash || !matches!(decision, ExecDecision::Host))
+            && s.env.iter().any(|(key, _)| key == crate::SUDO_LAUNCH_ENV)
+        {
+            stripped = s.clone();
+            stripped.env.retain(|(key, _)| key != crate::SUDO_LAUNCH_ENV);
+            &stripped
+        } else {
+            s
+        };
+        match decision {
             ExecDecision::Sandbox => match stdin {
                 Some(input) => self.inner.run_with_stdin(s, input, c, live),
                 None if capture => self.inner.run(s, c, live),
@@ -243,10 +254,7 @@ impl FullAccess {
         live: &mut dyn FnMut(&[u8]),
         run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
-        match &self.host_net {
-            Some(net) => net.sink(true, true, env, live, run),
-            None => NetSandbox::redact_host_output(None, env, live, run),
-        }
+        NetSandbox::redact_host_output(self.host_net.as_deref(), env, live, run)
     }
 }
 
@@ -272,6 +280,9 @@ impl Sandbox for FullAccess {
             ExecDecision::Sandbox => self.inner.persistence_notice(),
             _ => None,
         }
+    }
+    fn bash_view(&self, cwd: &Path, path: &Path, writable: bool) -> oxa_proto::BashView {
+        self.inner.bash_view(cwd, path, writable)
     }
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         match self.decide(Self::role_of(s)) {
@@ -381,6 +392,13 @@ impl Sandbox for FileView {
     }
     fn preserves_host_path(&self, path: &std::path::Path) -> bool {
         self.inner.preserves_host_path(path)
+    }
+    /// Unsandboxed file tools and bash are the same machine.
+    fn bash_view(&self, cwd: &Path, path: &Path, writable: bool) -> oxa_proto::BashView {
+        if self.switch.full() || !self.os_sandbox.load(Ordering::Relaxed) {
+            return oxa_proto::BashView::Same;
+        }
+        self.inner.bash_view(cwd, path, writable)
     }
     fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
         self.inner.for_session().map(|inner| {

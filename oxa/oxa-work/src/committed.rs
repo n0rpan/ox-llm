@@ -345,7 +345,13 @@ impl Drop for Export {
     }
 }
 impl Export {
-    fn create(policy: &RunPolicy, source: &Path, head: &str, tree: &str, base: &str) -> Result<Self> {
+    pub(crate) fn create(
+        policy: &RunPolicy,
+        source: &Path,
+        head: &str,
+        tree: &str,
+        base: &str,
+    ) -> Result<Self> {
         for oid in [head, tree, base] {
             if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err("acceptance requires full object identities".into());
@@ -600,6 +606,8 @@ mod tests {
                 push_approved: false,
                 content_scan: None,
                 runner_owns_github: false,
+                github_token_command: Vec::new(),
+                github_token_write_paths: Vec::new(),
                 autonomy: Default::default(),
                 worker_github: Default::default(),
                 authority_now: None,

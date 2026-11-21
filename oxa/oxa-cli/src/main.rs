@@ -2,6 +2,11 @@
 fn main() {
     // A1/A2: contained panics (extensions, tools, hooks) print nothing and become errors.
     oxa_proto::panic::install_hook();
+    // #784: started as sudo's askpass helper (the `oxa-askpass` symlink in the broker directory):
+    // nothing else of oxa starts.
+    if oxa_cli::askpass::invoked_as_askpass(std::env::args_os().next().as_deref()) {
+        std::process::exit(oxa_cli::askpass::askpass_main());
+    }
     if let Some(result) = oxc_local::platform::child_entry(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
         if let Err(error) = result {
             eprintln!("{error}");
