@@ -126,6 +126,12 @@ pub trait Sandbox: Send + Sync {
     fn for_session(&self) -> Option<std::sync::Arc<dyn Sandbox>> {
         None
     }
+    /// Whether the commands of this sandbox run with the user's own rights (no OS sandbox: they
+    /// can read the host's credentials), so the output sink must scrub them. Default `false`;
+    /// `oxa_sandbox::Unsandboxed` answers `true` and wrappers delegate.
+    fn host_rights(&self) -> bool {
+        false
+    }
     /// #955: what the bash tool sees at `path` (absolute) when it runs in `cwd`, `writable` as
     /// the spec would be. The file tools use it to say so when a file they wrote is not shared
     /// with bash. Default: the same file (no sandbox view).
