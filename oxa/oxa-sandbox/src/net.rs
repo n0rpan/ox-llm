@@ -351,7 +351,7 @@ impl NetSandbox {
         // so only a sandbox with no source and no token at all skips redaction.
         let first = self.redaction_tokens();
         if self.gh_source.is_none() && first.is_empty() {
-            let mut r = run(&s, live);
+            let r = run(&s, live);
             if s.net {
                 self.note_rejected(&r.output);
             }
