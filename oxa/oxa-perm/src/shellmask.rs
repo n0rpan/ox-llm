@@ -81,7 +81,10 @@ fn mask(command: &str, scrub: &dyn Fn(&str) -> String, depth: usize) -> String {
         let c = chars[i];
         if is_sep(c) {
             out.push(c);
-            if !c.is_whitespace() {
+            // A shell operator or a line boundary ends the flag's operand. Spaces and tabs
+            // within a line do not, so `--password value` still masks `value`, but a newline
+            // cannot carry the secret context onto the next command's executable.
+            if !c.is_whitespace() || matches!(c, '\n' | '\r') {
                 after_flag = false;
             }
             i += 1;
@@ -156,12 +159,10 @@ fn render(parts: &[Part], secret: bool, scrub: &dyn Fn(&str) -> String, depth: u
 }
 
 /// A literal run in a secret context: `<secret>`, unless it holds only quote and escape
-/// characters (a fully expanded value still reads as written).
+/// characters (a fully expanded value still reads as written). A literal that merely resembles
+/// an expansion (a single-quoted `'$(...)'`) is still a value: parsed expansions are separate
+/// parts rendered as commands, so no literal bypasses masking on looks alone.
 fn mask_literal(text: &str) -> String {
-    // Backstop: text that still holds an expansion is code the shell runs, never a value.
-    if text.contains("$(") || text.contains('`') || text.contains("${") {
-        return text.to_string();
-    }
     if text.chars().any(|c| !matches!(c, '"' | '\'' | '\\')) {
         SECRET.to_string()
     } else {
@@ -455,6 +456,47 @@ mod tests {
         assert_eq!(
             plain(r#"x=$(curl -H "Authorization: opaque-example" https://h.invalid)"#),
             r#"x=$(curl -H "Authorization: <scrubbed>" https://h.invalid)"#
+        );
+    }
+
+    #[test]
+    fn a_single_quoted_credential_that_looks_like_an_expansion_is_masked() {
+        // Single quotes make the value literal: the shell never runs these expansions, so the
+        // credential must be masked, not returned verbatim because it resembles code.
+        assert_eq!(
+            plain("login --password 'p$(printf x)' git push"),
+            "login --password <secret> git push"
+        );
+        assert_eq!(
+            plain("login --password 'p`id`' git push"),
+            "login --password <secret> git push"
+        );
+        assert_eq!(
+            plain("login --password 'p${HOME}' git push"),
+            "login --password <secret> git push"
+        );
+        // A real (double-quoted) substitution still renders as a command, unchanged.
+        assert_eq!(
+            plain(r#"login --password "$(printf x)" git push"#),
+            r#"login --password "$(printf x)" git push"#
+        );
+    }
+
+    #[test]
+    fn a_line_boundary_ends_the_secret_operand_so_the_next_command_stays_visible() {
+        // A bare secret flag followed by a newline must not mask the next command's executable.
+        assert_eq!(
+            plain(": --password\nrm -rf /srv/data"),
+            ": --password\nrm -rf /srv/data"
+        );
+        assert_eq!(
+            plain(": --password\r\nrm -rf /srv/data"),
+            ": --password\r\nrm -rf /srv/data"
+        );
+        // The operand on the flag's own line is still masked; the next line stays visible.
+        assert_eq!(
+            plain("login --password opaque-example\nrm -rf /srv/data"),
+            "login --password <secret>\nrm -rf /srv/data"
         );
     }
 }
