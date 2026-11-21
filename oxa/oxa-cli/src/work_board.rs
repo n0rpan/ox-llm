@@ -684,6 +684,10 @@ pub(crate) fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> 
 
 impl Reader<'_> {
     fn acquire(&mut self) -> Result<(Vec<PullRequest>, Vec<Incomplete>), SnapshotError> {
+        // A consistency retry re-runs acquisition: the display signal starts fresh
+        // with the rows, never accumulating across attempts.
+        self.restricts_held.clear();
+        self.restricts_truncated = false;
         // Verify the complete paginated identity set before publishing any details.
         let (list, first) = self.listing()?;
         let has_queue = list["mergeQueue"].is_object();
@@ -1126,7 +1130,7 @@ pub(crate) fn run(
 
 #[cfg(test)]
 mod restricts_tests {
-    use super::{restricts_evidence, restricts_hold, Reader, RestrictsEvidence};
+    use super::{restricts_evidence, restricts_hold, GitHub, Reader, RestrictsEvidence};
     use serde_json::json;
 
     #[test]

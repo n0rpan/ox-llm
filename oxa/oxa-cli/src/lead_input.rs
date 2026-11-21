@@ -146,16 +146,21 @@ pub fn sample(path: &Path, uid: u32) -> Result<Sample> {
         #[serde(default, deserialize_with = "board_object")]
         board: bool,
     }
-    fn board_object<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    fn board_object<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<bool, D::Error> {
         struct Present;
         impl<'de> serde::de::Visitor<'de> for Present {
             type Value = bool;
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str("a board object")
             }
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<bool, A::Error> {
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<bool, A::Error> {
                 while map
-                    .next_entry::<serde_json::IgnoredAny, serde_json::IgnoredAny>()?
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
                     .is_some()
                 {}
                 Ok(true)
@@ -677,8 +682,9 @@ mod tests {
     #[test]
     fn restricts_held_is_observed_only_when_the_record_carries_it() {
         let env = TestEnv::new();
-        let base = br#"{"schema_version":1,"observed_at":20,"board":{"observed_at":20,"entries":[]}}"#;
-        let (path, uid) = fixture(&env, &[base, b"\n"].concat());
+        // The root object stays open so each case can append its own field.
+        let base = r#"{"schema_version":1,"observed_at":20,"board":{"observed_at":20,"entries":[]}"#;
+        let (path, uid) = fixture(&env, format!("{base}}}\n").as_bytes());
         assert_eq!(sample(&path, uid).unwrap().restricts_held, None);
         let with_holds = format!("{base},\"restricts_held\":[7,9]}}\n");
         fs::write(&path, &with_holds).unwrap();
