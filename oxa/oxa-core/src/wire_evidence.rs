@@ -61,7 +61,29 @@ struct Row {
     input: Option<u32>,
     output: Option<u32>,
     cached: Option<u32>,
+    engine: Option<Engine>,
 }
+
+/// What a reply's `timings` said about the engine's own work. Absent when the route reported
+/// none (the cloud gateway and plain OpenAI servers omit it).
+#[derive(Serialize)]
+struct Engine {
+    /// `timings.prompt_n`: prompt tokens the engine prefilled itself, after the reused prefix.
+    evaluated_prefill_tokens: u32,
+    /// `timings.prompt_ms`: the engine's own prefill time for those tokens.
+    prefill_ms: f64,
+    /// `timings.snap_pos`: the checkpoint position kept for this request.
+    checkpoint_position: Option<u32>,
+    /// The reply carried a checkpoint key at all, so a null position is the engine's answer.
+    checkpoint_known: bool,
+    /// No local engine endpoint reports whether a reused prefix came from live state, a
+    /// checkpoint, a parked session, RAM or disk. A token count is not that answer, so it is
+    /// reported as unavailable rather than inferred, also from saved usage.
+    cache_source: &'static str,
+}
+
+/// The one `cache_source` value this report can honestly give the local route today.
+const CACHE_SOURCE_UNAVAILABLE: &str = "unavailable";
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -176,6 +198,7 @@ impl WireEvidence {
                 input: None,
                 output: None,
                 cached: None,
+                engine: None,
             },
             snapshot,
         })
@@ -192,6 +215,15 @@ impl WireEvidence {
                     row.input = Some(usage.prompt);
                     row.output = Some(usage.completion);
                     row.cached = (!usage.cached_missing).then_some(usage.cached);
+                }
+                if let Some(timings) = turn.timings {
+                    row.engine = Some(Engine {
+                        evaluated_prefill_tokens: timings.prompt_n,
+                        prefill_ms: timings.prompt_ms,
+                        checkpoint_position: timings.snap_pos,
+                        checkpoint_known: timings.snap_asked,
+                        cache_source: CACHE_SOURCE_UNAVAILABLE,
+                    });
                 }
                 capture.previous = pending.snapshot;
             }
@@ -401,5 +433,66 @@ mod tests {
         assert!(rows[5].gap && rows[5].adjacent.is_none());
         assert!(rows[6].adjacent.as_ref().unwrap().previous_messages_preserved);
         assert!(!serde_json::to_string(&report).unwrap().contains("synthetic"));
+    }
+
+    /// What a reply's `timings` said about the engine's own work, or `None` when the reply
+    /// reported none.
+    #[test]
+    fn local_engine_facts_are_reported_without_inventing_a_cache_source() {
+        let capture = WireEvidence::start();
+        let prefix = FrozenPrefix {
+            sections: Vec::new(),
+            tools_json: "[]".into(),
+            sha256: [0; 32],
+        };
+        let messages = [WireMsg::user("synthetic-local")];
+        let req = ChatRequest::new(&prefix, &messages, "synthetic-model");
+        let turn = |prompt_n| AssistantTurn {
+            msg: WireMsg::assistant("synthetic-reply"),
+            finish: Finish::Stop,
+            usage: Usage {
+                prompt: 900,
+                completion: 3,
+                cached: 820,
+                cached_missing: false,
+                unreported: false,
+            },
+            timings: Some(oxa_proto::Timings {
+                cache_n: 820,
+                prompt_n,
+                prompt_ms: 12.5,
+                snap_asked: true,
+                snap_pos: None,
+                ..oxa_proto::Timings::default()
+            }),
+            model: "synthetic-model".into(),
+            level: ThinkingLevel::Off,
+        };
+        for with_timings in [false, true] {
+            capture.new_request();
+            let pending = capture.before(&req, 0).unwrap();
+            let turn = turn(80);
+            let turn = if with_timings {
+                turn
+            } else {
+                AssistantTurn {
+                    timings: None,
+                    ..turn
+                }
+            };
+            capture.after(pending, &Ok(turn));
+        }
+        let report = capture.finish();
+        let report: serde_json::Value = serde_json::to_value(&report).unwrap();
+        let rows = report["rows"].as_array().unwrap();
+        // A reply without timings (the cloud gateway) reports no engine block, not a zero one.
+        assert!(rows[0]["engine"].is_null());
+        let engine = &rows[1]["engine"];
+        assert_eq!(engine["evaluated_prefill_tokens"], 80);
+        assert_eq!(engine["prefill_ms"], 12.5);
+        assert!(engine["checkpoint_position"].is_null());
+        assert_eq!(engine["checkpoint_known"], true);
+        assert_eq!(engine["cache_source"], CACHE_SOURCE_UNAVAILABLE);
+        assert_eq!(rows[1]["cached"], 820);
     }
 }
