@@ -320,6 +320,246 @@ fn new_process_replay_child() {
             assert_eq!(result.usage.unwrap().cache_read, Some(4));
         });
 }
+/// #2255 evidence fixture: the longest common item prefix of two adjacent final
+/// provider inputs. Item equality, not whole-body bytes: later fields may grow.
+fn common_prefix_len(prev: &[Value], next: &[Value]) -> usize {
+    prev.iter().zip(next.iter()).take_while(|(a, b)| a == b).count()
+}
+
+/// #2255 evidence fixture: an adjacent request must retain the previous final
+/// provider input item-for-item and append exactly the new history, with
+/// instructions, tools and route metadata unchanged. Asserts indices and field
+/// names only; captured bodies are never printed.
+fn assert_append_only(prev: &mock::Request, next: &mock::Request, appended: &[Value]) {
+    let prev_input = prev.body["input"].as_array().unwrap();
+    let next_input = next.body["input"].as_array().unwrap();
+    let common = common_prefix_len(prev_input, next_input);
+    assert_eq!(
+        common,
+        prev_input.len(),
+        "an earlier input item changed or disappeared at index {common}"
+    );
+    assert_eq!(
+        &next_input[common..],
+        appended,
+        "the appended items are not exactly the new history"
+    );
+    for field in [
+        "model",
+        "instructions",
+        "tools",
+        "tool_choice",
+        "reasoning",
+        "store",
+        "include",
+        "max_output_tokens",
+    ] {
+        assert_eq!(
+            prev.body.get(field),
+            next.body.get(field),
+            "adjacent requests differ in {field}"
+        );
+    }
+    assert_eq!(prev.target, next.target, "the route changed between turns");
+}
+
+/// A plain foreground answer whose provider carrier is distinct per turn, so
+/// adjacent-input evidence can name which turn's items stayed on the wire.
+fn foreground_answer(turn: usize) -> Reply {
+    Reply::events(vec![json!({"type":"response.completed","response":{
+        "status":"completed",
+        "output":[{"id":format!("msg_synthetic_{turn}"),"type":"message","role":"assistant",
+            "content":[{"type":"output_text","text":format!("Synthetic answer {turn}")}]}],
+        "usage":{"input_tokens":20+turn,"output_tokens":7,
+            "input_tokens_details":{"cached_tokens":4},
+            "output_tokens_details":{"reasoning_tokens":2}}}})])
+}
+
+fn foreground_payload(first_prompt: &str) -> Value {
+    json!({
+        "messages":[
+            {"role":"system","content":"Synthetic instructions"},
+            {"role":"user","content":first_prompt}
+        ],
+        "tools":[{"type":"function","function":{"name":"read",
+            "description":"Read a synthetic file","parameters":{"type":"object"}}}],
+        "stream":true,"stream_options":{"include_usage":false}
+    })
+}
+
+/// #2255: five successive plain foreground prompts on one conversation (four
+/// adjacent comparisons), in both routes. The captured final provider input
+/// must be append-only: each request keeps the previous request's full input
+/// and appends only the prior turn's original provider carrier plus the new
+/// user prompt. This guards the shared wire path (translate + subscription
+/// adaptation) against a W1 break; a loopback mock cannot prove upstream cache
+/// routing or real cache reads, so it does not assert a cache-read pattern.
+#[tokio::test]
+async fn plain_foreground_turns_keep_final_provider_input_append_only_both_modes() {
+    for subscription in [false, true] {
+        const TURNS: usize = 5;
+        let mock = MockOpenAi::start((1..=TURNS).map(foreground_answer).collect());
+        let fixture = Fixture::new();
+        let base = if subscription {
+            mock.base_url().trim_end_matches("/v1").to_owned() + "/backend-api/codex"
+        } else {
+            mock.base_url()
+        };
+        let path = fixture.token_path(true);
+        let auth = || {
+            if subscription {
+                subscription_auth(&path, &base)
+            } else {
+                Auth::ApiKey(&fixture.key)
+            }
+        };
+        let client = Client::new().unwrap();
+        let mut payload = foreground_payload("Synthetic turn 1");
+        let mut replay: Vec<Option<request::ReplayItems>> = Vec::new();
+        let mut carriers: Vec<Vec<Value>> = Vec::new();
+        for turn in 1..=TURNS {
+            let completed = client
+                .stream(
+                    chat(&base, &payload, &replay),
+                    auth(),
+                    &Cancellation::default(),
+                    &mut |_| Control::Continue,
+                )
+                .await
+                .unwrap();
+            assert_eq!(completed.replay_items.len(), 1);
+            carriers.push(completed.replay_items.to_vec());
+            if turn == TURNS {
+                break;
+            }
+            let messages = payload["messages"].as_array_mut().unwrap();
+            messages.push(completed.assistant);
+            messages.push(json!({"role":"user","content":format!("Synthetic turn {}", turn + 1)}));
+            replay.push(Some(request::ReplayItems::new(carriers.last().unwrap().clone())));
+        }
+        let requests = mock.wait_for_requests(TURNS);
+        if subscription {
+            assert_eq!(
+                requests[0].body["input"],
+                json!([{"role":"user","content":"Synthetic turn 1"}])
+            );
+            assert_eq!(requests[0].body["instructions"], "Synthetic instructions");
+        } else {
+            assert_eq!(
+                requests[0].body["input"],
+                json!([
+                    {"role":"system","content":"Synthetic instructions"},
+                    {"role":"user","content":"Synthetic turn 1"}
+                ])
+            );
+            assert!(requests[0].body.get("instructions").is_none());
+        }
+        for turn in 2..=TURNS {
+            let mut appended = carriers[turn - 2].clone();
+            appended.push(json!({"role":"user","content":format!("Synthetic turn {turn}")}));
+            assert_append_only(&requests[turn - 2], &requests[turn - 1], &appended);
+            // The original provider carrier, not a reconstruction, stays on the wire.
+            assert_eq!(
+                requests[turn - 1].body["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| item["id"] == format!("msg_synthetic_{}", turn - 1))
+                    .count(),
+                1
+            );
+        }
+        mock.assert_healthy();
+    }
+}
+
+/// #2255: a tool continuation as a separate case. The continuation request must
+/// keep the prior input and append only the assistant's original provider
+/// carriers (opaque reasoning included) plus the tool results; the following
+/// foreground turn must again be append-only. Both routes.
+#[tokio::test]
+async fn tool_continuation_appends_only_replay_and_results_both_modes() {
+    for subscription in [false, true] {
+        let mock = MockOpenAi::start(vec![tool_turn(), foreground_answer(2), foreground_answer(3)]);
+        let fixture = Fixture::new();
+        let base = if subscription {
+            mock.base_url().trim_end_matches("/v1").to_owned() + "/backend-api/codex"
+        } else {
+            mock.base_url()
+        };
+        let path = fixture.token_path(true);
+        let auth = || {
+            if subscription {
+                subscription_auth(&path, &base)
+            } else {
+                Auth::ApiKey(&fixture.key)
+            }
+        };
+        let client = Client::new().unwrap();
+        let mut payload = foreground_payload("Synthetic tool task");
+        let first = client
+            .stream(
+                chat(&base, &payload, &[]),
+                auth(),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.replay_items.len(), 4);
+        let tool_replay = request::ReplayItems::new(first.replay_items.to_vec());
+        let messages = payload["messages"].as_array_mut().unwrap();
+        messages.push(first.assistant);
+        for i in 0..3 {
+            messages
+                .push(json!({"role":"tool","tool_call_id":format!("call_{i}"),"content":"synthetic result"}));
+        }
+        let second = client
+            .stream(
+                chat(&base, &payload, &[Some(tool_replay.clone())]),
+                auth(),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.replay_items.len(), 1);
+        let messages = payload["messages"].as_array_mut().unwrap();
+        messages.push(second.assistant);
+        messages.push(json!({"role":"user","content":"Synthetic follow-up"}));
+        let replay = [
+            Some(tool_replay),
+            Some(request::ReplayItems::new(second.replay_items.to_vec())),
+        ];
+        client
+            .stream(
+                chat(&base, &payload, &replay),
+                auth(),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .unwrap();
+        let requests = mock.wait_for_requests(3);
+        let mut appended = first.replay_items.to_vec();
+        for i in 0..3 {
+            appended.push(json!({"type":"function_call_output","call_id":format!("call_{i}"),"output":"synthetic result"}));
+        }
+        assert_append_only(&requests[0], &requests[1], &appended);
+        let mut appended = second.replay_items.to_vec();
+        appended.push(json!({"role":"user","content":"Synthetic follow-up"}));
+        assert_append_only(&requests[1], &requests[2], &appended);
+        // The opaque reasoning carrier survives the continuation unchanged.
+        assert!(requests[1].body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "reasoning"
+                && item["encrypted_content"] == "opaque-synthetic-reasoning"));
+        mock.assert_healthy();
+    }
+}
+
 #[tokio::test]
 async fn expired_token_refreshes_once_under_lock_and_uses_new_bearer() {
     let refresh = MockOpenAi::start(vec![Reply::json(
