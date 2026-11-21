@@ -1508,7 +1508,7 @@ mod tests {
             assert_eq!(nav.matches("<svg ").count(), 6);
             assert!(nav.contains("class=rail-only href=/chat"));
             assert!(nav.contains("<span class=badge aria-hidden=true>"));
-            if matches!(page, Page::Chat(_)) {
+            if matches!(page, Page::Chat(..)) {
                 assert!(!html.contains("class=fab"));
             } else {
                 assert!(html.contains("<a class=fab href=/chat"));
@@ -1545,7 +1545,7 @@ mod tests {
             Page::Workers,
             Page::Usage,
             Page::Item(17),
-            Page::Chat(Prompt::Status),
+            Page::Chat(Prompt::Status, None),
         ] {
             let document = document_for(page, &View::default(), 100);
             let fragment = content_for(page, &View::default(), 100);
