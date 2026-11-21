@@ -103,7 +103,7 @@ class Paths(unittest.TestCase):
                     self.assertEqual(values['full'], str(full).lower())
                     self.assertEqual(values['docs'], 'true')
                     self.assertEqual(values['md'], 'true')
-                    for key in KEYS:
+                    for key in KEYS + ('desk',):
                         self.assertEqual(values[key], str(everything).lower(), key)
 
     def test_merge_group_documentation_does_not_start_rust_tests(self):
@@ -122,8 +122,52 @@ class Paths(unittest.TestCase):
             values = dict(line.split('=', 1) for line in output.read_text().splitlines())
             for key in ('full', 'docs', 'md'):
                 self.assertEqual(values[key], 'true', key)
-            for key in KEYS:
+            for key in KEYS + ('desk',):
                 self.assertEqual(values[key], 'false', key)
+
+    def selected(self, changed):
+        got = paths.classify(changed)
+        return {key for key in KEYS + ('desk', 'macos', 'docs', 'md') if got[key]}
+
+    def test_desk_only_change_runs_the_desk_job_and_nothing_else(self):
+        for path in ('oxa/desk/Cargo.toml', 'oxa/desk/Cargo.lock', 'oxa/desk/oxa-desk/src/main.rs',
+                     'oxa/desk/oxa-desk-core/tests/snapshots/tree__empty.txt', 'oxa/desk/gate.toml',
+                     '.github/workflows/desk.yml', 'tools/ci/desk_contract.py'):
+            self.assertEqual(self.selected([path]), {'desk'}, path)
+
+    def test_desk_code_for_the_mac_does_not_start_the_oxa_macos_build(self):
+        # macos.yml builds oxa-cli, which a desk file cannot change; a real file with macOS-only cfg
+        # proves the content rule is skipped for desk paths, not only the name rule.
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'oxa/desk/oxa-desk/src/platform/mac.rs'
+            source.parent.mkdir(parents=True)
+            source.write_text('#[cfg(target_os = "macos")]\nfn dock() {}\n')
+            with patch.object(paths, 'REPO', Path(directory)):
+                self.assertTrue(paths.macos_code('oxa/desk/oxa-desk/src/platform/mac.rs'))
+                self.assertEqual(self.selected(['oxa/desk/oxa-desk/src/platform/mac.rs']), {'desk'})
+
+    def test_desk_slice_with_its_changelog_fragment_and_docs_stays_desk_only(self):
+        self.assertEqual(self.selected(['oxa/desk/oxa-desk/src/views/glance.rs',
+                                        'changelog.d/desk-a14.md']), {'desk', 'md'})
+        self.assertEqual(self.selected(['oxa/desk/oxa-desk/src/views/glance.rs', 'changelog.d/desk-a14.md',
+                                        'oxa/docs/pages/desk/glance.md']), {'desk', 'md'})
+        # The fragment and the page alone: scans and the links check, no compile job.
+        self.assertEqual(self.selected(['changelog.d/desk-a14.md']), {'md'})
+        self.assertEqual(self.selected(['oxa/docs/pages/desk/glance.md']), {'docs', 'md'})
+        # Any other fragment still counts as "everything changed", and that includes the desk job.
+        self.assertEqual(self.selected(['changelog.d/lead-web-live.md']), set(KEYS) | {'desk', 'md'})
+        self.assertEqual(self.selected(['changelog.d/desk-a14.md.sh']), set(KEYS) | {'desk'})
+
+    def test_desk_plus_shared_crate_runs_both(self):
+        self.assertEqual(self.selected(['oxa/desk/oxa-desk-core/src/store.rs',
+                                        'oxa/oxa-interactive/src/app.rs']), {'desk', 'oxa'})
+        self.assertEqual(self.selected(['oxa/desk/oxa-desk/src/main.rs', 'oxa/oxa-cli/src/dispatch.rs']),
+                         {'desk', 'oxa', 'gateway'})
+        # A shared crate alone does not start the desk job on a PR (the queue rule is Z03's).
+        self.assertEqual(self.selected(['oxa/oxa-interactive/src/app.rs']), {'oxa'})
+        # Tooling and workflows other than the desk's own still select everything, desk included.
+        for path in ('.github/workflows/checks.yml', 'tools/ci/paths.py', 'tools/ci/install_nextest.sh'):
+            self.assertEqual(self.selected([path]), set(KEYS) | {'desk'}, path)
 
 
     def test_macos_build_only_for_macos_relevant_paths(self):
@@ -142,7 +186,7 @@ class Paths(unittest.TestCase):
         root = Path(__file__).resolve().parents[3]
         pattern = re.compile(r'target_os\s*=\s*"macos"|not\((any\()?target_os\s*=\s*"linux"')
         found = [str(path.relative_to(root)) for path in sorted((root / 'oxa').rglob('*.rs'))
-                 if 'target' not in path.relative_to(root / 'oxa').parts[:1]
+                 if path.relative_to(root / 'oxa').parts[0] not in ('target', 'desk')
                  and pattern.search(path.read_text(errors='replace'))]
         self.assertTrue(found)
         self.assertEqual([path for path in found if not paths.classify([path])['macos']], [])
@@ -165,6 +209,9 @@ class Paths(unittest.TestCase):
                     paths.main()
                 values = dict(line.split('=', 1) for line in output.read_text().splitlines())
                 self.assertEqual(values['macos'], expected)
+                # The desk job follows the same full runs (main seeds its cache) and, unlike macOS,
+                # a queued group that changes tooling.
+                self.assertEqual(values['desk'], 'true')
 
 
 class GitPaths(unittest.TestCase):

@@ -28,6 +28,19 @@ FUZZ = {'fuzz/oxa': {'oxa'}, 'fuzz/oxe': {'engine'}}
 OUTPUTS = ('engine', 'oxa', 'gateway')
 # Anything else (.github/, tools/, packaging/, root files, new directories) marks every component.
 
+# The desktop app is a nested workspace (oxa/desk/, own Cargo.lock) with its own job (desk.yml).
+# Its paths select `desk` and nothing else: not `oxa` (the oxa workspace does not contain them) and
+# never `macos` (macos.yml builds oxa-cli only; desk.yml owns the desktop's macOS check). `desk` is
+# not one of OUTPUTS either, but a path that marks every component marks it too.
+DESK_PREFIXES = ('oxa/desk/',)
+DESK_FILES = frozenset(('.github/workflows/desk.yml', 'tools/ci/desk_contract.py'))
+# A desk slice's changelog fragment: release-notes text that no job compiles or tests.
+DESK_NOTE = re.compile(r'changelog\.d/desk-[a-z0-9]+(?:-[a-z0-9]+)*\.md')
+
+
+def desk(path):
+    return path in DESK_FILES or path.startswith(DESK_PREFIXES)
+
 # `macos` selects the 90-minute native macOS build on ready PRs. It is not one of OUTPUTS: an
 # unknown path does not select it, only macOS packaging, the two workflows that build macOS, the
 # oxa dependency set, any path naming macos/darwin, and the oxa sources that hold macOS-only code
@@ -79,9 +92,12 @@ def classify(paths, full_event=False):
     paths = list(paths)
     docs = bool(paths) and all(documentation(path) for path in paths)
     changed = dict.fromkeys(OUTPUTS, False)
-    mac = False
+    mac = desktop = False
     for path in paths:
-        if documentation(path):
+        if documentation(path) or DESK_NOTE.fullmatch(path):
+            continue
+        if desk(path):
+            desktop = True
             continue
         mac = mac or macos(path)
         if path.startswith(('oxa/oxc-gateway/', 'oxa/oxa-engine/', 'oxa/oxa-proto/', 'oxa/oxa-cli/')) or path in ('oxa/Cargo.toml', 'oxa/Cargo.lock'):
@@ -90,8 +106,9 @@ def classify(paths, full_event=False):
             components = COMPONENTS.get(path.split('/', 1)[0]) or FUZZ.get('/'.join(path.split('/', 2)[:2]))
         for component in components or OUTPUTS:
             changed[component] = True
+        desktop = desktop or not components
     md = any(Path(path).suffix.lower() in ('.md', '.rst') for path in paths)
-    return {**changed, 'macos': mac, 'docs': docs, 'md': md, 'full': full_event}
+    return {**changed, 'desk': desktop, 'macos': mac, 'docs': docs, 'md': md, 'full': full_event}
 
 
 def changed_paths(event, name):
@@ -137,7 +154,7 @@ def main():
     if full:
         if name != 'merge_group':
             # Main, nightly and manual runs test every component.
-            result.update(dict.fromkeys(OUTPUTS + ('macos',), True))
+            result.update(dict.fromkeys(OUTPUTS + ('desk', 'macos'), True))
     with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
         for key, value in result.items():
             stream.write(f'{key}={str(value).lower()}\n')

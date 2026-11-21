@@ -301,8 +301,21 @@ The desktop app (`oxa-desk`) is built in small slices from [the build plan](oxa/
 - **Manifests are architect-owned:** only wave-0 PRs change a `Cargo.toml`, a `Cargo.lock`, a workflow, `lib.rs`,
   a `mod.rs` or `store.rs` under `oxa/desk/`. A slice that needs a new dependency or a new shared item stops and
   reports `needs-dep` or `needs-hook`.
-- **No `macos` or `darwin` in a desk file or directory name** (`platform/mac.rs`, not `macos.rs`): such a path
-  selects the 90-minute macOS build.
+- **No `macos` or `darwin` in a desk file or directory name** (`platform/mac.rs`, not `macos.rs`):
+  `tools/ci/desk_contract.py` rejects it.
+- **CI:** the `desk` job of `checks` (`.github/workflows/desk.yml`) is the only compiler of `oxa/desk/`. It runs
+  `desk check` (rustfmt, `tools/ci/desk_contract.py`, clippy with warnings denied) and `desk test` (nextest, and
+  `oxa-desk --version` must print oxa's line) on hosted ARM runners; each writes its duration and its wait for a
+  runner to the job summary. A change to `oxa/desk/`, `desk.yml` or `desk_contract.py` selects only this job, not
+  the oxa, engine, gateway or macOS jobs; `changelog.d/desk-*.md` selects nothing. A PR that changes only shared
+  oxa crates does not run it; the full run on main does. `gate` covers the job, and a skip passes.
+- **Lock file:** `oxa/desk/Cargo.lock` is written by CI, never by hand. When it is missing or stale, `desk check`
+  uploads the right one as the artifact `desk-cargo-lock` and fails; the architect commits that file
+  (`gh run download <run-id> -n desk-cargo-lock`). `gh workflow run desk -f lock=true --ref <branch>` writes one on
+  request. A crate in both lock files must have a version in common with `oxa/Cargo.lock`.
+- **One binary:** `oxa-desk` is an oxa. Its `main.rs` is the shim of `oxa-cli/src/main.rs` plus one branch for the
+  window; keep the two in step. Outside `main.rs` the window crate reaches oxa only through `oxa-desk-core`, and
+  `oxa-desk-core` never depends on GPUI (`desk_contract.py` checks both).
 - **Review:** for a desk slice the `oxa-review` line decides, not the Codex review. The review script runs an oxa
   review on the exact head and posts one comment whose first line is
   `oxa-review head=<full 40-character sha> verdict=pass|block p0=N p1=N p2=N p3=N`. A line for another head is

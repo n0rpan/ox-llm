@@ -25,6 +25,10 @@ name: checks
 # classifier marks `macos` (macOS packaging, the macOS workflows, oxa/Cargo.toml and Cargo.lock,
 # paths naming macos/darwin, the oxa files with macOS-only code). It never runs in the merge queue
 # or on a main push: dev-build.yml builds macOS after every merge and files a p1 issue when it breaks.
+# The desktop app (`desk`, desk.yml) is a nested workspace, oxa/desk/, that no job above compiles.
+# Its paths (oxa/desk/, desk.yml, tools/ci/desk_contract.py) select the `desk` output and nothing
+# else, so a desk-only PR runs the scans, rustfmt and the two desk jobs. `changelog.d/desk-*.md`
+# selects nothing. "Everything changed" and the full runs on main include `desk`.
 # The `gate` job aggregates every job below; it fails when any job failed or was cancelled, when
 # the classifier or the scans did not succeed, or when a classifier output is not literally
 # 'true'/'false', so a skip caused by a failed or missing classifier cannot pass.
@@ -81,6 +85,7 @@ jobs:
       engine: ${{ steps.paths.outputs.engine }}
       oxa: ${{ steps.paths.outputs.oxa }}
       gateway: ${{ steps.paths.outputs.gateway }}
+      desk: ${{ steps.paths.outputs.desk }}
       macos: ${{ steps.paths.outputs.macos }}
       md: ${{ steps.paths.outputs.md }}
     steps:
@@ -145,6 +150,19 @@ jobs:
     needs: changes
     if: github.event_name == 'pull_request' && github.event.pull_request.draft == false && needs.changes.outputs.macos == 'true'
     uses: ./.github/workflows/macos.yml
+
+  desk:
+    # The desktop app's own workspace (desk.yml: `desk check` and `desk test`, hosted ARM). Runs
+    # when the classifier sets `desk`; a skip passes the gate, so no other PR waits for it.
+    needs: changes
+    if: needs.changes.outputs.covered != 'true' && needs.changes.outputs.desk == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    permissions:
+      # Read-only: each desk job reads its own start time for its summary line.
+      actions: read
+      contents: read
+    uses: ./.github/workflows/desk.yml
+    with:
+      mode: pr
 
   oxa-nightly-arm:
     # Extra primary-platform coverage at night; manual opt-in validates this job before merge.
@@ -604,7 +622,7 @@ jobs:
     # the scans must succeed; every classifier output must be literally 'true' or 'false'.
     name: gate
     if: always()
-    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, engine-x86-workspace, fuzz-oxa, fuzz-oxe, build, gateway, macos]
+    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, engine-x86-workspace, fuzz-oxa, fuzz-oxe, build, gateway, macos, desk]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
@@ -618,7 +636,7 @@ jobs:
           for k in ('changes', 'scans'):                      # these two may never be skipped
               if needs[k]['result'] != 'success': bad[k] = needs[k]['result']
           flags = needs['changes'].get('outputs', {})
-          for k in ('engine', 'oxa', 'gateway', 'macos', 'docs', 'md', 'full'):
+          for k in ('engine', 'oxa', 'gateway', 'desk', 'macos', 'docs', 'md', 'full'):
               if flags.get(k) not in ('true', 'false'): bad['changes.' + k] = repr(flags.get(k))
           print(json.dumps({k: v['result'] for k, v in needs.items()}, indent=1)); print('bad:', bad)
           sys.exit(1 if bad else 0)
