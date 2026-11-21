@@ -429,7 +429,18 @@ fn the_lead_does_exactly_its_row() {
         )
         .is_err());
     let ready_owner = add(&store, "owner ready", Column::Ready);
-    let lead_ready = add(&store, "lead ready", Column::Ready);
+    // Created by the lead so it is lead-owned (the lead may remove its own item below).
+    store
+        .apply(Actor::Lead, add_op("lead ready", Column::Ready))
+        .unwrap();
+    let lead_ready = store
+        .read()
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.title == "lead ready")
+        .unwrap()
+        .id;
     assert!(store
         .apply(
             Actor::Lead,
