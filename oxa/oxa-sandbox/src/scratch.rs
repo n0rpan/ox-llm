@@ -364,12 +364,21 @@ mod tests {
         let sc = Scratch::create(&env.root().join("scratch")).unwrap();
         std::fs::write(sc.path().join("big"), vec![1u8; 64 * 1024]).unwrap();
         std::os::unix::fs::symlink("/usr", sc.path().join("link")).unwrap();
-        assert!(sc.usage() >= 64 * 1024 && sc.usage() < 1 << 20);
-        assert!(sc
-            .warning(1024)
-            .is_some_and(|w| w.contains("oxa.sandbox.scratchWarnSize")));
-        assert!(sc.warning(1024).is_none(), "once until the size doubles");
-        assert!(sc.warning(1 << 30).is_none());
+        let size = sc.usage();
+        assert!((64 * 1024..1 << 20).contains(&size));
+        assert!(sc.warning(DEFAULT_SCRATCH_WARN).is_none());
+        assert!(sc.warning(size).is_none(), "the limit must be exceeded");
+        let limit = 1024;
+        let line = sc.warning(limit).expect("first warning over the limit");
+        assert_eq!(line.trim().lines().count(), 1);
+        assert!(sc.warning(limit).is_none(), "once at the same size");
+
+        // Supply fresh measurements to hit the exact byte boundary without waiting for the cache.
+        *sc.measured.lock().unwrap() = Some((Instant::now(), size * 2 - 1));
+        assert!(sc.warning(limit).is_none(), "still less than double");
+        *sc.measured.lock().unwrap() = Some((Instant::now(), size * 2));
+        assert!(sc.warning(limit).is_some(), "warn again at double the size");
+        assert!(sc.warning(limit).is_none(), "once at the new size");
     }
 
     #[test]
