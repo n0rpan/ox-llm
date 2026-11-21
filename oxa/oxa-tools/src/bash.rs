@@ -545,7 +545,15 @@ impl Tool for BashTool {
     /// `[Access::Exec { command, net: false }]` for a run; nothing for a job read.
     fn access(&self, args: &Value, _cx: &ToolCtx) -> Result<Vec<Access>, String> {
         match parse(args)? {
-            BashArgs::Run { command, .. } => Ok(vec![Access::Exec { command, net: false }]),
+            BashArgs::Run {
+                command, background, ..
+            } => {
+                // A handoff handle written as a command is a job read (see `run`), not an exec.
+                if !background && self.job_handle_command(&command).is_some() {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![Access::Exec { command, net: false }])
+            }
             BashArgs::Job { .. } => Ok(Vec::new()),
         }
     }
@@ -565,6 +573,11 @@ impl Tool for BashTool {
                 if background {
                     return self.start_job(&command, timeout_s, cx);
                 }
+                // #2294: recover the timeout-to-background handoff when the model addresses
+                // the job handle as a shell command: read the job through the existing path.
+                if let Some(id) = self.job_handle_command(&command) {
+                    return self.read_job(id, None, cx);
+                }
                 self.run_foreground(&command, timeout_s, cx, live)
             }
         }
@@ -572,6 +585,20 @@ impl Tool for BashTool {
 }
 
 impl BashTool {
+    /// #2294: the job id when a foreground `command` is exactly a known job handle (`job-N`):
+    /// the shape a model writes when it addresses a handed-off background job as a shell
+    /// command. The call reads that job instead of executing the handle. A trim and a prefix
+    /// scan; the registry is consulted only for that shape, and only a foreground call (a
+    /// `background: true` start still runs its command).
+    fn job_handle_command<'a>(&self, command: &'a str) -> Option<&'a str> {
+        let id = command.trim();
+        let num = id.strip_prefix("job-")?;
+        if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        self.jobs.knows(id).then_some(id)
+    }
+
     /// Issue #127 (b): read a background job's status and the last 8 KiB of its output.
     /// #150 (2): with `wait`, first block until the job exits, prints new output, or the wait
     /// runs out. A still-running job's text says to wait again later rather than retry at once.
@@ -2501,6 +2528,57 @@ mod poll_tests {
             &mut |_| {},
         );
         assert!(read.text.contains("killed"), "unexpected kill result");
+    }
+
+    /// #2294: the handoff stays recoverable when the model addresses the job handle as a
+    /// shell command: `bash {"command": "job-N"}` reads the known job through the existing
+    /// job path instead of executing the handle.
+    #[test]
+    fn job_handle_written_as_a_command_reads_the_job() {
+        let jobs = Arc::new(JobRegistry::new());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
+            .with_sandbox(Arc::new(Slow { ms: 60_000 }));
+        let (handoff, _) = job_call(&tool, json!({"command": "sleep 99", "timeout": 1}));
+        assert_eq!(handoff.ui["movedToBackground"], json!(true));
+        assert_eq!(handoff.ui["job"], json!("job-1"));
+
+        let sb = Slow { ms: 0 };
+        let cancel = CancelToken::new();
+        let cx = ToolCtx {
+            checked: &[],
+            cwd: Path::new("/work"),
+            spill_dir: Path::new("/work"),
+            sandbox: &sb,
+            mode: Mode::Workspace,
+            cancel: &cancel,
+            env: &[],
+            tune: Default::default(),
+            hidden: None,
+        };
+
+        // The handle as a command is the job read: status and output, no shell run, no new
+        // job, and no exec access (nothing is executed).
+        assert!(tool.access(&json!({"command": "job-1"}), &cx).unwrap().is_empty());
+        let (out, streamed) = job_call(&tool, json!({"command": "job-1"}));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("Job job-1: running"), "{}", out.text);
+        assert_eq!(out.ui["job"], json!("job-1"));
+        assert!(streamed.is_empty(), "{streamed}");
+        assert_eq!(jobs.running(), 1);
+
+        // A command that merely mentions a handle, and an unknown handle, still run.
+        let fast = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
+            .with_sandbox(Arc::new(Slow { ms: 0 }));
+        let (echo, _) = job_call(&fast, json!({"command": "echo job-1"}));
+        assert_eq!(echo.ui["exit"], json!(0));
+        assert!(echo.ui.get("job").is_none(), "{}", echo.ui);
+        let (unknown, _) = job_call(&fast, json!({"command": "job-99"}));
+        assert_eq!(unknown.ui["exit"], json!(0));
+        assert!(unknown.ui.get("job").is_none(), "{}", unknown.ui);
+        assert_eq!(jobs.running(), 1);
+
+        let _ = tool.run(&json!({"job": "job-1", "kill": true}), &cx, &mut |_| {});
+        assert_eq!(jobs.running(), 0);
     }
 
     #[test]

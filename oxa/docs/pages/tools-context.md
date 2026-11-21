@@ -61,6 +61,8 @@ usage, so reported reasoning tokens can be one greater than the text cap.
 - **bash timeout.** A bash call with no `timeout` waits 120 seconds in the foreground.
   `oxa.bash.defaultTimeout` sets the value; `0` means none. A command still running then is not
   killed: it continues as a background job and the result gives the job id and the wall time. A
+  later foreground command that is exactly that job id reads the job (status and output) instead
+  of running as a shell command. A
   foreground command that took 10 seconds or more ends with a `[wall time ...]` line.
 - **Shorter first page of `read`.** A `read` with no `offset` or `limit` returns the first 400
   lines, and at most 8 KiB. On a model with a context below 32K tokens it returns 200 lines and

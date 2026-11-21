@@ -450,6 +450,12 @@ impl JobRegistry {
         Ok(())
     }
 
+    /// Whether `id` names a job this registry still holds (running or finished). A membership
+    /// check only: it reads no output and marks nothing seen.
+    pub fn knows(&self, id: &str) -> bool {
+        self.state.lock().unwrap().jobs.contains_key(id)
+    }
+
     /// Read a job's status and the last [`READ_CAP`] bytes of its output. `Err` for an
     /// unknown id.
     pub fn read(&self, id: &str) -> Result<JobRead, String> {
