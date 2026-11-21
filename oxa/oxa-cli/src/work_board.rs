@@ -858,8 +858,22 @@ impl GitHub for Reader<'_> {
 /// Whether the serving project is trusted for a sample. The same check the command runs,
 /// with the notices discarded: the page reports a refusal as its own cause.
 pub(crate) fn sampler_trusted(root: &Path, dirs: &oxa_config::Dirs) -> bool {
-    crate::work_cmd::trusted(root, &oxa_config::Env::from_process(), dirs, &mut std::io::sink())
-        .unwrap_or(false)
+    // Private single-key read of the user settings, like the capacity read: the service must
+    // not fail the trust check on the serving user's unrelated settings.
+    if oxa_config::Settings::load(dirs, root, false).layer_failed() {
+        return false;
+    }
+    let mut notices = Vec::new();
+    crate::dispatch::project_trusted(
+        &crate::Args::default(),
+        &oxa_config::Env::from_process(),
+        dirs,
+        root,
+        &oxa_perm::gated_resources(root),
+        false,
+        &mut notices,
+    )
+    .unwrap_or(false)
 }
 
 /// The one fixed line the page shows for a failed sample: never a path, token or raw error

@@ -283,17 +283,6 @@ struct Job {
 
 impl Job {
     fn run(self) {
-        if !self.token.configured() {
-            // Nothing to sample with: keep the status honest and leave the board to the timer.
-            let mut shared = lock(&self.state);
-            shared.status.next_at = None;
-            shared.status.failed = Some(Failure {
-                at: now(),
-                cause: "no GitHub App token source: set oxa.github.tokenCommand, or keep the external timer"
-                    .into(),
-            });
-            return;
-        }
         let mut failures = 0u32;
         loop {
             let started = now();
@@ -343,6 +332,11 @@ impl Job {
     fn attempt(&self) -> Result<u64, String> {
         if !work_board::sampler_trusted(&self.cwd, &self.dirs) {
             return Err("the serving project is not trusted, so no sample ran; approve the project".into());
+        }
+        if !self.token.configured() {
+            return Err(
+                "no GitHub App token source: set oxa.github.tokenCommand, or keep the external timer".into(),
+            );
         }
         let token = self.token.fresh().map_err(work_board::sample_cause)?;
         let gh = self.gh.as_deref().ok_or("no trusted gh executable")?;
