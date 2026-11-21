@@ -1779,12 +1779,23 @@ fn short_terminal_dangerous_command_pages_visible_rows_in_the_real_tui() {
         assert!(shown.contains(label), "{label}\n{shown}");
     }
     // The page is smaller than a tall terminal's ten rows and names exactly the rows it shows.
+    // The counter's total is the command's rows plus any rule reason rows below them.
     let page = dialog_rows(&s).iter().filter(|r| r.contains("step-")).count();
     assert!(
         (1..10).contains(&page),
         "a short terminal shows {page} command rows: {shown}"
     );
-    assert!(shown.contains(&format!("rows 1–{page} of 24")), "{shown}");
+    let total: usize = shown
+        .split(" of ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|total| total.parse().ok())
+        .expect("the row counter names every preview row");
+    assert!(
+        total >= 24,
+        "the command's rows are all counted: {total}\n{shown}"
+    );
+    assert!(shown.contains(&format!("rows 1–{page} of {total}")), "{shown}");
     assert!(
         !shown.contains(&format!("step-{:02}", page + 1)),
         "the next row is on the next page: {shown}"

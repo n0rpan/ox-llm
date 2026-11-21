@@ -752,7 +752,7 @@ fn protected_view_shows_every_stuck_signal_and_keeps_missing_sources_explicit() 
     let sample = write_record(&directory, &stuck_record(now, true, 46 * 60, Some(1), true, None));
     let server = start(&test, &sample);
     let page = get(port, "/", &authority, "");
-    assert!(page.contains("Checks on main are failing."));
+    assert!(page.contains("Checks on main are failing."), "{page}");
     assert!(page.contains("PR #17 has waited too long"));
     assert!(page.contains("Queued workflow runs unavailable."), "{page}");
     drop(server);
