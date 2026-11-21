@@ -185,6 +185,12 @@ fn terminal_capture_compares_adjacent_requests_without_changing_the_wire_or_expo
             assert_eq!(row["attempt"], 1);
             assert_eq!(row["status"], "returned");
             assert_eq!(row["messages"], after.messages.len());
+            // The local engine's own facts, recorded from its reply. The cache source is
+            // absent from the engine's contract, so it is unavailable here, not guessed.
+            let engine = &row["engine"];
+            assert_eq!(engine["cache_source"], "unavailable");
+            assert!(engine["evaluated_prefill_tokens"].as_u64().is_some());
+            assert!(engine["checkpoint_known"].as_bool().is_some());
             if i > 0 {
                 let adjacent = &row["adjacent"];
                 assert_eq!(adjacent["common_leading_messages"], rows[i - 1]["messages"]);
