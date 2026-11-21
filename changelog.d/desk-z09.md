@@ -1,0 +1,1 @@
+- Desktop app groundwork: `oxa-session` can index session files for a thread list from a bounded read of each file (`FsStore::thread_index`), and the session picker's threaded sort and the new `thread_order` are one function. The picker's order is unchanged.

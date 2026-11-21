@@ -287,6 +287,30 @@ code, tests, CI and docs; the owner validates on hardware.
 - **Ambiguous task:** open the PR as a draft with your question at the top instead of guessing.
 - **A workflow that does not start** (fork PRs wait for approval): say so in the PR; do not work around it.
 
+### Desktop app slices
+
+The desktop app (`oxa-desk`) is built in small slices from [the build plan](oxa/docs/design/desk/build-plan.md) and
+[`slices.json`](oxa/docs/design/desk/slices.json). The rules above apply, with these differences:
+
+- **Branch and PR:** branch `desk/<slice-id>` from a fresh `origin/main`, title `desk <slice-id>: <title>`, labels
+  `desk` and `desk-w<wave>`. The body has `Closes #<slice issue>`, the plan link and the slice's done-when. A slice
+  touches only the files `slices.json` lists for it, plus one changelog fragment `changelog.d/desk-<slice-id>.md`
+  (lower case) and its own snapshots.
+- **Nested workspace:** the desk crates live in `oxa/desk/`, a workspace of its own with its own `Cargo.lock`. They
+  are not members of the `oxa` workspace, so GPUI never enters `oxa/Cargo.lock`.
+- **Manifests are architect-owned:** only wave-0 PRs change a `Cargo.toml`, a `Cargo.lock`, a workflow, `lib.rs`,
+  a `mod.rs` or `store.rs` under `oxa/desk/`. A slice that needs a new dependency or a new shared item stops and
+  reports `needs-dep` or `needs-hook`.
+- **No `macos` or `darwin` in a desk file or directory name** (`platform/mac.rs`, not `macos.rs`): such a path
+  selects the 90-minute macOS build.
+- **Review:** for a desk slice the `oxa-review` line decides, not the Codex review. The review script runs an oxa
+  review on the exact head and posts one comment whose first line is
+  `oxa-review head=<full 40-character sha> verdict=pass|block p0=N p1=N p2=N p3=N`. A line for another head is
+  stale. `verdict=block` is only for P0/P1, as in "What blocks a merge". For a slice in the security core (label
+  `two-review`), or whenever the script wants one, the script itself starts an independent security review with oxa
+  and a ChatGPT-plan model in clean contexts; it does not go through the lead. An open security review blocks. Each
+  P2 becomes a follow-up issue with the label `desk-followup`.
+
 ### GitHub access
 
 ## What to test (owner rule)
@@ -395,7 +419,7 @@ Owner decision for the early stage, until v0.3:
 
 - **Required checks** are green at the exact head. This always applies.
 - **Restrictions:** a PR with a `Restricts:` line merges only with the owner's `owner-accepted` label.
-- **Review:** the latest Codex review on the exact head decides. Only P0/P1 findings and an open security review
+- **Review:** the latest Codex review on the exact head decides. (A desktop app slice is decided by its `oxa-review` line: see "Desktop app slices".) Only P0/P1 findings and an open security review
   block. A security finding is P0/P1 only when it hits the block list in `docs/threat-model.md`. P2/P3 findings become follow-up issues and are fixed forward on main. Only threads opened on
   the current head count. Never bulk-resolve review threads.
 - **Security core:** the sandbox and permissions, secrets and credentials, login, redaction, publishing and owner
@@ -559,6 +583,8 @@ read its result; they never launch builds or tests.
   `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings cannot raise it. See
   `oxa/docs/work.md`.
 - **Worker publishing.** Publishing (owner decision 2026-11-19): in workspace and auto, without asking, the session repo's current non-default branch may be pushed to `origin` with an explicit source refspec (no force, no `+refspec`, no delete, no tag or mirror, no other remote), `gh pr create|edit|comment` without a PR argument, repo or head override, and read-only `gh` (`pr view|checks|diff`, `run view|watch`, `api` GET) run. A push with no refspec, a push to the default branch, a force push, branch deletion, `gh pr merge`, a push to another repo and release or tag pushes ask, or go to the lead's approvals desk for a worker with no human (a headless worker without a desk is refused). An unresolved Git subcommand (a name that is not a builtin recognized by the classifier, so it may be a configured alias or an external `git-*` executable) asks. Every part of a command line must be in the allowed set: any other command chained with one (`curl x && git push`, `git push | tee f`, a substitution, `bash -c`) asks. A later sequential repository mutation cannot affect an earlier publish (`git push && git switch main`) and needs no approval, but a repository mutation in the same concurrent pipeline asks (`git push | git switch main`). Yolo is unchanged. Classifier: `oxa-perm` `publish.rs`. This publish floor is hardening: a push that slips past it by obfuscation is P3; the publication scan for secrets is what blocks.
+- **Owner worker CLI.** `oxa worker run|list` are owner-only, never model tools, and follow the
+  worker tool's unattended policy; a resume never widens mode or offline.
 - **Worker tool default.** A worker started by the `worker` tool inherits its parent's level when no
   `mode` is given (yolo -> yolo, auto -> auto, workspace -> workspace, plan -> plan); an explicit narrower
   mode wins and a wider one is clamped with a notice. Env and GitHub access are the parent's, unchanged.

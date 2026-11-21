@@ -74,6 +74,10 @@ The tables below are generated from the page sheet in `oxa/oxa-config/src/descri
 | `enableSkillCommands` | bool | `true` | list skills in the slash-command autocomplete |
 | `followUpMode` | `all` / `one-at-a-time` | `one-at-a-time` | how queued follow-up messages are sent |
 | `steeringMode` | `all` / `one-at-a-time` | `one-at-a-time` | how queued steering messages are sent |
+| `oxa.desk.font` | string | `null` | desktop app (`oxa-desk`) only, user settings only: the font family of the window. Unset uses the system font. The terminal UI does not read the `oxa.desk.*` keys |
+| `oxa.desk.fontSize` | number | `14` | desktop app only, user settings only: text size in pixels. A value outside 8 to 40 is saved with a note, not refused |
+| `oxa.desk.blinkCursor` | bool | `false` | desktop app only, user settings only: blink the text cursor. Off by default, so an idle window does not wake up to redraw |
+| `oxa.desk.keepTranscripts` | number | `30` | desktop app only, user settings only: how many threads the desktop app keeps loaded in memory. Beyond that the one used longest ago is dropped and reloads when opened; the open thread and a thread with a pending question always stay loaded |
 <!-- /generated:interface -->
 
 <!-- generated:models -->
@@ -465,6 +469,7 @@ never permits an additional review.
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
 | `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.lead.github_reserve` | number | `null` | user settings only. Requests kept back per GitHub App resource (core and graphql) for required Lead reads: `oxa work board --app-quota-shadow` runs its optional reads (lead panels, queued-run pages, test reports) only while the App window stays above this reserve, and records each deferral in the sample (`quota_deferred`) instead of failing. Unset means no gate. Model and subscription limits are not touched. Needs `--app-quota-shadow`; `--app-quota-reserve N` overrides it for one run |
+| `oxa.lead.capacity` | object | `{}` | user settings only (a project file cannot change it). Workers the owner allows per host, as `{"<host>": <count>}`, for example `{"host-b": 8, "host-a": 6}`. The lead board and `oxa status --json` show it next to observed running workers, Ready depth and stuck work; it is display only, nothing schedules or refuses on it. Unset means no capacity stated. A host name is at most 128 characters with no whitespace; a count is a whole number. An entry that does not match is ignored and counted, never refused |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
 | `oxa.workers.enabled` | bool | `true` | user settings only (a project file cannot change it). The `worker` tool (start, list, stop background workers, each in its own git worktree); `false` removes it. Never offered inside a worker |
 | `oxa.workers.max` | number | `4` | user settings only (a project file cannot change it). Most live workers one session may run; a `start` past this limit is refused |
