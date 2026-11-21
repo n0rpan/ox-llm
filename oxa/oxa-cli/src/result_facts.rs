@@ -4,6 +4,7 @@ use oxa_proto::OxaError;
 use oxa_proto::{TurnKind, Usage};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -44,6 +45,9 @@ struct State {
     limit: Option<&'static str>,
     /// `bash` results that polled for CI (`ci_polls`); `None` until the driver reports it.
     ci_polls: Option<u32>,
+    /// Raw path arguments of the run's successful `edit`/`write` calls (#2297), in first-use
+    /// order, as the end-of-run observation reported them. Empty until then.
+    changed_paths: Vec<String>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -68,6 +72,7 @@ impl Default for State {
             prefix: None,
             limit: None,
             ci_polls: None,
+            changed_paths: Vec::new(),
         }
     }
 }
@@ -81,6 +86,9 @@ pub(crate) struct ResultFacts {
     status: Option<Arc<crate::status::StatusWriter>>,
     billing: Option<oxc_gateway::diagnostics::Diagnostics>,
     usage_log: Option<crate::usage_log::UsageLog>,
+    /// Acceptance scope (#2297): the run's cwd and the allowed changed-file set the task
+    /// supplied. `None` keeps `files_changed` unavailable (no added cost for other tasks).
+    changed_file_scope: Option<(PathBuf, Vec<String>)>,
 }
 impl ResultFacts {
     pub(crate) fn with_billing(mut self, billing: oxc_gateway::diagnostics::Diagnostics) -> Self {
@@ -89,6 +97,10 @@ impl ResultFacts {
     }
     pub(crate) fn with_usage_log(mut self, log: Option<crate::usage_log::UsageLog>) -> Self {
         self.usage_log = log;
+        self
+    }
+    pub(crate) fn with_changed_file_scope(mut self, cwd: PathBuf, allowed: Vec<String>) -> Self {
+        self.changed_file_scope = Some((cwd, allowed));
         self
     }
 
@@ -226,11 +238,50 @@ impl ResultFacts {
         record["web_lookups"] = state.as_ref().map_or(Value::Null, |state| json!(state.lookups));
         // `bash` calls that polled for CI from a shell loop (#1540); null when unobserved.
         record["ci_polls"] = state.as_ref().map_or(Value::Null, |state| json!(state.ci_polls));
-        // Successful tool calls and generated text are not checked workspace/commit evidence.
-        record["files_changed"] = Value::Null;
-        record["files_changed_evidence"] = json!("unavailable");
+        // Changed-file acceptance evidence (#2297): reported only when the task supplied an
+        // allowed set and a session opened. Otherwise successful tool calls and generated text
+        // are not checked workspace/commit evidence, so the record stays explicitly unavailable.
+        let (files, evidence, extra, allowed) = state
+            .and_then(|state| {
+                facts
+                    .and_then(|facts| facts.changed_file_scope.as_ref())
+                    .map(|(cwd, allowed)| changed_file_facts(cwd, allowed, &state.changed_paths))
+            })
+            .unwrap_or((Value::Null, "unavailable", Value::Null, Value::Null));
+        record["files_changed"] = files;
+        record["files_changed_evidence"] = json!(evidence);
+        record["files_changed_extra"] = extra;
+        record["files_changed_allowed"] = allowed;
         record
     }
+}
+
+/// Changed-file acceptance evidence (#2297). `observed` are the raw path arguments of the run's
+/// successful `edit`/`write` calls; both sides are resolved against `cwd` and compared as
+/// workspace-relative names. Tool-observed only: a shell rewrite is not a named file here, and
+/// nothing is refused because of the result.
+fn changed_file_facts(
+    cwd: &Path,
+    allowed: &[String],
+    observed: &[String],
+) -> (Value, &'static str, Value, Value) {
+    let relative = |path: &str| -> String {
+        let resolved = oxa_tools::resolve_path(cwd, path);
+        resolved
+            .strip_prefix(cwd)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| resolved.to_string_lossy().into_owned())
+    };
+    let mut files: Vec<String> = Vec::new();
+    for path in observed {
+        let name = relative(path);
+        if !files.contains(&name) {
+            files.push(name);
+        }
+    }
+    let allowed: Vec<String> = allowed.iter().map(|p| relative(p)).collect();
+    let extra: Vec<String> = files.iter().filter(|p| !allowed.contains(p)).cloned().collect();
+    (json!(files), "tool-observed", json!(extra), json!(allowed))
 }
 
 /// One `--usage-log` line: numbers, ids and timings. No message text, tool output or request body.
@@ -273,6 +324,12 @@ impl ProgressObserver for ResultFacts {
                 let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
                 if !state.finished {
                     state.lookups = state.lookups.saturating_add(1);
+                }
+            }
+            Progress::FilesChanged { paths } => {
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if !state.finished {
+                    state.changed_paths = paths.to_vec();
                 }
             }
             _ => {}

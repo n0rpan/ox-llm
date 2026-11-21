@@ -586,15 +586,30 @@ pub const TOOL_INTERRUPTED: &str = "Tool call was interrupted: oxa stopped befor
 pub const REPEAT_NOTICE_HEAD: &str = "Not repeated:";
 
 /// The tool result that replaces a call whose identical result is already in the context
-/// `identical` times in a row (the newest one is the previous result of this call).
-/// Deterministic (W4): the call is quoted as the model wrote it.
-pub fn repeat_notice(name: &str, args_raw: &str, identical: u32) -> String {
-    format!(
-        "{REPEAT_NOTICE_HEAD} this exact call ({name} {args_raw}) already returned the same result \
-         {identical} times in a row; it is unchanged and is in the earlier tool results above. Do \
-         not call it again. Change your approach and continue the task: make the edit the task \
-         needs, run a different command, or read a different range or file."
-    )
+/// `identical` times in a row (the newest one is the previous result of this call). `attempt`
+/// counts the calls of this loop so far: the identical results and the notices before this one,
+/// plus this one. The change-of-approach suggestion is written once, on the first notice; each
+/// later notice stays short, names its attempt and points back to that suggestion, so a loop gets
+/// a new number every time instead of the same paragraph again. Deterministic (W4): the call is
+/// quoted as the model wrote it.
+pub fn repeat_notice(name: &str, args_raw: &str, identical: u32, attempt: u32) -> String {
+    let unchanged = format!(
+        "this exact call ({name} {args_raw}) already returned the same result {identical} times in a row"
+    );
+    if attempt <= identical + 1 {
+        format!(
+            "{REPEAT_NOTICE_HEAD} {unchanged}; it is unchanged and is in the earlier tool results \
+             above. Do not call it again. Change your approach and continue the task: make the edit \
+             the task needs, run a different command, or read a different range or file. \
+             (Attempt {attempt}.)"
+        )
+    } else {
+        format!(
+            "{REPEAT_NOTICE_HEAD} {unchanged}; attempt {attempt} of this call, and it is still \
+             unchanged and in the earlier results. The change-of-approach suggestion above still \
+             stands: do not call it again."
+        )
+    }
 }
 
 // ---- T2: the tool-call repair turn (oxa only; pi never sees a malformed call) ----

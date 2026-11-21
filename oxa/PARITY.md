@@ -227,6 +227,7 @@ pi page(s): cli.md#tools, usage.md, pi source tools/*. Tests: `oxa-parity/tests/
 | TOOLS-022 | Same input + file state = same bytes; no ANSI, no timings (two runs identical) | A | W4 (oxa only) | `tools.rs::tools_022` |
 | TOOLS-023 | MCP, extension and codemode results pass the same `shape` | A | W4 (oxa only) | `tools.rs::tools_023` |
 | TOOLS-024 | (oxa only) `web_search` (O-169): a Brave Search tool, declared only with a key and never offline; pi has no built-in search | A | the tool list is frozen per prefix epoch; output is deterministic and capped, with source URLs | `tools.rs::tools_024` |
+| TOOLS-025 | (oxa only) `deliverable` (O-169): records the output file a request names and checks it from `read`'s guarded view (existence and size only); the run ends with a typed record per declared file, and a missing one is named in the wrap-up message. Evidence only, never a gate; pi has no built-in | A | the record is per run and never a refusal; a refused (private-path) call records nothing | `tools.rs::tools_025` |
 
 ## USE: Using the terminal UI
 
