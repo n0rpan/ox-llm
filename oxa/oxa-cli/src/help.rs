@@ -35,6 +35,12 @@ const BASE: &[Entry] = &[
         example: "oxa status 20260101-120000-abcd",
     },
     Entry {
+        path: &["cache"],
+        summary: "Report saved prompt-cache evidence without contacting a model",
+        usage: &["oxa cache <session-id|path> [--json]"],
+        example: "oxa cache 20260101-120000-abcd --json",
+    },
+    Entry {
         path: &["models"],
         summary: "List the local and cloud models this install can serve, where each runs and which one is the default",
         usage: &["oxa models [--json] [search]"],
@@ -453,6 +459,18 @@ mod tests {
             .unwrap()
             .contains("oxa config -"));
         assert!(requested("mcp", &words(&["list"])).is_none());
+    }
+
+    /// The cache report answers help before its session argument is parsed.
+    #[test]
+    fn cache_help_resolves_before_the_session_argument() {
+        let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for asked in [&["--help"][..], &["20260101-120000-abcd", "--json", "--help"]] {
+            let text = requested("cache", &words(asked)).expect("cache help");
+            assert!(text.starts_with("oxa cache - "), "{text}");
+            assert!(text.contains("oxa cache <session-id|path> [--json]"), "{text}");
+        }
+        assert!(requested("cache", &words(&["--json"])).is_none());
     }
 
     /// An unknown path has no text; the caller turns that into a usage error.

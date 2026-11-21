@@ -4,7 +4,7 @@
 
 use crate::engine::StubEngine;
 use crate::generate::Worker;
-use crate::service::{handle, Config, Reply, State};
+use crate::service::{handle, handle_hints, Config, Hints, Reply, State};
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -75,6 +75,12 @@ pub(crate) fn synth_tokenizer_with(pad: usize, template: &str) -> Tokenizer {
 }
 
 fn st(scripts: Vec<Vec<u32>>, thinking: bool) -> Arc<State<StubEngine>> {
+    st_slots(scripts, thinking, 4)
+}
+
+/// [`st`] with `snapshots` state slots: the continuity fixture keeps an H4 point per turn and
+/// reads it back, so it leaves room for them next to the live checkpoint.
+fn st_slots(scripts: Vec<Vec<u32>>, thinking: bool, snapshots: usize) -> Arc<State<StubEngine>> {
     let tok = synth_tokenizer();
     let mut eng = StubEngine::new(
         1 << 16,
@@ -95,7 +101,7 @@ fn st(scripts: Vec<Vec<u32>>, thinking: bool) -> Arc<State<StubEngine>> {
         idle_reprefill: false,
         engine_status: None,
     };
-    let mut w = Worker::new(eng, 4);
+    let mut w = Worker::new(eng, snapshots);
     w.ubatch = 16;
     Arc::new(State::new(cfg, tok, w).unwrap())
 }
@@ -2211,4 +2217,291 @@ async fn trailing_assistant_continuation_refused_and_h6_unchanged() {
         text.ends_with("Hello<|im_end|>\n"),
         "H6: a finished turn, no opener: {text:?}"
     );
+}
+
+// ---- #2255: a plain multi-turn conversation on one live session keeps its cache ----
+
+/// One foreground turn of the continuity fixture: the stable session hint, the H4 snapshot hint (a
+/// checkpoint at the end of the last message) and the same template settings on every turn,
+/// non-streamed.
+async fn continuity_turn(st: &Arc<State<StubEngine>>, msgs: &Json, tools: Option<&Json>) -> Json {
+    let mut b = body(
+        msgs.clone(),
+        json!({"enable_thinking": false, "preserve_thinking": true}),
+    );
+    if let Some(t) = tools {
+        b["tools"] = t.clone();
+    }
+    match handle_hints(
+        st.clone(),
+        "POST",
+        "/v1/chat/completions",
+        "",
+        &serde_json::to_vec(&b).unwrap(),
+        Some("continuity".into()),
+        None,
+        false,
+        Hints {
+            snapshot_keep: true,
+        },
+    )
+    .await
+    {
+        Reply::Json(c, j) => {
+            assert_eq!(c, 200, "{j}");
+            j
+        }
+        Reply::Stream(_) => panic!("unexpected stream"),
+    }
+}
+
+fn num(j: &Json, ptr: &str) -> u64 {
+    j.pointer(ptr)
+        .and_then(Json::as_u64)
+        .unwrap_or_else(|| panic!("missing {ptr}: {j}"))
+}
+
+/// What the client appends to the history: the user message, then the reply text it received.
+fn say(msgs: &mut Json, role: &str, content: &str) {
+    msgs.as_array_mut()
+        .unwrap()
+        .push(json!({"role": role, "content": content}));
+}
+
+/// The live state a turn leaves, as the next request's cache read: turn k's `cache_n` is the
+/// literal previous prompt plus the reply, and the prompt it feeds starts with exactly those
+/// tokens (nothing rewritten, no jump back to an older prefix). The H4 checkpoint sits in this
+/// turn's own new text and keeps advancing.
+fn assert_continuity(turn: usize, prev: &[u32], r: &Json, prev_snap: u64) -> u64 {
+    let fed = num(r, "/timings/cache_n") + num(r, "/timings/prompt_n");
+    assert_eq!(
+        num(r, "/timings/cache_n"),
+        prev.len() as u64,
+        "turn {turn}: the whole previous turn is reused, not an older prefix: {r}"
+    );
+    assert_eq!(
+        fed,
+        num(r, "/usage/prompt_tokens"),
+        "turn {turn}: reused prefix plus new tokens is the whole prompt: {r}"
+    );
+    assert_eq!(
+        num(r, "/usage/prompt_tokens_details/cached_tokens"),
+        num(r, "/timings/cache_n"),
+        "turn {turn}: the usage field carries the same cache read: {r}"
+    );
+    let cache = num(r, "/timings/cache_n");
+    let snap = num(r, "/timings/snap_pos");
+    assert_eq!(
+        (snap - cache) % 16,
+        0,
+        "turn {turn}: the checkpoint is on this request's ubatch grid: {r}"
+    );
+    assert!(
+        snap > cache && snap <= fed,
+        "turn {turn}: the checkpoint is in this turn's new text: {r}"
+    );
+    assert!(
+        snap > prev_snap,
+        "turn {turn}: the checkpoint moved forward: {r}"
+    );
+    snap
+}
+
+/// #2255: four isolated foreground turns on one live session with one template. Each turn reuses
+/// the whole prompt *and* reply of the turn right before it, the earlier replies come back from
+/// their ECHO records without a repair, and the cache read the engine reports is the same one the
+/// OpenAI usage field carries. One deliberate divergence (an edited earlier reply) is reported with
+/// its cause and reuses only what is before the edit.
+///
+/// Model-free (stub engine, synthetic tokenizer, the fixture template): it proves the request
+/// wire — append-only prompts, adjacent reuse and the reported fields. Whether a real engine and
+/// provider reuse the tokens is a live check, not this test.
+#[tokio::test(flavor = "multi_thread")]
+async fn continuity_four_turns_reuse_the_previous_prompt() {
+    let tok = synth_tokenizer();
+    let replies = [
+        "Hello. How can I help?",
+        "The answer is 4.",
+        "Saved.",
+        "Goodbye.",
+    ];
+    let users = [
+        "Please start by describing the plan in a few short sentences for this test.",
+        "Now explain what two plus two is, in one plain sentence, for the same test.",
+        "Save the three fixture files we described earlier, then confirm the save.",
+        "Thanks; please finish with a short goodbye sentence for this test.",
+    ];
+    let s = st_slots(
+        replies.iter().map(|r| tok.encode(r, false, true)).collect(),
+        false,
+        8,
+    );
+    let mut msgs = json!([{"role": "system", "content": SYS}]);
+    let mut prev: Vec<u32> = Vec::new();
+    let mut prev_snap = 0u64;
+    for (i, (reply, text)) in replies.iter().copied().zip(users).enumerate() {
+        say(&mut msgs, "user", text);
+        let r = continuity_turn(&s, &msgs, None).await;
+        assert_eq!(
+            r["choices"][0]["message"]["content"],
+            reply,
+            "turn {}",
+            i + 1
+        );
+        if i == 0 {
+            // the cold first turn: nothing to reuse, no assistant history (the plain llama-server
+            // timings shape), the checkpoint in its own message
+            assert_eq!(num(&r, "/timings/cache_n"), 0, "{r}");
+            assert!(
+                r["timings"].get("echo_n").is_none(),
+                "no assistant history: {r}"
+            );
+            prev_snap = assert_continuity(1, &[], &r, prev_snap);
+        } else {
+            prev_snap = assert_continuity(i + 1, &prev, &r, prev_snap);
+            assert_eq!(
+                num(&r, "/timings/echo_n"),
+                i as u64,
+                "turn {}: one ECHO block per earlier reply",
+                i + 1
+            );
+            assert_eq!(
+                num(&r, "/timings/echo_fixed"),
+                0,
+                "turn {}: the render reproduces every record, nothing repaired: {r}",
+                i + 1
+            );
+            assert!(
+                r["timings"]["roundtrip_miss"].is_null(),
+                "turn {}: {r}",
+                i + 1
+            );
+        }
+        prev = kv(&s);
+        say(&mut msgs, "assistant", reply);
+    }
+    // one deliberate divergence: the client edits the first reply, so the state cannot continue
+    // there. The miss names the cause; the reused prefix stops at the edit.
+    let mut edited = msgs.clone();
+    edited[2]["content"] = json!("Hello there. How can I help?");
+    say(&mut edited, "user", "one more");
+    let r = continuity_turn(&s, &edited, None).await;
+    assert_eq!(r["timings"]["echo_miss_class"], "content-mismatch", "{r}");
+    assert_eq!(num(&r, "/timings/echo_n"), 0, "no reply is spliced: {r}");
+    let opener = tok.encode("<|im_start|>assistant\n", false, true);
+    let at = prev
+        .windows(opener.len())
+        .position(|w| w == &opener[..])
+        .expect("the first reply follows the first opener");
+    let cache = num(&r, "/timings/cache_n") as usize;
+    assert!(cache < prev.len(), "the reuse stops at the edit: {r}");
+    // the tokens this request fed (no splice: every history turn is a miss), and where they
+    // first differ from the live state. The divergence is the edited reply's own text: past the
+    // first opener and its framed assistant turn, inside the reply, and at nothing before it.
+    let tk = post(
+        &s,
+        "/apply-template",
+        json!({"messages": edited, "chat_template_kwargs": {"enable_thinking": false, "preserve_thinking": true}}),
+    )
+    .await;
+    let fed = tok.encode(tk["prompt"].as_str().unwrap(), true, true);
+    assert_eq!(
+        fed.len() as u64,
+        num(&r, "/usage/prompt_tokens"),
+        "the render is the prompt this request fed: {r}"
+    );
+    let div = prev.iter().zip(&fed).take_while(|(a, b)| a == b).count();
+    // the framed turn before the reply's text: the opener, then the empty think block; the reuse
+    // must run past both into the reply itself (it stops at its first changed character)
+    let think = tok.encode(" think\n\n\n\n", false, true).len();
+    assert!(
+        div > at + opener.len() + think,
+        "the reuse runs into the edited reply: divergence {div}, reply text from {}: {r}",
+        at + opener.len() + think
+    );
+    let at_div = |t: &[u32]| String::from_utf8_lossy(&tok.piece(t[div], true)).into_owned();
+    assert_eq!(
+        at_div(&prev),
+        ".",
+        "the divergence is the first reply's sentence end: {r}"
+    );
+    assert_eq!(
+        at_div(&fed),
+        " ",
+        "the edited reply continues after it: {r}"
+    );
+    assert!(
+        cache <= div && div - cache < 16,
+        "the state goes back to the closest checkpoint at the divergence {div}, got {cache}: {r}"
+    );
+}
+
+/// #2255, the tool continuation as a separate case: a tool call and its result in the middle of
+/// the conversation, then a plain turn. The same adjacent reuse holds across the call and the
+/// result, and the call comes back from its ECHO record instead of a re-render.
+#[tokio::test(flavor = "multi_thread")]
+async fn continuity_tool_turn_keeps_the_previous_prompt() {
+    let tok = synth_tokenizer();
+    let tools: Json = serde_json::from_str(TOOLS).unwrap();
+    let call = "I'll look.\n\n<tool_call>\n<function=read_file>\n<parameter=path>\n/p/x\n</parameter>\n<parameter=limit>\n20\n</parameter>\n</function>\n</tool_call>";
+    let s = st_slots(
+        vec![
+            tok.encode(call, false, true),
+            tok.encode("Read.", false, true),
+            tok.encode("Done.", false, true),
+            tok.encode("More.", false, true),
+        ],
+        false,
+        8,
+    );
+    let mut msgs = json!([
+        {"role": "system", "content": SYS},
+        {"role": "user", "content": "Read the file at /p/x and tell me what it holds, in the same short style as before."}
+    ]);
+    let r = continuity_turn(&s, &msgs, Some(&tools)).await;
+    assert_eq!(r["choices"][0]["message"]["content"], "I'll look.");
+    assert_eq!(r["choices"][0]["finish_reason"], "tool_calls");
+    assert!(r["timings"].get("echo_n").is_none(), "first turn: {r}");
+    let prev = kv(&s);
+    let prev_snap = num(&r, "/timings/snap_pos");
+    // the call goes back exactly as the client received it, with the result
+    let call_msg = r["choices"][0]["message"].clone();
+    let id = call_msg["tool_calls"][0]["id"].clone();
+    msgs.as_array_mut().unwrap().push(call_msg);
+    msgs.as_array_mut().unwrap().push(json!({
+        "role": "tool", "tool_call_id": id,
+        "content": "The file holds a plan: write the fixture, then run the hosted checks for this change."
+    }));
+    let r = continuity_turn(&s, &msgs, Some(&tools)).await;
+    assert_eq!(r["choices"][0]["message"]["content"], "Read.");
+    let prev_snap = assert_continuity(2, &prev, &r, prev_snap);
+    assert_eq!(num(&r, "/timings/echo_n"), 1, "the call is spliced: {r}");
+    let prev = kv(&s);
+    // a plain turn after the tool turn
+    say(&mut msgs, "assistant", "Read.");
+    say(
+        &mut msgs,
+        "user",
+        "Thanks. Now summarise the plan in a short paragraph for this test.",
+    );
+    let r = continuity_turn(&s, &msgs, Some(&tools)).await;
+    assert_eq!(r["choices"][0]["message"]["content"], "Done.");
+    let prev_snap = assert_continuity(3, &prev, &r, prev_snap);
+    assert_eq!(
+        num(&r, "/timings/echo_n"),
+        2,
+        "call and answer spliced: {r}"
+    );
+    let prev = kv(&s);
+    // one more plain turn, still adjacent
+    say(&mut msgs, "assistant", "Done.");
+    say(
+        &mut msgs,
+        "user",
+        "One more short line to finish the conversation for this test.",
+    );
+    let r = continuity_turn(&s, &msgs, Some(&tools)).await;
+    assert_eq!(r["choices"][0]["message"]["content"], "More.");
+    let _ = assert_continuity(4, &prev, &r, prev_snap);
+    assert_eq!(num(&r, "/timings/echo_n"), 3, "every turn spliced: {r}");
 }
