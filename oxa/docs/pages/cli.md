@@ -46,9 +46,9 @@ Print, JSON and RPC runs write exactly one terminal JSON result on standard erro
 
 The `outcome` is `done`, `nothing_to_do`, `blocked`, `failed` or `interrupted`. `error_class` is a stable error code (for example `engine_http`, `stream_broken`, `done_checks_failed` or `output_limit`), or `null` for successful and no-op runs. Diagnostics remain human-readable; callers should use the result and exit code instead of matching their wording.
 
-The same record also carries `session_id`, `requests`, `turns`, `tokens`, `usage_scope`, `web_lookups` (the number of `web_search` calls), `files_changed` and `files_changed_evidence`. The session id is the current saved session, or `null` for an ephemeral/unopened session. Request and token counters cover engine calls observed in this invocation (`usage_scope: "process"`), including discarded replies, summaries and prefills; resuming does not recount saved usage. `turns` counts attempted chat/subagent calls, including retries, and excludes summary/prefill calls. Child processes report their own usage separately.
+The same record also carries `session_id`, `requests`, `turns`, `tokens`, `usage_scope`, `web_lookups` (the number of `web_search` calls), `files_changed`, `files_changed_evidence`, `files_changed_extra` and `files_changed_allowed`. The session id is the current saved session, or `null` for an ephemeral/unopened session. Request and token counters cover engine calls observed in this invocation (`usage_scope: "process"`), including discarded replies, summaries and prefills; resuming does not recount saved usage. `turns` counts attempted chat/subagent calls, including retries, and excludes summary/prefill calls. Child processes report their own usage separately.
 
-`tokens` has `prompt`, `completion`, `cached`, `complete` and `unreported_requests`. Sums are over reported usage; missing usage makes them explicit lower bounds (`complete: false`), and an omitted cache count remains `null`. An in-flight request at shutdown is incomplete. Before a session opens, counters are `null` rather than a claim of zero work. `files_changed` is `null` with evidence `"unavailable"`: this worker record has no checked filesystem/commit diff. A successful tool call or model statement does not supply that evidence; the runner reports verified worktree/commit evidence separately.
+`tokens` has `prompt`, `completion`, `cached`, `complete` and `unreported_requests`. Sums are over reported usage; missing usage makes them explicit lower bounds (`complete: false`), and an omitted cache count remains `null`. An in-flight request at shutdown is incomplete. Before a session opens, counters are `null` rather than a claim of zero work. `files_changed` is `null` with evidence `"unavailable"`: this worker record has no checked filesystem/commit diff. A successful tool call or model statement does not supply that evidence; the runner reports verified worktree/commit evidence separately. With `--allowed-changed-files <list>`, the record instead reports `files_changed` as the tool-observed list of files the run's successful `edit`/`write` calls named (evidence `"tool-observed"`), `files_changed_allowed` as the supplied set, and `files_changed_extra` as the observed files outside it. Both sides are resolved against the working directory and compared as workspace-relative names. This is acceptance evidence only: a shell rewrite names no file here, and nothing is refused because of it.
 
 Every saved CLI session has a small atomic `<session>.status.json` sibling, private like the session file. `oxa status <session-id|session-file> [--session-dir <dir>]` reads it without contacting an engine. JSON mode's session header and RPC `get_state` expose its `statusFile` path. `--no-session` creates no status file.
 
@@ -167,6 +167,14 @@ When two successive saved chats have known frozen system text and tool lists, th
 
 The scan reads at most 256 MiB or 200,000 entries from the file as it existed at open. Lines over 2 MiB are skipped; an unreadable line or torn tail also makes the report partial (`scan_complete: false`). A complete scan still only describes saved records. If id lookup reaches its limit, give the file path instead.
 
+### Foreground wire evidence
+
+Run `oxa --wire-evidence` in an owner terminal, then exit normally to see a small JSON report on stderr. It is off by default, cannot be turned on in settings, and does not follow `/new`, `/resume`, or a model switch. Print, JSON, RPC and delegated agent runs cannot arm it.
+
+The report compares ordered messages **at oxa's transport handoff**, after hooks and image shaping, with separate system-text and tool-list equality flags. `common_leading_messages` counts consecutive matching items from the beginning. Request and attempt numbers start at one and are local to this run; an oxa retry within the same request is another attempt. A failed or cancelled attempt, an intervening non-chat handoff, or an incomplete snapshot leaves a gap. A missing match or usage field is `null`, not zero. A rebase marker reports an observed transcript rebase, not its cause or its effect on caching.
+
+The capture keeps one prior fingerprint snapshot, allows up to 4,096 messages and 4 MiB of fingerprint input per snapshot, and stops collecting after 64 rows. It never limits chat. The report contains no message text, tool data, token IDs, fingerprints or session, model or request identifiers. It is not added to saved sessions, hook events, or `oxa cache` output. Provider serialization, engine tokens, provider or engine retries, and cache ownership are outside this observation. Neither a matching wire prefix nor a cached-token count proves which request was reused or why a cache missed.
+
 ### Local models
 
 `oxa local add <model.gguf>` lets the owner wire one local model into the native local engine. Run it outside an agent tool. It needs no hand-written limits:
@@ -255,6 +263,8 @@ $ oxa memory rm <name>
 | `--max-time <seconds>` | softly limit a run, then allow one final wrap-up turn |
 | `--max-tokens <N>` | softly limit new prompt + output tokens; cached tokens are free |
 | `--usage-log <file>` | write one JSONL record per model call (tokens, duration, model, turn); owner-only file, no message text |
+| `--wire-evidence` | show [adjacent wire observations](#foreground-wire-evidence) on exit; owner terminal only |
+| `--allowed-changed-files <list>` | comma-separated allowed changed-file set; the result reports tool-observed extra files against it (acceptance evidence, never a refusal) |
 | `--stall-timeout <seconds>` | flag a session as stalled after this long without progress; a signal that never cancels the run |
 | `--export <input> [output]` | export a session file to HTML and exit |
 

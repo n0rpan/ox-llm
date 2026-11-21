@@ -60,13 +60,14 @@ A read-only session: `oxa --tools read,grep,find,ls`. In plan mode the write too
 
 ## Background parts and jobs
 
-A command with a part that runs detached (an `&` outside quotes, anywhere in the command, or `nohup`, `setsid`, `disown`) gets a note in its result: that part's output and exit status are not in the result, a `cd` before the `&` applies only to the backgrounded part, and what happens to the process. In the OS sandbox every process of the call ends with the call; without it (yolo, or no sandbox) it keeps running and oxa does not track it. The call is marked `detached` and never counts as a passing check. To run something you can read, wait for or stop, use `bash` with `background: true` and then `bash` with `job` (and `wait_s`, or `kill`), or `wait` with `until` `job_done`.
+A command with a part that runs detached (an `&` outside quotes, anywhere in the command, or `nohup`, `setsid`, `disown`) gets a note in its result: that part's output and exit status are not in the result, a `cd` before the `&` applies only to the backgrounded part, and what happens to the process. In the OS sandbox every process of the call ends with the call; without it (yolo, or no sandbox) it keeps running and oxa does not track it. The call is marked `detached` and never counts as a passing check. To run something you can read, wait for or stop, use `bash` with `background: true` and then `bash` with `job` (and `wait_s`, or `kill`), or `wait` with `until` `job_done`. A timeout handoff names the job id, the typed `job` forms to read, wait for or stop it, and says the id is not a shell command.
 
 ## Before a run ends
 
 One decision runs before a run or goal ends. Each open fact gets at most one extra turn per run, then the run ends with a warning and a record; nothing blocks.
 
-- A run that changed files (a file tool, or a `bash` call that changed the work folder) and ran no passing check afterwards is asked to run the project's check, or to say in one line why none exists (`oxa.done.proveIt`, off by default). A read-only run is never asked. The `oxa_result` record carries `proved` (`true`, `false`, or `null` for a read-only run). The work-folder fingerprint that sees `bash` edits is now also taken when only this setting is on.
+- A run that changed files (a file tool, or a `bash` call that changed the work folder) and ran no passing check afterwards is asked to run the project's check, or to say in one line why none exists (`oxa.done.proveIt`, off by default). A read-only run is never asked. The `oxa_result` record carries `proved` (`true`, `false`, or `null` for a read-only run).
+- A run that read an image file (`read` on a PNG, JPEG, GIF or WebP, including the placeholder line a model without image input gets) and changed files, with no check run since the image was read, is asked for one concrete independent cross-check of its reading: re-render the result and diff it against the source image, compare against an independent reader such as OCR, or test an invariant that must hold — or to say in the final message which image-derived claim stays unverified and why (`oxa.done.imageCrossCheck`, on by default, `false` opts out, user settings only). A run that read no image, or changed no file, is never asked. The record carries `image_unverified`. The work-folder fingerprint that sees `bash` edits is taken when either `proveIt` or this setting is on.
 - A goal that completes, or a headless run that ends, while background jobs still run is asked to wait for them or stop them (`oxa.done.waitForJobs`); a headless run's jobs stop when it ends. An interactive chat is never asked, so a dev server costs no turn. The record carries `jobs_running`.
 - When the task names the tool its own acceptance runs through (a line that calls it the grader, the
   harness, the verifier or the acceptance, or puts a version beside the tool word, as in `Python 3.12`
@@ -93,7 +94,7 @@ At most two repairs can follow each other. A valid tool call resets the count. T
 
 ## Repeated calls
 
-A model can get stuck making the same tool call again and again. When a call (any tool: `read`, `bash`, `grep`, `find`, `ls`, `web_search`, MCP and extension tools) has returned the same result three times in a row, with the same arguments and nothing else in between, oxa still runs it but sends a short note instead of the result: the result is unchanged and already in the conversation, change approach. Failing results count too. If the repeats go on, the second note is the last before a warning: the next identical call adds one warning to the transcript, shown and kept in the session, with the remedy (send a more specific instruction, or switch model with `/model`) — and the run continues, so a later reply can still finish the task. An `edit` or `write` that failed changed nothing, so it does not end the run: `read`, failing `edit`, `read`, failing `edit` is caught like the plain repeat. A re-run after a successful edit or any other call, a command whose output changed (a test after a fix, a polling command), or the same call after a new prompt is never affected.
+A model can get stuck making the same tool call again and again. When a call (any tool: `read`, `bash`, `grep`, `find`, `ls`, `web_search`, MCP and extension tools) has returned the same result three times in a row, with the same arguments and nothing else in between, oxa still runs it but sends a short note instead of the result: the result is unchanged and already in the conversation, change approach. Failing results count too. The first note of a loop carries the full suggestion and the attempt number; each later note is shorter, counts up the attempt and points back to that suggestion, so the loop does not pay for the same paragraph again. If the repeats go on, the second note is the last before a warning: the next identical call adds one warning to the transcript, shown and kept in the session, with the remedy (send a more specific instruction, or switch model with `/model`) — and the run continues, so a later reply can still finish the task. An `edit` or `write` that failed changed nothing, so it does not end the run: `read`, failing `edit`, `read`, failing `edit` is caught like the plain repeat. A re-run after a successful edit or any other call, a command whose output changed (a test after a fix, a polling command), or the same call after a new prompt is never affected.
 
 `oxa.toolRepeatGuard: false` turns this off.
 
@@ -144,6 +145,28 @@ Only lead sessions declare `ask`; subagent workers keep their existing tool pref
 `--exclude-tools ask`, an explicit tool allowlist, and `--no-tools` can disable it.
 An answer or automatic recommendation never grants file, shell or network permissions:
 normal permission checks remain in force.
+
+## deliverable
+
+`deliverable` records and checks the file a request asks for: `{path}`. The model calls it
+with the output path the request names, again after writing the file, and once before it
+finishes. The check reads the same guarded file view as `read` and `write`: the private-path
+deny-list and the permission floor apply, and a symlink swapped after the permission check is
+refused.
+
+- The result is a fact, not a refusal: `present` with the size, `empty`, `missing`,
+  `not a regular file`, or `could not be checked`. A check that ran is never a tool error.
+- Only existence and size are checked. The result does not claim the content answers the
+  task: the model has to read the file for that.
+- At the end of the run (also after a wrap-up, an abort or a failure) the declared files are
+  checked once more and the run ends with a compact record: `verified-now`, `missing`, or
+  `unverified` with the reason, the time of the check and the view it used. A later write or a
+  restart makes the earlier record stale; the next run checks again.
+- At the run's limit the wrap-up message names a declared file that is not on disk, so the
+  last turn can still write it. The record is evidence only: it changes no exit code and does
+  not block a stop, and an unrelated run that declares nothing is unaffected.
+- Subagent workers do not declare it; a refused (private-path) call records nothing.
+  `--exclude-tools deliverable`, an explicit tool allowlist and `--no-tools` can disable it.
 
 ## subagent
 

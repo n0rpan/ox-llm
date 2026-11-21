@@ -218,6 +218,8 @@ pub struct Gate {
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
+    /// Unset unless the owner terminal armed this session. Never an event-bus observer.
+    pub(crate) wire_evidence: std::sync::OnceLock<crate::wire_evidence::WireEvidence>,
     /// The owner confirm broker of this session (`Session::enable_owner_confirm`).
     pub(crate) owner_confirm: Mutex<Option<Arc<crate::owner_confirm::OwnerConfirm>>>,
     pub in_flight: std::sync::atomic::AtomicBool,

@@ -37,6 +37,8 @@ pub(crate) struct DoneState {
     tree: Option<u64>,
     /// The "prove it" state of the run (B4a).
     pub(crate) proof: Proof,
+    /// The file deliverables the model declared in this run, oldest first (#2293 A).
+    deliverables: Vec<Deliverable>,
     /// T6: the tool the task's acceptance names ([`crate::think::declared_verifier`]) and when
     /// this run first ran it (`None`: no tool named, or never run).
     pub(crate) toolchain: Option<Toolchain>,
@@ -46,14 +48,22 @@ pub(crate) struct DoneState {
     /// Each finish fact gets one nudge turn per run ([`finish_decision`]).
     nudged_unproven: bool,
     nudged_jobs: bool,
+    nudged_image: bool,
     nudged_toolchain: bool,
+    /// The run consulted an image file (`read` on an image, placeholder included).
+    image_read: bool,
+    /// A check ran after the last image read. Before the image nudge only a recognizable
+    /// passing check counts; after it any successful command does ([`Self::note_proof`]).
+    image_checked: bool,
+    /// Distinct paths the run's successful `edit`/`write` calls named, in first-use order
+    /// (#2297). Tool-observed only; reported once at the end as acceptance evidence.
+    changed_paths: Vec<String>,
 }
-
 /// T6: the acceptance tool a task names, and the proof state when a bash call first ran it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Toolchain {
     pub(crate) tool: String,
-    /// The first run of the tool, as `proof.any_pass()` then. Acceptance evidence only when it is
+    /// The first run of the tool, as `proof.passed_at_all()` then. Acceptance evidence only when it is
     /// true (that call, or one after it, passed a check).
     first_use: Option<bool>,
 }
@@ -64,7 +74,7 @@ impl Toolchain {
     /// asked of a run that changed no file and ran no check (a read-only or failing run).
     pub(crate) fn unverified(&self, proof: &Proof) -> Option<&str> {
         let used = self.first_use.is_some_and(|checked| checked);
-        if used || !(proof.edited() || proof.any_pass()) {
+        if used || !(proof.edited() || proof.passed_at_all()) {
             return None;
         }
         Some(self.tool.as_str())
@@ -107,7 +117,7 @@ impl DoneState {
             if ran {
                 if first_use == Some(None) {
                     if let Some(state) = self.toolchain.as_mut() {
-                        state.first_use = Some(self.proof.any_pass());
+                        state.first_use = Some(self.proof.passed_at_all());
                     }
                 }
             } else if first_use == Some(None) && self.toolchain_tries.len() < TRIES_SHOWN {
@@ -167,6 +177,37 @@ fn one_line(text: &str, cap: usize) -> String {
     format!("{}…", &line[..cut])
 }
 
+/// #2293 A: how many declared file deliverables one run keeps; the oldest goes beyond this.
+const MAX_DELIVERABLES: usize = 8;
+/// #2293 A: the longest shown path a declaration records (the tool refuses a longer one).
+const MAX_DELIVERABLE_PATH: usize = 4096;
+
+/// #2293 A: one file the request asks for, declared by the model's `deliverable` call. Evidence
+/// only: a missing file is reported to the model, never refused, and changes no exit code.
+#[derive(Debug, Clone)]
+pub(crate) struct Deliverable {
+    /// The path as the model wrote it; the receipt shows this.
+    shown: String,
+    /// The guarded absolute location the declaring call checked.
+    abs: PathBuf,
+}
+
+impl Deliverable {
+    /// A fresh look at the same location: the end-of-run receipt never repeats the declaring
+    /// call's observation, which a later write or restart has made stale.
+    fn observe(&self) -> (oxa_tools::DeliverableState, Option<u64>) {
+        oxa_tools::observe_deliverable(&self.abs)
+    }
+}
+
+/// #2293 A: the run's completion record for its declared files.
+pub(crate) struct Evidence {
+    /// One line per deliverable, with the view and the check's time.
+    pub(crate) text: String,
+    /// At least one declared file is not on disk: the notice is a warning, not information.
+    pub(crate) incomplete: bool,
+}
+
 /// Whether the run changed files and no check has passed since the last change (B4a). Only
 /// tracks the state: nothing is asked from here.
 #[derive(Default)]
@@ -176,8 +217,8 @@ pub(crate) struct Proof {
     edited: bool,
     /// A passing check ran after the last change.
     checked: bool,
-    /// Any passing check ran in this run ([`Proof::checked`]).
-    ran: bool,
+    /// Any passing check ran in this run ([`Proof::passed_at_all`]).
+    passed_any: bool,
 }
 
 impl Proof {
@@ -188,12 +229,12 @@ impl Proof {
 
     fn passed(&mut self) {
         self.checked = true;
-        self.ran = true;
+        self.passed_any = true;
     }
 
     /// Any passing check ran in this run (T6 `Toolchain::unverified`).
-    fn any_pass(&self) -> bool {
-        self.ran
+    pub(crate) fn passed_at_all(&self) -> bool {
+        self.passed_any
     }
 
     /// A file changed in this run (FH-N2: a closing question after edits is not an open task).
@@ -368,19 +409,43 @@ impl DoneState {
                 continue;
             }
             match res.tool_name.as_str() {
-                "edit" | "write" => self.proof.changed(),
+                "edit" | "write" => {
+                    self.proof.changed();
+                    if let Some(path) = serde_json::from_str::<serde_json::Value>(&call.args_raw)
+                        .ok()
+                        .and_then(|args| args.get("path").and_then(|p| p.as_str()).map(str::to_owned))
+                    {
+                        if !self.changed_paths.contains(&path) {
+                            self.changed_paths.push(path);
+                        }
+                    }
+                }
+                "read" => {
+                    // An image read opens the cross-check fact again, even after a check.
+                    if res.ui["imageRead"] == true || !res.msg.images.is_empty() {
+                        self.image_read = true;
+                        self.image_checked = false;
+                    }
+                }
+                "deliverable" => self.note_deliverable(&call.args_raw, &res.ui),
                 "bash" => {
                     let args = serde_json::from_str::<serde_json::Value>(&call.args_raw).ok();
                     let exited_zero = res.ui["exit"].as_i64() == Some(0) && res.ui["timedOut"] != true;
                     // A detached part ran without its output or exit status being seen.
                     let detached = res.ui["detached"] == true;
-                    if exited_zero
-                        && !detached
-                        && args
+                    if exited_zero && !detached {
+                        let is_check = args
                             .as_ref()
-                            .is_some_and(|args| crate::think::executed_check(&call.name, args).is_some())
-                    {
-                        self.proof.passed();
+                            .is_some_and(|args| crate::think::executed_check(&call.name, args).is_some());
+                        if is_check {
+                            self.proof.passed();
+                        }
+                        // After the one image nudge, any successful command counts as the
+                        // cross-check the model was asked to run: a render-and-diff or an
+                        // invariant probe is not a recognizable test runner.
+                        if is_check || self.nudged_image {
+                            self.image_checked = true;
+                        }
                     }
                 }
                 _ => {}
@@ -390,16 +455,102 @@ impl DoneState {
 
     /// Start of a run: remember the tree, so a later `bash` change can be told apart.
     pub(crate) fn begin(&mut self, st: &SessionState) {
-        // Prove-it needs the fingerprint too, so a bash-made edit counts as a change.
-        if !st.settings.done_commands().is_empty() || prove_it(st) {
+        // Prove-it and the image cross-check need the fingerprint too, so a bash-made edit
+        // counts as a change.
+        if !st.settings.done_commands().is_empty() || prove_it(st) || image_cross_check(st) {
             self.tree = tree_fingerprint(&st.cwd);
         }
+    }
+
+    /// A successful `deliverable` call: remember the file it named and what it found. The
+    /// typed `ui` of the call is the record; a result without it (an older session, a forged
+    /// text) declares nothing. A later call for the same location replaces the earlier one.
+    fn note_deliverable(&mut self, args_raw: &str, ui: &serde_json::Value) {
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(args_raw) else {
+            return;
+        };
+        let (Some(shown), Some(abs)) = (args["path"].as_str(), ui["abs"].as_str()) else {
+            return;
+        };
+        let declared = ui["deliverable"] == true
+            && ui["state"]
+                .as_str()
+                .and_then(oxa_tools::DeliverableState::parse)
+                .is_some();
+        if !declared || shown.len() > MAX_DELIVERABLE_PATH {
+            return;
+        }
+        let abs = PathBuf::from(abs);
+        let item = Deliverable {
+            shown: shown.to_string(),
+            abs,
+        };
+        self.deliverables.retain(|d| d.abs != item.abs);
+        self.deliverables.push(item);
+        if self.deliverables.len() > MAX_DELIVERABLES {
+            self.deliverables.remove(0);
+        }
+    }
+
+    /// The completion record of the run's declared files, or `None` when it declared none (an
+    /// unrelated task reads nothing and costs nothing here). Each file is looked at once more,
+    /// now: `verified-now`, `missing`, or `unverified` with the reason. Never a gate.
+    pub(crate) fn evidence(&self) -> Option<Evidence> {
+        if self.deliverables.is_empty() {
+            return None;
+        }
+        let check = oxa_session::local_time(now_secs())
+            .map(|t| format!("{} {} {}", t.date, t.hm, t.zone_label()))
+            .unwrap_or_else(|| now_secs().to_string());
+        let mut lines = Vec::with_capacity(self.deliverables.len());
+        let mut incomplete = false;
+        for d in &self.deliverables {
+            let (state, bytes) = d.observe();
+            let bytes = bytes.unwrap_or(0);
+            let (verdict, detail) = match state {
+                oxa_tools::DeliverableState::Present => ("verified-now", format!("present, {bytes} bytes")),
+                oxa_tools::DeliverableState::Empty => {
+                    incomplete = true;
+                    ("missing", "present but empty".to_string())
+                }
+                oxa_tools::DeliverableState::Missing => {
+                    incomplete = true;
+                    ("missing", "not on disk".to_string())
+                }
+                oxa_tools::DeliverableState::NotFile => {
+                    incomplete = true;
+                    ("missing", "not a regular file".to_string())
+                }
+                oxa_tools::DeliverableState::Unverified => {
+                    incomplete = true;
+                    ("unverified", "could not be checked now".to_string())
+                }
+            };
+            lines.push(format!("{}: {verdict}, {detail}", d.shown));
+        }
+        let mut text = format!("Deliverable evidence (checked {check}, run folder):\n");
+        for line in &lines {
+            text.push_str("  ");
+            text.push_str(line);
+            text.push('\n');
+        }
+        if incomplete {
+            text.push_str(
+                "A declared file is not usable: write it before you finish, and say so if it cannot be.\n",
+            );
+        } else {
+            text.push_str("Existence and size only; the content was checked by the declaring call.\n");
+        }
+        Some(Evidence {
+            text: text.trim_end().to_string(),
+            incomplete,
+        })
     }
 
     /// After a batch with any tool that may change files (`bash`, sub-agent, MCP and extension
     /// tools; not the read-only built-ins): a changed work folder counts as an edit.
     pub(crate) fn note_bash(&mut self, st: &SessionState, results: &[CallResult]) {
-        const READ_ONLY: [&str; 4] = ["read", "grep", "find", "ls"];
+        const READ_ONLY: [&str; 5] = ["read", "grep", "find", "ls", "deliverable"];
         let file_edit = results
             .iter()
             .any(|r| !r.is_error && (r.tool_name == "edit" || r.tool_name == "write"));
@@ -421,11 +572,81 @@ impl DoneState {
     }
 }
 
+/// #2293 A: the wrap-up message with the declared files that are not on disk. A last turn is
+/// where writing a usable answer still helps: the advice is in the tool's own result while the
+/// run has time, and here at the limit. Nothing is added when every declared file is present,
+/// so an ordinary wrap-up reads as before.
+pub(crate) fn wrap_up_message(state: &DoneState) -> String {
+    let mut missing: Vec<String> = Vec::new();
+    for d in &state.deliverables {
+        if d.observe().0 != oxa_tools::DeliverableState::Present {
+            missing.push(d.shown.clone());
+        }
+    }
+    let mut text = crate::prompt::WRAP_UP.to_string();
+    if missing.is_empty() {
+        return text;
+    }
+    let extra = missing.len().saturating_sub(MAX_WRAP_UP_NAMES);
+    missing.truncate(MAX_WRAP_UP_NAMES);
+    let mut names = missing.join(", ");
+    if extra > 0 {
+        names.push_str(&format!(" and {extra} more"));
+    }
+    text.push_str(&format!(
+        "\n\nA file deliverable is not on disk yet or is empty: {names}. Write the best answer you have with the write tool now, then check it once with the deliverable tool."
+    ));
+    text
+}
+
+/// #2293 A: how many deliverable names the wrap-up message lists before `and N more`.
+const MAX_WRAP_UP_NAMES: usize = 4;
+
+/// #2293 A: show the run's completion record once, at the end of the run (it also covers a
+/// wrapped-up, aborted or failed run). A missing declaration is never invented: only the typed
+/// `ui` of a `deliverable` call records one. A store failure loses the entry, not the notice.
+pub(crate) fn report_deliverables(st: &mut SessionState, state: &DoneState, sink: &mut dyn EventSink) {
+    let Some(evidence) = state.evidence() else {
+        return;
+    };
+    let _ = crate::agent_loop::persist(
+        st,
+        EntryBody::Shown {
+            text: evidence.text.clone(),
+            why: shown_why::NOTICE,
+        },
+        sink,
+    );
+    sink.emit(&AgentEvent::Notice {
+        level: if evidence.incomplete {
+            Level::Warning
+        } else {
+            Level::Info
+        },
+        text: evidence.text,
+    });
+}
+
+/// Seconds since the epoch, for the receipt's check time (an observation, not a guarantee).
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// `oxa.done.proveIt` (user settings, default off until the extra turn is the default for the
 /// scripted suites too): a run that changed files and ran no passing check afterwards gets one
 /// turn asking for proof.
 fn prove_it(st: &SessionState) -> bool {
     st.settings.user_bool("oxa.done.proveIt", false)
+}
+
+/// `oxa.done.imageCrossCheck` (user settings, default on): a run that read an image file and
+/// changed files, with no check since the image was read, gets one turn asking for an
+/// independent cross-check of its reading, or for the unverified claim to be named.
+fn image_cross_check(st: &SessionState) -> bool {
+    st.settings.user_bool("oxa.done.imageCrossCheck", true)
 }
 
 /// What is still open when a run or goal is about to end.
@@ -437,6 +658,8 @@ pub(crate) enum FinishFact {
     JobsRunning(Vec<String>),
     /// T6: the tool the task's acceptance names never ran (tools tried).
     ToolchainUnused(String, Vec<String>),
+    /// An image was read, files changed, and no check ran since the image was read.
+    ImageUnverified,
 }
 
 pub(crate) enum FinishDecision {
@@ -488,6 +711,9 @@ pub(crate) fn finish_decision(
     if prove_it(st) && state.proof.unproven() {
         facts.push(FinishFact::Unproven);
     }
+    if image_cross_check(st) && state.image_read && state.proof.edited() && !state.image_checked {
+        facts.push(FinishFact::ImageUnverified);
+    }
     let headless = crate::is_headless();
     if st.settings.user_bool("oxa.done.waitForJobs", true) && (goal_completion || headless) {
         let running: Vec<String> = st
@@ -517,6 +743,10 @@ pub(crate) fn finish_decision(
             FinishFact::JobsRunning(ids) if !state.nudged_jobs => {
                 state.nudged_jobs = true;
                 return FinishDecision::Nudge(crate::prompt::jobs_nudge(ids, headless));
+            }
+            FinishFact::ImageUnverified if !state.nudged_image => {
+                state.nudged_image = true;
+                return FinishDecision::Nudge(crate::prompt::IMAGE_CROSS_CHECK_NUDGE.to_string());
             }
             _ => {}
         }
@@ -557,6 +787,7 @@ pub(crate) fn record_end(
         .as_ref()
         .and_then(|t| t.unverified(&state.proof))
         .map(str::to_string);
+    st.stats.image_unverified = false;
     for fact in unresolved {
         let text = match fact {
             FinishFact::Unproven => "Run ended without a passing check after its last edit".to_string(),
@@ -569,6 +800,10 @@ pub(crate) fn record_end(
                  ({tool} never ran): the checks that ran are a substitute, not evidence for \
                  the task's own call path"
             ),
+            FinishFact::ImageUnverified => {
+                st.stats.image_unverified = true;
+                "Run ended without an independent check of what it read from an image".to_string()
+            }
         };
         crate::agent_loop::persist(
             st,
@@ -582,6 +817,14 @@ pub(crate) fn record_end(
             level: Level::Warning,
             text,
         });
+    }
+    if !state.changed_paths.is_empty() {
+        crate::progress::notify(
+            st,
+            crate::Progress::FilesChanged {
+                paths: &state.changed_paths,
+            },
+        );
     }
     Ok(())
 }
@@ -821,6 +1064,7 @@ fn tail(s: &str) -> String {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    // `declaration` builds a test tool result; the crate's fakes are a dev-dependency.
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -1170,5 +1414,262 @@ mod tests {
         state.note_proof(&[call], &[result]);
 
         assert!(state.proof.unproven());
+    }
+
+    fn bash_call(id: &str, command: &str, exit: i64) -> (ToolCall, CallResult) {
+        (
+            ToolCall {
+                id: id.to_string(),
+                name: "bash".to_string(),
+                args_raw: serde_json::json!({ "command": command }).to_string(),
+            },
+            CallResult {
+                msg: oxa_proto::WireMsg::tool_result(id, ""),
+                tool_name: "bash".to_string(),
+                is_error: false,
+                ui: serde_json::json!({ "exit": exit, "timedOut": false }),
+                warn: false,
+            },
+        )
+    }
+
+    fn image_read_call(id: &str, ui: serde_json::Value, with_part: bool) -> (ToolCall, CallResult) {
+        let mut msg = oxa_proto::WireMsg::tool_result(id, "[image board.png 8x8]");
+        if with_part {
+            msg.images = vec![oxa_proto::WireImage {
+                mime: "image/png".to_string(),
+                base64: "eA==".to_string(),
+            }];
+        }
+        (
+            ToolCall {
+                id: id.to_string(),
+                name: "read".to_string(),
+                args_raw: serde_json::json!({ "path": "board.png" }).to_string(),
+            },
+            CallResult {
+                msg,
+                tool_name: "read".to_string(),
+                is_error: false,
+                ui,
+                warn: false,
+            },
+        )
+    }
+
+    #[test]
+    fn an_image_read_opens_the_cross_check_fact_and_a_passing_check_settles_it() {
+        let mut state = DoneState::default();
+        let (read, res) = image_read_call("c1", serde_json::json!({ "imageRead": true }), false);
+        state.note_proof(&[read], &[res]);
+        assert!(state.image_read);
+        assert!(!state.image_checked);
+        let (call, res) = bash_call("c2", "cargo test", 0);
+        state.note_proof(&[call], &[res]);
+        assert!(state.image_checked);
+    }
+
+    #[test]
+    fn an_image_part_counts_as_an_image_read_without_the_marker() {
+        let mut state = DoneState::default();
+        let (read, res) = image_read_call("c1", serde_json::Value::Null, true);
+        state.note_proof(&[read], &[res]);
+        assert!(state.image_read);
+        assert!(!state.image_checked);
+    }
+
+    #[test]
+    fn a_new_image_read_after_a_check_reopens_the_fact() {
+        let mut state = DoneState::default();
+        let (read, res) = image_read_call("c1", serde_json::json!({ "imageRead": true }), false);
+        state.note_proof(&[read], &[res]);
+        let (call, res) = bash_call("c2", "cargo test", 0);
+        state.note_proof(&[call], &[res]);
+        assert!(state.image_checked);
+        // Same batch, call order: the check ran before this read, so the fact stays open.
+        let (read2, res2) = image_read_call("c3", serde_json::json!({ "imageRead": true }), false);
+        state.note_proof(&[read2], &[res2]);
+        assert!(!state.image_checked);
+    }
+
+    #[test]
+    fn after_the_image_nudge_any_successful_command_settles_it() {
+        let mut state = DoneState {
+            nudged_image: true,
+            ..DoneState::default()
+        };
+        let (read, res) = image_read_call("c1", serde_json::json!({ "imageRead": true }), false);
+        state.note_proof(&[read], &[res]);
+        // A failed command is not a check.
+        let (call, res) = bash_call("c2", "render-diff board.png out.png", 1);
+        state.note_proof(&[call], &[res]);
+        assert!(!state.image_checked);
+        // A render-and-diff is not a recognizable test runner, but after the nudge the
+        // successful command counts as the cross-check the model was asked to run.
+        let (call, res) = bash_call("c3", "render-diff board.png out.png", 0);
+        state.note_proof(&[call], &[res]);
+        assert!(state.image_checked);
+    }
+
+    #[test]
+    fn before_the_nudge_a_plain_command_does_not_settle_the_image_fact() {
+        let mut state = DoneState::default();
+        let (read, res) = image_read_call("c1", serde_json::json!({ "imageRead": true }), false);
+        state.note_proof(&[read], &[res]);
+        let (call, res) = bash_call("c2", "echo done", 0);
+        state.note_proof(&[call], &[res]);
+        assert!(!state.image_checked);
+    }
+
+    /// A `deliverable` call's arguments and typed `ui`, as the tool writes them.
+    fn declaration(
+        path: &str,
+        state: &str,
+        bytes: Option<u64>,
+        env: &oxa_fake::TestEnv,
+    ) -> (ToolCall, CallResult) {
+        let abs = env.work().join(path);
+        let call = ToolCall {
+            id: "d1".to_string(),
+            name: "deliverable".to_string(),
+            args_raw: serde_json::json!({ "path": path }).to_string(),
+        };
+        let result = CallResult {
+            msg: oxa_proto::WireMsg::tool_result("d1", "Deliverable check"),
+            tool_name: "deliverable".to_string(),
+            is_error: false,
+            ui: serde_json::json!({
+                "deliverable": true,
+                "path": path,
+                "abs": abs.to_str().unwrap(),
+                "state": state,
+                "bytes": bytes,
+            }),
+            warn: false,
+        };
+        (call, result)
+    }
+
+    #[test]
+    fn a_declared_file_on_disk_is_verified_now_at_the_end_of_the_run() {
+        let env = oxa_fake::TestEnv::new();
+        env.write("work/move.txt", "e2e4\n");
+        let (call, result) = declaration("move.txt", "present", Some(5), &env);
+        let mut state = DoneState::default();
+        state.note_proof(&[call], &[result]);
+        let evidence = state.evidence().expect("a declaration is a record");
+        assert!(
+            evidence.text.contains("move.txt: verified-now, present, 5 bytes"),
+            "{}",
+            evidence.text
+        );
+        assert!(
+            evidence.text.contains("checked "),
+            "the receipt names its check time: {}",
+            evidence.text
+        );
+        assert!(!evidence.incomplete);
+    }
+
+    #[test]
+    fn a_file_gone_after_its_declaration_is_reported_missing_and_stays_out_of_the_gate() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.write("work/move.txt", "e2e4\n");
+        let (call, result) = declaration("move.txt", "present", Some(5), &env);
+        let mut state = DoneState::default();
+        state.note_proof(&[call], &[result]);
+        std::fs::remove_file(&path).unwrap();
+        let evidence = state.evidence().expect("the declaration stands");
+        assert!(
+            evidence.text.contains("move.txt: missing, not on disk"),
+            "{}",
+            evidence.text
+        );
+        assert!(
+            evidence.incomplete,
+            "a missing file is a warning, not information"
+        );
+    }
+
+    #[test]
+    fn a_write_and_a_check_of_one_file_is_one_record() {
+        let env = oxa_fake::TestEnv::new();
+        env.write("work/answer.txt", "");
+        let mut state = DoneState::default();
+        for _ in 0..2 {
+            let (call, result) = declaration("answer.txt", "empty", Some(0), &env);
+            state.note_proof(&[call], &[result]);
+        }
+        assert_eq!(state.deliverables.len(), 1);
+        let evidence = state.evidence().unwrap();
+        assert_eq!(
+            evidence.text.matches("answer.txt:").count(),
+            1,
+            "{}",
+            evidence.text
+        );
+        assert!(evidence.text.contains("present but empty"), "{}", evidence.text);
+    }
+
+    #[test]
+    fn a_run_that_declared_nothing_has_no_record_and_no_extra_read() {
+        let state = DoneState::default();
+        assert!(state.evidence().is_none());
+        assert_eq!(wrap_up_message(&state), crate::prompt::WRAP_UP);
+    }
+
+    #[test]
+    fn the_record_keeps_the_newest_eight_declarations() {
+        let env = oxa_fake::TestEnv::new();
+        for n in 0..10 {
+            env.write(&format!("work/f{n}.txt"), "x\n");
+        }
+        let mut state = DoneState::default();
+        for n in 0..10 {
+            let (call, result) = declaration(&format!("f{n}.txt"), "present", Some(2), &env);
+            state.note_proof(&[call], &[result]);
+        }
+        assert_eq!(state.deliverables.len(), MAX_DELIVERABLES);
+        let evidence = state.evidence().unwrap();
+        assert!(
+            !evidence.text.contains("f0.txt"),
+            "the oldest is dropped: {}",
+            evidence.text
+        );
+        assert!(evidence.text.contains("f9.txt"));
+    }
+
+    #[test]
+    fn only_the_tools_typed_record_declares_a_file() {
+        let env = oxa_fake::TestEnv::new();
+        env.write("work/move.txt", "e2e4\n");
+        let (call, mut result) = declaration("move.txt", "present", Some(5), &env);
+        // Text that looks like a receipt is not one, and an error result declares nothing.
+        result.ui = serde_json::json!({ "path": "move.txt", "abs": env.work().join("move.txt") });
+        let mut state = DoneState::default();
+        state.note_proof(&[call.clone()], &[result]);
+        assert!(state.deliverables.is_empty());
+        let (_, mut failed) = declaration("move.txt", "present", Some(5), &env);
+        failed.is_error = true;
+        state.note_proof(&[call], &[failed]);
+        assert!(state.deliverables.is_empty());
+    }
+
+    #[test]
+    fn the_wrap_up_names_a_missing_deliverable_but_leaves_a_present_one_alone() {
+        let env = oxa_fake::TestEnv::new();
+        env.write("work/move.txt", "e2e4\n");
+        let (call, result) = declaration("kv-store.proto", "missing", None, &env);
+        let mut state = DoneState::default();
+        state.note_proof(&[call.clone()], &[result]);
+        let text = wrap_up_message(&state);
+        assert!(text.starts_with(crate::prompt::WRAP_UP), "{text}");
+        assert!(text.contains("kv-store.proto"));
+        assert!(text.contains("the best answer you have"), "{text}");
+
+        let (call, result) = declaration("move.txt", "present", Some(5), &env);
+        let mut state = DoneState::default();
+        state.note_proof(&[call], &[result]);
+        assert_eq!(wrap_up_message(&state), crate::prompt::WRAP_UP);
     }
 }

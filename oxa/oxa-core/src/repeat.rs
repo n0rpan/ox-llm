@@ -35,7 +35,11 @@
 //! With [`LIMIT`] identical consecutive results the new result is replaced by a short notice
 //! ([`crate::prompt::repeat_notice`]) that says the content is unchanged and already in context
 //! and asks the model to change approach. The call still runs, so a changed outcome is never
-//! hidden. After [`NOTICES_BEFORE_STOP`] notices in the same run the guard no longer ends the
+//! hidden. The change-of-approach suggestion is written once, on the first notice of the loop;
+//! every later notice is short, carries the attempt count (the identical results and notices of
+//! this loop so far, plus this call) and points back to that suggestion, so a loop costs a new
+//! number rather than the same paragraph per try. A healthy turn never reaches the notice and is
+//! unchanged. After [`NOTICES_BEFORE_STOP`] notices in the same run the guard no longer ends the
 //! run (#1448): the user is warned once — shown and persisted with the remedy ([`warning_text`])
 //! — and the run continues, so a later reply can still finish the task. The advisor can still end
 //! it on escalation (`agent_loop.rs`); `oxa.maxTurns` and cancellation bound a loop that never
@@ -123,7 +127,10 @@ fn finish(found: Found, name: &str, args_raw: &str) -> Verdict {
     if found.identical < LIMIT {
         return Verdict::Pass;
     }
-    let notice = crate::prompt::repeat_notice(name, args_raw, found.identical);
+    // The attempt counts every call of this loop so far: the identical results and the notices
+    // before this one, plus this one (#2298).
+    let attempt = found.identical + found.notices + 1;
+    let notice = crate::prompt::repeat_notice(name, args_raw, found.identical, attempt);
     if found.notices >= NOTICES_BEFORE_STOP {
         Verdict::Warn(notice)
     } else {
