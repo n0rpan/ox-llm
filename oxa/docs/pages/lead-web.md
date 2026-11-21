@@ -154,12 +154,22 @@ Board sample (board, alarms, GitHub App quota, thread holds and the quota deferr
 owner's reserve recorded) and the runner situation named by `OXA_LEAD_SITUATION`, which
 the pages did not read before. The server no longer makes its own partial read.
 
-- **Workers** shows the Lead session's live workers first: name, lane (branch), model,
-  state and how old the worker's status file is (a Dead worker, a Stopped worker and a
-  stale status show as such), then the runner situation rows. The parent is the session
-  of the Lead owner binding, never a session list. No workers recorded and no runner
-  observation render the "Lane status unavailable" text; a corrupt registry renders
-  "Live workers refused" and is left untouched.
+- **Board** lists the observed PRs with their next action, priority, lease and attempts
+  today, under counted filter chips that narrow the list by next action. A wide screen
+  shows a table; a phone shows the same rows as cards. A stale or
+  absent board observation is named explicitly, never shown as empty healthy work.
+- **Item** names the next action and the observed state: priority, lease, attempts today
+  and the observed time. Title, checks, review state, findings and diff are not part of
+  this observation, so each is shown as "Unavailable in this snapshot" rather than guessed.
+- **Workers** shows the Lead session's live workers under "This host" first: name, lane
+  (branch), model, a state chip and how old the worker's status file is (a Dead worker, a
+  Stopped worker and a stale status show as such). The runner situation tasks are then
+  grouped by their host, each with a state chip (Stall reported, Busy at observation, or
+  Idle reported for a host with no running task); within a host the reported stalls come
+  first and the observation order is otherwise kept. The parent is the session of the Lead
+  owner binding, never a session list. No workers recorded and no runner observation render
+  the "Lane status unavailable" text; a corrupt registry renders "Live workers refused" and
+  is left untouched.
 - **Usage** adds a line for each optional GitHub read the reserve deferred
   (`oxa.lead.github_reserve`), saying whether it waits for a window reset or for a first
   observation. Model plan windows still render only from an observation that reached the
