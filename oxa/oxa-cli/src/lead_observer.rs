@@ -22,9 +22,17 @@ use std::{
 /// How often the sources are stat()ed. One round per server, never per tab.
 const TICK: Duration = Duration::from_secs(1);
 
-/// Identity of one source file as the last parse saw it. A missing file keeps its own value,
-/// so an absent source is looked up again on every tick instead of being re-parsed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// A source is re-read when its size, modification time or file identity changes. A file: its
+/// path. The worker registry is the directory of worker records, where a new worker, a
+/// removed one or a rewritten record changes the directory itself rather than a file.
+enum Watch {
+    File(PathBuf),
+    Directory(PathBuf),
+}
+
+/// Identity of one source as the last parse saw it. A missing source keeps its own value, so
+/// it is looked up again on every tick instead of being re-parsed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Stamp {
     present: bool,
     len: u64,
@@ -33,11 +41,21 @@ struct Stamp {
 }
 
 impl Stamp {
-    fn read(path: &std::path::Path) -> Self {
+    fn read(watch: &Watch) -> Self {
         use std::os::unix::fs::MetadataExt;
-        let Ok(meta) = std::fs::metadata(path) else {
+        let found = match watch {
+            Watch::File(path) => std::fs::metadata(path),
+            Watch::Directory(path) => std::fs::symlink_metadata(path),
+        };
+        let Ok(meta) = found else {
             return Self::default();
         };
+        if matches!(watch, Watch::File(_)) && !meta.is_file() {
+            return Self::default();
+        }
+        if matches!(watch, Watch::Directory(_)) && !meta.is_dir() {
+            return Self::default();
+        }
         let at = meta
             .modified()
             .ok()
@@ -93,8 +111,9 @@ pub(crate) struct Sources {
     pub uid: u32,
     pub agent_dir: PathBuf,
     pub sessions_dir: PathBuf,
-    /// The Lead owner binding's parent session id, resolved on every read.
-    pub parent: Box<dyn Fn() -> Option<String> + Send + Sync>,
+    /// The Lead owner binding's parent session id, resolved on every read, and the registry
+    /// directory whose records are that session's workers.
+    pub parent: Box<dyn Fn() -> Option<(String, PathBuf)> + Send + Sync>,
     /// The owner's open durable asks with the exact facts a change is judged by: the
     /// revisions, never the question text the pages render.
     pub asks: Box<dyn Fn() -> Option<(Vec<(String, u64)>, Vec<oxa_session::OpenGoalAsk>)> + Send + Sync>,
@@ -187,6 +206,10 @@ impl Observer {
 struct State {
     board: Stamp,
     situation: Stamp,
+    /// The Lead session's worker registry: its directory (a new, removed or rewritten record)
+    /// and each recorded worker's status file, whose change moves that worker's state.
+    workers: Stamp,
+    statuses: Vec<Stamp>,
     observation: Option<Observation>,
     /// The owner's open asks as the last read left them, and the facts a publish compares.
     asks: Option<Vec<oxa_session::OpenGoalAsk>>,
@@ -198,6 +221,8 @@ impl State {
         Self {
             board: Stamp::default(),
             situation: Stamp::default(),
+            workers: Stamp::default(),
+            statuses: Vec::new(),
             observation: None,
             asks: None,
             ask_key: None,
@@ -221,23 +246,47 @@ impl State {
         }
         let board = sources.board.as_deref().map_or(Stamp::default(), Stamp::read);
         let situation = sources.situation.as_deref().map_or(Stamp::default(), Stamp::read);
-        if (board, situation) == (self.board, self.situation) {
+        let parent = (sources.parent)();
+        let workers = parent.as_ref().map_or(Stamp::default(), |(id, directory)| {
+            Stamp::read(&Watch::Directory(directory.join(id).with_extension("json")))
+        });
+        let statuses = watched_statuses(self.observation.as_ref());
+        if (board, situation, workers) == (self.board, self.situation, self.workers)
+            && statuses == self.statuses
+        {
             let aged = self.observation.as_mut().is_some_and(|o| age(o, now));
             return published || aged;
         }
         self.board = board;
         self.situation = situation;
+        self.workers = workers;
         let Some(path) = sources.board.as_deref() else {
             self.observation = None;
+            self.statuses = Vec::new();
             return true;
         };
         let mut observation = Observation::read(path, sources.situation.as_deref(), sources.uid, now);
-        if let Some(parent) = (sources.parent)() {
-            observation = observation.with_workers(&sources.agent_dir, &sources.sessions_dir, &parent);
+        if let Some((parent, _)) = &parent {
+            observation = observation.with_workers(&sources.agent_dir, &sources.sessions_dir, parent);
         }
         self.observation = Some(observation);
+        self.statuses = watched_statuses(self.observation.as_ref());
         true
     }
+}
+
+/// The stamps of every status file the current worker rows were read from. A worker whose
+/// status moved to Working, Idle or Dead changes its row, and the change is published; a
+/// status age that only grows is the same row.
+fn watched_statuses(observation: Option<&Observation>) -> Vec<Stamp> {
+    let Some(Some(bindings)) = observation.and_then(|o| o.bindings.as_ref()) else {
+        return Vec::new();
+    };
+    bindings
+        .iter()
+        .filter_map(|binding| binding.status_file.as_deref())
+        .map(|path| Stamp::read(&Watch::File(path)))
+        .collect()
 }
 
 /// Advance the clock that bounds the Board read, so a source that stops being written turns

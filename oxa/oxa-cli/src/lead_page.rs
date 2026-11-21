@@ -2107,6 +2107,7 @@ return true;
             state,
             started_ms: 0,
             status_age_secs: age,
+            status_file: None,
         };
         let found: Result<Vec<Binding>, BindingsError> = Ok(vec![
             binding("alive", WorkerState::Working, Some(5)),

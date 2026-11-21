@@ -434,6 +434,19 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     let record = serde_json::json!({"schema_version":1,"observed_at":10,
         "board":{"observed_at":10,"entries":entries}});
     std::fs::write(&sample, format!("{record}\n")).unwrap();
+    // The pages read the observer's frame, which picks a changed sample up on its next tick.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let page = get(port, "/board", &authority, "");
+        if page.contains("#101<") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the observer did not publish the new sample: {page}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
     for (path, first, last, absent) in [
         ("/board", 1, 50, 51),
         ("/board?page=1", 51, 100, 1),

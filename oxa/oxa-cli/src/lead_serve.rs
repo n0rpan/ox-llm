@@ -845,13 +845,15 @@ impl Source {
 /// is re-proved against the owner-only settings and binding on every tick, so a session the
 /// owner changed, replaced or revoked shows no worker rows instead of stale ones. `None` with
 /// no owner chat: the pages then have no worker source at all.
-fn worker_owner(owner: Option<&OwnerChat>) -> Option<String> {
+fn worker_owner(owner: Option<&OwnerChat>) -> Option<(String, PathBuf)> {
     let start = owner?.start.as_ref()?;
     start.recheck().ok()?;
-    Some(match start {
+    let id = match start {
         OwnerSession::Dedicated(binding) => binding.session_id().to_owned(),
         OwnerSession::Attached(attached) => attached.session_id().to_owned(),
-    })
+    };
+    let registry = owner?.dirs.agent_dir.join("workers");
+    Some((id, registry))
 }
 
 /// Open owner asks with their original revisions, read from the authorized durable Lead
