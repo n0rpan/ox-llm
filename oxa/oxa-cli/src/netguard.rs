@@ -134,7 +134,7 @@ fn with_policy(
         ns = ns.with_gh_token_refreshing(move || gh_token(&command), ttl);
     }
     // A runner-owned task never runs the owner's helper: `gh` is not started for it either.
-    let command = (!lookup && !runner_owns_github && !offline)
+    let command = (scrub_host && !lookup && !runner_owns_github && !offline)
         .then(|| github_token_command(settings))
         .unwrap_or_default();
     if scrub_host || !known.is_empty() || !command.is_empty() {
@@ -146,8 +146,8 @@ fn with_policy(
             // A host-rights command may start `gh` itself, or `env`, and read the owner's token
             // that this session never loaded. Asking the same helper is the session's own call;
             // a program the session never started cannot connect it to a prompt.
-            if let Some(token) = gh_token(&command) {
-                secrets.push(token);
+            if !command.is_empty() {
+                secrets.extend(gh_token(&command));
             }
             secrets
         });
@@ -341,9 +341,8 @@ fn test_isolated(v: Option<&str>) -> bool {
     v == Some("1")
 }
 
-/// #52: the GitHub CLI token for the networked sandbox, from `gh auth token` run once here,
-/// outside the sandbox, with a short timeout. Any failure (no `gh`, not logged in, slow) is
-/// `None`. The token is never logged.
+/// Read the token outside the sandbox through the owner's helper or `gh auth token`.
+/// Failures return `None`. The token is never logged.
 fn gh_token(command: &[String]) -> Option<String> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let path = std::env::var_os("PATH");

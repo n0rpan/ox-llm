@@ -211,6 +211,10 @@ fn configured_github_auth_is_isolated_and_refreshed_at_publication_boundaries() 
         .unwrap();
         assert_eq!(record.outcome, oxa_work::Outcome::Done, "{record:?}");
         assert_eq!(
+            record.publish_receipt.as_ref().map(|receipt| receipt.class),
+            Some(oxa_work::Divergence::Published)
+        );
+        assert_eq!(
             record.pull_request.as_deref(),
             Some("https://github.com/example/project/pull/1")
         );
@@ -265,9 +269,13 @@ for arg do
         test "$GIT_CONFIG_VALUE_0" = "Authorization: Basic $encoded"
         if test "$op" = ls-remote; then
             test "$PWD" = /
-            shift $(( $# - 1 ))
+            shift $(( $# - 2 ))
+            if test "$1" = --refs; then
+                test "$2" = {url}
+                exec env -u GIT_ALLOW_PROTOCOL -u GIT_CONFIG_COUNT /usr/bin/git ls-remote --heads --tags --refs "$remote"
+            fi
             test "$1" = {url}
-            exec env -u GIT_ALLOW_PROTOCOL -u GIT_CONFIG_COUNT /usr/bin/git ls-remote --heads --tags --refs "$remote"
+            exec env -u GIT_ALLOW_PROTOCOL -u GIT_CONFIG_COUNT /usr/bin/git ls-remote "$remote" "$2"
         fi
         test -f config
         if /usr/bin/git config --local --get credential.helper; then exit 42; fi

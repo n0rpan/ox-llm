@@ -141,7 +141,9 @@ An owner-configured GitHub token command runs outside the sandbox. Its executabl
 outside the project and worktrees through a trusted absolute path or the vetted tool search path.
 An unresolvable configured command yields no token and an error; it never falls back to ambient
 executable lookup and never to another source. The helper runs from `/` with a fixed system PATH
-and only vetted home/config directory variables. Configured tokens for publication are scoped to
+and only vetted home/config directory variables, excluding paths inside the checkout or
+symlinks into it. The runner scans locally before obtaining a token and still verifies the
+exact commits missing from the destination. Configured tokens for publication are scoped to
 github.com HTTPS. Authenticated Git runs without checkout Git configuration, credential helpers,
 hooks, or redirects. The runner refreshes after owner confirmation and during lane polling without
 automatically replaying mutations. Tokens registered during refresh are masked in active command

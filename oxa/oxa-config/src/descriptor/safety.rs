@@ -137,7 +137,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         Group::Safety,
         "GitHub",
         "GitHub token lifetime",
-        "Seconds before the token is read again (300 when unset).",
+        "Seconds to cache the bash token (300 when unset, 0 to read it on each use).",
     )
     .key(Kind::Number, "null")
     .number(Unit::Seconds)

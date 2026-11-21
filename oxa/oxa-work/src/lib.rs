@@ -570,7 +570,8 @@ pub fn token_from_command(command: Command, deadline: Duration) -> Option<String
     }
     let (code, out) = command_runner(command, Some(4096), deadline)?;
     let token = out.trim();
-    (code == 0 && !token.is_empty() && !token.chars().any(char::is_whitespace)).then(|| token.to_string())
+    (code == 0 && !token.is_empty() && !token.chars().any(|ch| ch.is_whitespace() || ch.is_control()))
+        .then(|| token.to_string())
 }
 
 /// Resolve a configured token helper without consulting the ambient PATH. The
@@ -582,16 +583,8 @@ pub fn trusted_token_program(
 ) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
 
-    let project = match project {
-        Some(root) => Some((root, root.canonicalize().ok()?)),
-        None => None,
-    };
-    let is_project = |path: &Path| {
-        path.components().any(|part| part.as_os_str() == ".oxa-worktrees")
-            || project
-                .as_ref()
-                .is_some_and(|(root, real)| path.starts_with(root) || path.starts_with(real))
-    };
+    let project = project.map(token_project_paths).transpose().ok()?;
+    let is_project = |path: &Path| token_project_path(path, project.as_ref());
     let validate = |candidate: &Path| {
         if !candidate.is_absolute() || is_project(candidate) {
             return None;
@@ -633,27 +626,87 @@ pub fn trusted_token_program(
         .find_map(|dir| validate(&dir.join(program)))
 }
 
+fn token_project_root(path: &Path) -> &Path {
+    path.ancestors()
+        .filter(|dir| dir.join(".git").exists())
+        .last()
+        .unwrap_or(path)
+}
+
+fn token_project_paths(path: &Path) -> io::Result<(&Path, PathBuf)> {
+    let real = path.canonicalize()?;
+    Ok((token_project_root(path), token_project_root(&real).to_path_buf()))
+}
+
+fn token_project_path(path: &Path, project: Option<&(&Path, PathBuf)>) -> bool {
+    path.components().any(|part| part.as_os_str() == ".oxa-worktrees")
+        || project.is_some_and(|(root, real)| path.starts_with(root) || path.starts_with(real))
+}
+
 /// Execute the vetted helper outside the checkout with no shell startup, loader,
 /// Git, or credential overrides inherited from the caller.
 pub fn token_helper_command(exe: &Path, project: Option<&Path>) -> Command {
+    token_helper_in(exe, project, std::env::var_os)
+}
+
+fn token_helper_in(
+    exe: &Path,
+    project: Option<&Path>,
+    env: impl Fn(&'static str) -> Option<std::ffi::OsString>,
+) -> Command {
     let mut command = Command::new(exe);
     command.env_clear().current_dir("/").env("PATH", "/usr/bin:/bin");
-    let trusted_dir = |dir: &Path| {
-        dir.is_absolute()
-            && dir.canonicalize().is_ok_and(|real| {
-                !real.components().any(|part| part.as_os_str() == ".oxa-worktrees")
-                    && !project.is_some_and(|root| {
-                        dir.starts_with(root)
-                            || root.canonicalize().map_or(true, |root| real.starts_with(root))
-                    })
-            })
+    let Ok(project) = project.map(token_project_paths).transpose() else {
+        return command;
     };
     for key in ["HOME", "XDG_CONFIG_HOME", "GH_CONFIG_DIR"] {
-        if let Some(dir) = std::env::var_os(key).filter(|dir| trusted_dir(Path::new(dir))) {
-            command.env(key, dir);
+        let Some(dir) = env(key).map(PathBuf::from) else {
+            continue;
+        };
+        if !dir.is_absolute() || token_project_path(&dir, project.as_ref()) {
+            continue;
+        }
+        if let Ok(real) = dir.canonicalize() {
+            if real.is_dir() && !token_project_path(&real, project.as_ref()) {
+                command.env(key, real);
+            }
         }
     }
     command
+}
+
+#[cfg(test)]
+#[test]
+fn token_helper_never_inherits_checkout_home_or_config() {
+    let dir = test_dir::PrivateDir::new("token-helper-home");
+    let repo = dir.path().join("project");
+    let child = repo.join("src");
+    let home = repo.join("isolated-home");
+    let outside = dir.path().join("outside");
+    for path in [&repo.join(".git"), &child, &home, &outside] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let alias = dir.path().join("inside-alias");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+    let command = token_helper_in(Path::new("/usr/bin/false"), Some(&child), |key| {
+        match key {
+            "HOME" => Some(&home),
+            "XDG_CONFIG_HOME" => Some(&alias),
+            "GH_CONFIG_DIR" => Some(&outside),
+            _ => None,
+        }
+        .map(|path| path.clone().into_os_string())
+    });
+    let passed: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+    assert!(!passed.contains_key(std::ffi::OsStr::new("HOME")));
+    assert!(!passed.contains_key(std::ffi::OsStr::new("XDG_CONFIG_HOME")));
+    assert_eq!(
+        passed
+            .get(std::ffi::OsStr::new("GH_CONFIG_DIR"))
+            .copied()
+            .flatten(),
+        Some(outside.canonicalize().unwrap().as_os_str())
+    );
 }
 
 /// The owner's token command (`oxa.github.tokenCommand`) for the runner's own GitHub calls:

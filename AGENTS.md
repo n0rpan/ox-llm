@@ -15,8 +15,10 @@ code, tests, CI and docs; the owner validates on hardware.
   use synthetic fixtures. Do not open real credential files during review.
 - Resolve owner token commands through vetted tool paths, with no fallback to another source;
   run them outside the checkout with a fixed system PATH and only vetted home/config directory
-  variables. Configured publish tokens go only to github.com over HTTPS without checkout Git
-  config. Refresh after confirmation and during lane reads; never replay a mutation. Active output
+  variables; exclude checkout paths and symlinks into them, including `HOME`.
+  Run the local push scan before requesting a publication token; keep the exact destination scan.
+  Configured publish tokens go only to github.com over HTTPS without checkout Git config.
+  Refresh after confirmation and during lane reads; never replay a mutation. Active output
   redactors must see newly registered tokens, and a configured source's token stays masked from the
   first command that needs one, loaded or not.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share

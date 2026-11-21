@@ -271,56 +271,14 @@ fn base_branch_controls_unchanged(
     repo: &Path,
     task_base: &str,
     head: &str,
+    remote: &str,
+    token: Option<&str>,
 ) -> Result<()> {
     if task_base.is_empty() || task_base.starts_with('-') || task_base.chars().any(char::is_whitespace) {
         return Ok(());
     }
-    let remote = crate::checked(crate::git(
-        policy,
-        repo,
-        &["remote", "get-url", "--push", "--all", "origin"],
-    ))?;
-    let Some(url) = remote.lines().next().filter(|url| !url.starts_with('-')) else {
-        return Ok(());
-    };
-    // The probe below uses the source checkout; a publication through the
-    // configured token only talks to github.com over HTTPS.
-    if !policy.github_token_command.is_empty() && !url.starts_with("https://") {
-        return Ok(());
-    }
-    let reference = format!("refs/heads/{task_base}");
-    let mut command = crate::git(
-        policy,
-        repo,
-        &[
-            "-c",
-            "protocol.https.allow=always",
-            "-c",
-            "protocol.ssh.allow=always",
-            "-c",
-            "protocol.file.allow=always",
-            "ls-remote",
-            url,
-            &reference,
-        ],
-    );
-    crate::publish::isolate_github_environment(&mut command);
-    command
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
-    let Ok(text) = crate::checked(command) else {
-        // The destination's base tip is an extra check on top of the two above: a probe that
-        // cannot read it (a network error, or a destination the runner cannot reach without a
-        // session token) keeps them and blocks nothing.
-        return Ok(());
-    };
-    let Some(tip) = text
-        .lines()
-        .filter_map(|line| line.split_once('\t'))
-        .find(|(_, name)| *name == reference)
-        .map(|(oid, _)| oid)
-        .filter(|oid| matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    let Some(tip) = crate::publish::destination_branch_tip(policy, repo, remote, task_base, token)
+        .map_err(|_| "lane acceptance cannot read the destination's base branch".to_string())?
     else {
         return Ok(());
     };
@@ -330,7 +288,7 @@ fn base_branch_controls_unchanged(
     {
         return Ok(());
     }
-    let Ok(fork) = crate::checked(crate::git(policy, repo, &["merge-base", tip, head])) else {
+    let Ok(fork) = crate::checked(crate::git(policy, repo, &["merge-base", &tip, head])) else {
         return Ok(());
     };
     let changed = crate::checked(crate::git(
@@ -519,16 +477,14 @@ pub(crate) fn accept(
     let proof = crate::committed::verify_commit_with(repo, binary, policy, saved, lock, true)?;
     proof.verify(policy, head, base)?;
     let remote = crate::publish::origin_push_url(policy, repo)?;
-    protected_controls_unchanged(policy, repo, base, head, &remote)?;
-    base_branch_controls_unchanged(policy, repo, &task.base, head)?;
-    let token = crate::policy_token(policy, repo)?;
-    let token = token.as_deref();
-    let repository = crate::publish::origin_repository(repo, gh, policy, token, lock, &remote)?;
-    // The same content scan `--publish` runs, before anything is sent.
+    // Run the local preflight before any authenticated destination or GitHub lookup.
     crate::publish::scan_push(policy, repo, head, &remote)?;
+    protected_controls_unchanged(policy, repo, base, head, &remote)?;
     let export = crate::publish::prepare_github_push(policy, repo, head)?;
     let token = crate::policy_token(policy, repo)?;
     let token = token.as_deref();
+    base_branch_controls_unchanged(policy, repo, &task.base, head, &remote, token)?;
+    let repository = crate::publish::origin_repository(repo, gh, policy, token, lock, &remote)?;
     // Queue membership is the final remote decision before the push, avoiding
     // a scan-sized race in which an open PR can enter the merge queue.
     if let Some(number) =
@@ -540,7 +496,7 @@ pub(crate) fn accept(
     }
     // The destination is read back whether the push reports success or not, as on the
     // publication path; lane acceptance keeps no saved receipt.
-    crate::publish::push_with_receipt(
+    let (pushed, _) = crate::publish::push_with_receipt(
         policy,
         token.zip(export.as_ref()),
         repo,
@@ -548,8 +504,8 @@ pub(crate) fn accept(
         &task.branch,
         lock,
         &remote,
-        &mut None,
-    )?;
+    );
+    pushed?;
     let started = Instant::now();
     let run = wait_with(
         || {

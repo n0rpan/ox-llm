@@ -8,6 +8,7 @@ pub use landing::{
     RejectedLanding, RetryIntent,
 };
 pub(crate) use receipt::push_with_receipt;
+pub(crate) use receipt::remote_tip as destination_branch_tip;
 pub use receipt::{Divergence, PublishReceipt};
 use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
@@ -174,44 +175,9 @@ fn github_git(policy: &RunPolicy, cwd: &Path, token: &str) -> Command {
 }
 
 fn destination_tips(policy: &RunPolicy, repo: &Path, url: &str) -> Result<Vec<String>> {
-    if url.starts_with('-') {
-        return Err("publishing refused: invalid publication destination".into());
-    }
-    let mut command = super::git(
-        policy,
-        repo,
-        &[
-            "-c",
-            "protocol.https.allow=always",
-            "-c",
-            "protocol.ssh.allow=always",
-            "-c",
-            "protocol.file.allow=always",
-            "ls-remote",
-            "--heads",
-            "--tags",
-            "--refs",
-            url,
-        ],
-    );
-    isolate_github_environment(&mut command);
-    command
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
     let token = super::policy_token(policy, repo)?;
-    let mut authenticated;
-    let command = if let Some(token) = token.as_deref() {
-        let url = github_https_url(url)?;
-        if !matches!(std::fs::symlink_metadata("/.git"), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
-            return Err("cannot run Git outside a checkout".into());
-        }
-        authenticated = github_git(policy, Path::new("/"), token);
-        authenticated.args(["ls-remote", "--heads", "--tags", "--refs", url]);
-        authenticated
-    } else {
-        command
-    };
+    let mut command = destination_refs_command(policy, repo, url, token.as_deref())?;
+    command.args(["ls-remote", "--heads", "--tags", "--refs", url]);
     let text = super::command_runner(
         command,
         Some(MAX_PUBLICATION_RESPONSE_BYTES),
@@ -230,6 +196,42 @@ fn destination_tips(policy: &RunPolicy, repo: &Path, url: &str) -> Result<Vec<St
     tips.sort();
     tips.dedup();
     Ok(tips)
+}
+
+fn destination_refs_command(
+    policy: &RunPolicy,
+    repo: &Path,
+    url: &str,
+    token: Option<&str>,
+) -> Result<Command> {
+    if url.starts_with('-') {
+        return Err("publishing refused: invalid publication destination".into());
+    }
+    if let Some(token) = token {
+        github_https_url(url)?;
+        if !matches!(std::fs::symlink_metadata("/.git"), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+            return Err("cannot run Git outside a checkout".into());
+        }
+        return Ok(github_git(policy, Path::new("/"), token));
+    }
+    let mut command = super::git(
+        policy,
+        repo,
+        &[
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=always",
+            "-c",
+            "protocol.file.allow=always",
+        ],
+    );
+    isolate_github_environment(&mut command);
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
+    Ok(command)
 }
 
 /// Scan the commits `revisions` select: each raw commit object, its own changes and
@@ -763,6 +765,16 @@ pub(crate) fn origin_repository(
     Ok(repository)
 }
 
+/// Reject locally visible unpublished secrets before resolving any publication credential.
+pub(crate) fn scan_local_push(
+    policy: &RunPolicy,
+    repo: &Path,
+    head: &str,
+    scan: ContentScan<'_>,
+) -> Result<()> {
+    scan_pushed(policy, repo, &[head, "--not", "--remotes=origin"], scan)
+}
+
 /// The publication content scan for a push `head` would make to `origin`: every
 /// commit the push URL's own advertised tips lack, the same scan `--publish` runs.
 /// Nothing is sent; any failure, or a missing scan, refuses the push.
@@ -771,6 +783,7 @@ pub(crate) fn scan_push(policy: &RunPolicy, repo: &Path, head: &str, remote: &st
         .content_scan
         .as_deref()
         .ok_or("publishing refused: the publication content scan is unavailable")?;
+    scan_local_push(policy, repo, head, scan)?;
     let known = destination_tips(policy, repo, remote)?;
     scan_pushed(policy, repo, &pushed_revisions(head, &known), scan)
 }
@@ -983,7 +996,7 @@ fn publish_locked(
     value.record.acceptance_outcome = Some(accepted);
     writer.save(&mut value, Step::Publishing, observer)?;
     let git = |repo: &Path, args: &[&str]| super::git(policy, repo, args);
-    let receipt_slot: std::cell::RefCell<Option<PublishReceipt>> = std::cell::RefCell::new(None);
+    let mut publish_receipt = None;
     let result = (|| -> Result<(String, bool)> {
         if policy.offline {
             return Err("publishing is unavailable in offline mode".into());
@@ -1017,7 +1030,7 @@ fn publish_locked(
         // The owner confirmation shows only metadata, so content is checked here,
         // before any remote request, against what the local origin refs record.
         // The destination's own tips are checked again after confirmation.
-        scan_pushed(policy, tree, &[head.as_str(), "--not", "--remotes=origin"], scan)?;
+        scan_local_push(policy, tree, &head, scan)?;
         let remote = origin_push_url(policy, repo)?;
         let token = super::policy_token(policy, repo)?;
         let token = token.as_deref();
@@ -1080,7 +1093,7 @@ fn publish_locked(
         // The destination is read back into the saved receipt whether the push reports
         // success or not: a push that reports success must show the pushed commit at the
         // branch tip, and a rejected push names what the remote holds.
-        receipt::push_with_receipt(
+        let (pushed, receipt) = receipt::push_with_receipt(
             policy,
             token.zip(export.as_ref()),
             repo,
@@ -1088,8 +1101,9 @@ fn publish_locked(
             &task.branch,
             lock,
             &remote,
-            &mut receipt_slot.borrow_mut(),
-        )?;
+        );
+        publish_receipt = Some(receipt);
+        pushed?;
         let draft = false;
         let body = policy.storage.join(format!("{}.pr-body.md", task.id));
         crate::checkpoint::write_atomic(&body, text.as_bytes(), body.exists())?;
@@ -1144,7 +1158,7 @@ fn publish_locked(
         let _ = std::fs::remove_file(body);
         Ok((result.trim().to_string(), draft))
     })();
-    value.record.publish_receipt = receipt_slot.into_inner();
+    value.record.publish_receipt = publish_receipt;
     match result {
         Ok((url, draft)) => {
             value.record.pull_request = Some(url);
@@ -1396,6 +1410,26 @@ mod scan_tests {
                 secret_path: item.path.contains(needle),
             })
         }
+    }
+
+    #[test]
+    fn lane_scan_refuses_local_content_before_running_the_token_helper() {
+        let (dir, mut policy) = repo();
+        let secret = "synthetic-refused-content";
+        git_ok(dir.path(), &["commit", "-q", "--allow-empty", "-m", secret]);
+        let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        policy.content_scan = Some(std::sync::Arc::new(containing(secret)));
+        let marker = dir.path().join("helper-ran");
+        policy.github_token_command = vec!["/usr/bin/touch".into(), marker.display().to_string()];
+        let error = scan_push(
+            &policy,
+            dir.path(),
+            &head,
+            "https://github.com/example/project.git",
+        )
+        .unwrap_err();
+        assert!(error.contains("adds a test secret"), "{error}");
+        assert!(!marker.exists());
     }
 
     #[test]
