@@ -1313,12 +1313,13 @@ mod tests {
         let env = oxa_fake::TestEnv::new();
         let work = env.work();
         let mut state = DoneState::default();
-        failed_batch(&mut state, &work, &["decode.json", "out/"]);
+        failed_batch(&mut state, &work, &["decode.json"]);
+        std::fs::create_dir(work.join("out")).unwrap();
         let line = state
             .verified_artifacts(&work)
             .expect("a verified result is named");
         assert!(line.starts_with("Not re-derived:"), "{line}");
-        assert!(line.contains("decode.json, out"), "{line}");
+        assert!(line.contains("decode.json, out."), "{line}");
         assert!(
             line.contains("change only what differs instead of rebuilding"),
             "{line}"

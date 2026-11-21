@@ -773,6 +773,19 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
             ScriptTurn::text("done"),
         ],
     );
+    for r in engine.requests().iter() {
+        eprintln!(
+            "REQ {:?}",
+            r.messages
+                .iter()
+                .map(|m| (
+                    format!("{:?}", m.role),
+                    m.content.clone(),
+                    m.role == oxa_proto::Role::User
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
     let checks = rec.checks();
     assert_eq!(checks.len(), 1, "{checks:?}");
     assert!(checks[0].contains("FAILED"), "{checks:?}");
@@ -821,7 +834,6 @@ fn a_repair_without_a_verified_result_is_unchanged() {
     }
 }
 
-#[test]
 #[test]
 fn tree_change_made_by_a_check_is_not_blamed_on_the_model() {
     let env = TestEnv::new();
