@@ -2395,9 +2395,45 @@ async fn continuity_four_turns_reuse_the_previous_prompt() {
         .expect("the first reply follows the first opener");
     let cache = num(&r, "/timings/cache_n") as usize;
     assert!(cache < prev.len(), "the reuse stops at the edit: {r}");
+    // the tokens this request fed (no splice: every history turn is a miss), and where they
+    // first differ from the live state. The divergence is the edited reply's own text: past the
+    // first opener and its framed assistant turn, inside the reply, and at nothing before it.
+    let (_, tk, _) = call(
+        &s,
+        "POST",
+        "/apply-template",
+        json!({"messages": edited, "chat_template_kwargs": {"enable_thinking": false, "preserve_thinking": true}}),
+    )
+    .await;
+    let fed = tok.encode(tk["prompt"].as_str().unwrap(), true, true);
+    assert_eq!(
+        fed.len() as u64,
+        num(&r, "/usage/prompt_tokens"),
+        "the render is the prompt this request fed: {r}"
+    );
+    let div = prev.iter().zip(&fed).take_while(|(a, b)| a == b).count();
+    // the framed turn before the reply's text: the opener, then the empty think block; the reuse
+    // must run past both into the reply itself (it stops at its first changed character)
+    let think = tok.encode(" think\n\n\n\n", false, true).len();
     assert!(
-        cache <= at + opener.len(),
-        "the reuse stops at the edited reply ({at}), got {cache}: {r}"
+        div > at + opener.len() + think,
+        "the reuse runs into the edited reply: divergence {div}, reply text from {}: {r}",
+        at + opener.len() + think
+    );
+    let at_div = |t: &[u32]| String::from_utf8_lossy(&tok.piece(t[div], true)).into_owned();
+    assert_eq!(
+        at_div(&prev),
+        ".",
+        "the divergence is the first reply's sentence end: {r}"
+    );
+    assert_eq!(
+        at_div(&fed),
+        " ",
+        "the edited reply continues after it: {r}"
+    );
+    assert!(
+        cache <= div && div - cache < 16,
+        "the state goes back to the closest checkpoint at the divergence {div}, got {cache}: {r}"
     );
 }
 
