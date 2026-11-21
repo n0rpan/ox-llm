@@ -458,9 +458,24 @@ fn connection_fixed(
         Ok((_, _, head)) => *head,
         Err(_) => empty,
     };
+    // The same block parsed once by `request`; a second failure can only mean bad bytes, so
+    // it answers like a framing failure rather than leaving the client without a reply.
     let request_headers = match oxa_http::server::parse_headers(request_headers) {
         Ok(headers) => headers,
-        Err(_) => return Ok(()),
+        Err(_) => {
+            let reply = Reply::plain(
+                "400 Bad Request",
+                "text/plain",
+                "Request refused",
+                "'none'",
+                "no-referrer",
+            );
+            return write_response(
+                &mut stream,
+                &[reply.head().as_bytes(), reply.body()],
+                Duration::from_secs(5),
+            );
+        }
     };
     // Every path below has already been authorized, so a validator, a `304` and a compressed
     // body never answer an unauthorized request.
@@ -1201,6 +1216,21 @@ mod tests {
             if path == "/unknown" {
                 assert!(reply.starts_with("HTTP/1.1 404"));
             }
+        }
+        // The document names exactly the two paths the asset table serves, and the unhashed
+        // paths are gone.
+        let document = fetch("GET / HTTP/1.1\r\nHost: example.invalid\r\n\r\n", true).1;
+        let document = String::from_utf8(document).unwrap();
+        assert!(document.contains(&format!("href={style}")), "{style}");
+        assert!(document.contains(&format!("src={script}")), "{script}");
+        assert!(!document.contains("href=/style.css"));
+        for path in ["/style.css", "/live.js"] {
+            let (reply, reads) = exchange(
+                &format!("GET {path} HTTP/1.1\r\nHost: example.invalid\r\n\r\n"),
+                true,
+            );
+            assert_eq!(reads, 0);
+            assert!(reply.starts_with("HTTP/1.1 404"), "{path}: {reply}");
         }
     }
 
