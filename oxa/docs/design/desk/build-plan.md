@@ -343,9 +343,17 @@ pub fn thread_order(metas: &[ThreadMeta]) -> Vec<(usize, u16)>;       // (index,
 // oxa-rpc/src/events_decode.rs (Z10)
 pub fn event_from_json(v: &serde_json::Value) -> Option<oxa_proto::AgentEvent>;
 
-// oxa-interactive/src/effects.rs (Z07): exact list is fixed in that PR
-pub fn save_setting(dirs: &Dirs, cwd: &Path, key: &str, value: &Value, project: bool) -> Result<Notice, OxaError>;
-// + save_permission_mode, persist_theme, rename_session, delete_session, export_html, bug_report, save_trust
+// oxa-interactive/src/effects.rs (Z07, as merged). `Notice { level, text }`; `Notice::of(result)`
+// turns an error into an error notice. The caller owns the `Settings` it reads from.
+pub fn save_setting(settings: &mut Settings, dirs: &Dirs, cwd: &Path, key: &str, value: Value, project: bool) -> Result<Notice, OxaError>;
+pub fn save_permission_mode(settings: &mut Settings, dirs: &Dirs, cwd: &Path, mode: PermissionMode) -> Result<Notice, OxaError>;
+pub fn persist_theme(settings: &mut Settings, dirs: &Dirs, cwd: &Path, name: &str) -> Result<Notice, OxaError>;
+pub fn append_always(settings: &mut Settings, dirs: &Dirs, cwd: &Path, keys: &[String]) -> Result<(), OxaError>;
+pub fn rename_session(store: &dyn SessionStore, session: &SessionRef, name: &str) -> Result<Notice, OxaError>; // not the open session: that is SessionCmd::SetName
+pub fn delete_session(store: &dyn SessionStore, tmp_dir: &Path, open_id: &str, session: &SessionRef) -> Notice;
+pub fn export(source: Option<&Path>, session_id: &str, cwd: &Path, path: Option<PathBuf>) -> Export; // Done(Notice) | Html(path) -> SessionCmd::Export
+pub fn bug_report(dirs: &Dirs, description: &str, facts: &[String]) -> Result<Notice, OxaError>;
+pub fn save_trust(save: &mut TrustSaver, choice: TrustChoice) -> Result<Option<Notice>, OxaError>;
 ```
 
 ### 1.5 The `oxa-desk` binary
