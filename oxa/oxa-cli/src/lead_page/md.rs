@@ -324,7 +324,11 @@ mod tests {
             "{link}"
         );
         assert!(link.contains("<a href=\"/items/17\">#17</a>"), "{link}");
-        assert!(link.contains("#0") && !link.contains("/items/0"), "{link}");
+        // `#0` names no item: the marker stays and the number is dropped after it.
+        assert!(
+            link.ends_with("and #</p>") && !link.contains("/items/0"),
+            "{link}"
+        );
     }
 
     #[test]

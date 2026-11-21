@@ -1350,7 +1350,7 @@ fn chat_page_renders_the_session_as_messages_with_one_composer() {
     }
 
     let login = "Tailscale-User-Login: owner@example.invalid\r\n";
-    let page = get(port, "/chat", authority, login);
+    let page = get_raw(port, "/chat", authority, login);
     assert!(page.starts_with("HTTP/1.1 200"), "{page}");
     // One header strip, one thread, one composer, in that order.
     for part in [
@@ -1390,7 +1390,7 @@ fn chat_page_renders_the_session_as_messages_with_one_composer() {
     assert!(!page.contains(&id), "{page}");
     assert!(!page.contains(project.to_str().unwrap()), "{page}");
     // An unauthorized peer never reads the thread.
-    let refused = get(
+    let refused = get_raw(
         port,
         "/chat",
         authority,

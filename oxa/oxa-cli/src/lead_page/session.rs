@@ -736,13 +736,17 @@ mod tests {
         // A step that carries its own text shows the masked text and a Copy button.
         assert!(html.contains("oxa/src/fixture.rs</span>"), "{html}");
         assert!(html.contains("<button type=button class=copy"), "{html}");
-        // A result holding a secret and a home path is masked before it is escaped.
+        // A result holding a secret and a home path is masked before it is escaped: the
+        // masked row and the full row both hold placeholders, never the values.
         assert!(
             !html.contains("demo-secret-value") && !html.contains("sk-abcdef"),
             "{html}"
         );
         assert!(!html.contains("/home/synthetic-user"), "{html}");
-        assert!(html.contains("<secret>"), "{html}");
+        assert!(
+            html.matches("&lt;secret&gt;").count() >= 3 && html.contains("<span class=status>failed</span>"),
+            "{html}"
+        );
         assert!(!html.contains("<script"), "{html}");
     }
 

@@ -2052,10 +2052,14 @@ return true;
         .map(|part| html.find(part).unwrap_or_else(|| panic!("{part} missing")))
         .collect();
         assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{order:?}");
-        assert_eq!(html.matches("method=post action=/chat").count(), 2, "{html}");
+        // The fixed questions, the reply's action card and the composer are the three
+        // /chat forms; the owner's textarea is the only message field.
+        assert_eq!(html.matches("method=post action=/chat").count(), 3, "{html}");
         assert_eq!(html.matches("name=message").count(), 1, "{html}");
         assert!(
-            html.contains(">running</span>") && html.contains("1200 tokens"),
+            html.contains("Status: running")
+                && html.contains("1200 tokens")
+                && html.contains("Lead session a1b2c3d4"),
             "{html}"
         );
         assert!(
