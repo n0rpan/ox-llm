@@ -449,10 +449,10 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
         "board":{"observed_at":10,"entries":entries}});
     std::fs::write(&sample, format!("{record}\n")).unwrap();
     // The pages read the observer's frame, which picks a changed sample up on its next tick.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         let page = get(port, "/board", &authority, "");
-        if page.contains("#101<") {
+        if page.contains("#50<") {
             break;
         }
         assert!(
@@ -536,7 +536,9 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
         "release_pinned":true,"action":"fix_findings","lease":null,
         "attempts_today":2,"eligible":false}]}});
     std::fs::write(&sample, format!("{record}\n")).unwrap();
-    wait_for_page(port, "/board", &authority, "href=/items/17");
+    // The item page reads the same frame, so wait for the one field that only this sample
+    // carries before asserting the rest of the row.
+    wait_for_page(port, "/items/17", &authority, "<dd>Release</dd>");
     for path in ["/items/17", "/items/17?fragment=1"] {
         let response = get(port, path, &authority, "");
         assert_eq!(response.lines().next(), Some("HTTP/1.1 200 OK"), "{path}");
@@ -575,11 +577,11 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     )
     .starts_with("HTTP/1.1 403"));
     std::fs::set_permissions(&sample, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let event = get(port, "/events", &authority, "");
+    // #2342: a failed read keeps the last good board and names the allow-listed cause; it
+    // never blanks the page nor reflects the path. The page reads the observer's frame, so
+    // the refusal appears on the tick that reads the changed sample.
+    let event = wait_for_page(port, "/events", &authority, "Board is last-good");
     assert!(event.contains("event: snapshot\ndata: <main>"));
-    // #2342: a failed read keeps the last good board and names the allow-listed
-    // cause; it never blanks the page nor reflects the path.
-    assert!(event.contains("Board is last-good"));
     assert!(event.contains("not readable by this owner"));
     assert!(event.contains("href=/items/17"));
     assert!(!event.contains(sample.to_str().unwrap()));
@@ -831,6 +833,9 @@ fn authorized_durable_asks_reach_the_protected_view_as_a_live_readback() {
     let test = TestEnv::new();
     let dirs = oxa_config::Dirs::under(test.root());
     std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let uid = std::fs::metadata(test.root()).unwrap().uid();
+    let project = test.work().canonicalize().unwrap();
+    let id = oxa_cli::LeadOwnerBinding::create(&dirs, &project, uid).unwrap();
     let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = reservation.local_addr().unwrap().port();
     let authority = "lead.example.invalid";

@@ -39,11 +39,31 @@ struct Stamp {
 }
 
 impl Stamp {
+    /// A source is re-read only when what it is changes. The Board sample and the runner
+    /// situation keep their path and may be symlinks under `OXA_LEAD_*`, so their files are
+    /// followed through the entry; the worker registry and the worker status files are
+    /// rewritten in place, where a replaced symlink is itself a change.
+    fn followed(path: &std::path::Path) -> Self {
+        Self::read(path, true)
+    }
+
     fn file(path: &std::path::Path) -> Self {
+        Self::read(path, false)
+    }
+
+    fn read(path: &std::path::Path, follow: bool) -> Self {
         use std::os::unix::fs::MetadataExt;
-        let Ok(meta) = std::fs::symlink_metadata(path) else {
+        let found = if follow {
+            std::fs::metadata(path)
+        } else {
+            std::fs::symlink_metadata(path)
+        };
+        let Ok(meta) = found else {
             return Self::default();
         };
+        if follow && !meta.is_file() {
+            return Self::default();
+        }
         let at = meta
             .modified()
             .ok()
@@ -268,17 +288,18 @@ impl State {
                 self.asks = None;
             }
         }
-        let board = sources.board.as_deref().map_or(Stamp::default(), Stamp::file);
-        let situation = sources.situation.as_deref().map_or(Stamp::default(), Stamp::file);
+        let board = sources.board.as_deref().map_or(Stamp::default(), Stamp::followed);
+        let situation = sources
+            .situation
+            .as_deref()
+            .map_or(Stamp::default(), Stamp::followed);
         let parent = (sources.parent)();
-        let workers = parent.as_ref().map_or(Stamp::default(), |(id, directory)| {
+        let workers = parent.as_ref().map_or_else(Stamp::default, |(id, directory)| {
             Stamp::file(&directory.join(id).with_extension("json"))
         });
         let statuses = watched_statuses(self.observation.as_ref());
-        if (board, situation, workers) == (self.board, self.situation, self.workers)
-            && statuses == self.statuses
-            && parent == self.parent
-        {
+        let unchanged = (&board, &situation, &workers) == (&self.board, &self.situation, &self.workers);
+        if unchanged && statuses == self.statuses && parent == self.parent {
             let aged = self.observation.as_mut().is_some_and(|o| age(o, now));
             return published || aged;
         }
@@ -295,6 +316,8 @@ impl State {
         if let Some((parent, _)) = &parent {
             observation = observation.with_workers(&sources.agent_dir, &sources.sessions_dir, parent);
         }
+        // A failed read is published on the first try too: the frame then carries the typed
+        // cause, and the last good source it shows was kept by the frame before this one.
         if observation.cause.is_none() {
             self.last_good = Some(Arc::new(LastGood::from(&observation)));
         }
@@ -308,7 +331,7 @@ impl State {
 /// status moved to Working, Idle or Dead changes its row, and the change is published; a
 /// status age that only grows is the same row.
 fn watched_statuses(observation: Option<&Observation>) -> Vec<Stamp> {
-    let Some(Some(bindings)) = observation.and_then(|o| o.bindings.as_ref()) else {
+    let Some(Ok(bindings)) = observation.and_then(|o| o.bindings.as_ref()) else {
         return Vec::new();
     };
     bindings
@@ -500,7 +523,9 @@ mod tests {
     }
 }
 
-/// The board fields retained when a replacement cannot be read. Independent sources stay live.
+/// The board fields retained when a replacement cannot be read (#2342). Independent sources
+/// stay live, and the pages render this board with the failed read's cause and age.
+#[derive(Clone)]
 pub(crate) struct LastGood {
     pub board: oxa_work::board::Board,
     pub alarms: crate::lead_page::Alarms,
