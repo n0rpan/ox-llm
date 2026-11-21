@@ -1809,10 +1809,18 @@ mod tests {
         failed_batch(&mut state, &env.work(), &["a.txt"]);
         state.failed_command = false;
         assert_eq!(state.verified_artifacts(&env.work()), None);
-        // A failure and a written file, but no check passed after it.
+        // A failure and a written file, but no check passed after it: the write stays
+        // unverified.
         let mut state = DoneState::default();
-        failed_batch(&mut state, &env.work(), &["b.txt"]);
-        state.proof.checked = false;
+        std::fs::write(env.work().join("b.txt"), "written by this run").unwrap();
+        let calls = [write_call("w", "b.txt"), command_call("b", "sqlite3 db .dump")];
+        let results = [
+            result("w", "write", None, false),
+            result("b", "bash", Some(1), true),
+        ];
+        state.note_proof(&calls, &results);
+        state.note_artifacts(true);
+        assert_eq!(state.written, Vec::<String>::new());
         assert_eq!(state.verified_artifacts(&env.work()), None);
         // A failure and a check, but this batch wrote no file, so nothing is verified here.
         let mut state = DoneState::default();
