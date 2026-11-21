@@ -79,6 +79,39 @@ Optional user setting `oxa.lead.serve.fixed_prompts` defaults to false.
 It enables no-JS, same-origin/CSRF-protected fixed questions at zero model tokens.
 Private situation data needs browser proof separate from tool UIDs; absent inputs stay unavailable.
 
+## Throughput and stuck work
+
+Home shows one throughput and stuck-work card, projected from the board log the
+service already reads. It adds no GitHub call, no timer and no per-tab work: the
+projection is a pure function of the sampled records, computed once per observation.
+
+- **Throughput.** Twelve hourly bars of verified main merges, oldest first, with the
+  current (partial) hour last — the card names that bar as the hour in progress — and
+  a dashed line at the owner's target. The headline
+  compares the last full hour against `oxa.lead.target.merges_per_hour` (user settings
+  only, default 10; restart the service after changing it). The merge history comes
+  from the log itself: each sample records the main head, and a head advance whose
+  panels verify the merge commit contributes one merge at its `mergedAt`. Records
+  without a main head (sampling without `--landing-shadow`) leave the bars unknown and
+  say so. Two merges between two samples advance the head once, so the counts are a
+  lower bound; the card says that too.
+- **Unknown is not zero.** An hour the retained log tail does not cover renders as an
+  empty dashed bar, never as zero merges; the window ends at the latest observation,
+  not at the wall clock, so an old sample cannot look like a quiet recent hour. When
+  coverage starts inside the window, one line names the first sampled time.
+- **Stuck work.** Four distinct counts, each linking to the work it names: no review
+  (Board, waiting filter), red CI (Board, needs-fix filter), held `Restricts:` (Board)
+  and no PR yet (Workers). A PR is held when its body carries a `Restricts:` line and
+  the `owner-accepted` label is absent; the Reader derives that from the body and
+  labels its existing query already fetches, and records it in the sample. "No PR yet"
+  counts locally accepted work the runner situation has not published as a PR.
+- **Each count degrades on its own.** A source the sample does not carry shows `–`
+  with one line below the group naming what is missing and why; an observed empty
+  source is a real zero. When any PR's body or label evidence in a sample is
+  truncated, the whole `Restricts:` signal stays unobserved (`–`), never a zero the
+  truncated page could contradict. A transient board read failure keeps the whole
+  card with the last good sample, like the rest of the page.
+
 ## Attach to a running session
 
 With `owner_chat` on, the chat page can show and talk to a session that is running now (for

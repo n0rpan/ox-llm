@@ -84,6 +84,9 @@ pub struct View<'a> {
     /// Stuck-work signals from one protected observation. `None` when no alarm
     /// record reached this page.
     pub alarms: Option<&'a Alarms>,
+    /// Throughput and stuck-work projection of the same observation (#2346),
+    /// built once by the caller; `None` when no board sample reached this page.
+    pub work: Option<&'a crate::lead_projection::Work>,
     /// Source issue and its reported checkbox states; these do not establish validation.
     pub release: Option<(u64, &'a [(bool, String)])>,
     /// Serving process self-image digest, supplied by the authenticated native caller.
@@ -142,7 +145,7 @@ pub struct OwnerChatView<'a> {
     pub confirmed: bool,
 }
 
-fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     text.chars()
         .map(|c| match c {
             '&' => "&amp;".into(),
@@ -157,7 +160,7 @@ fn escape(text: &str) -> String {
 }
 
 /// Presentation follows the serving host's zone; native observations retain UTC timestamps.
-fn human_time(timestamp: u64, now: u64) -> String {
+pub(crate) fn human_time(timestamp: u64, now: u64) -> String {
     let local = |value| i64::try_from(value).ok().and_then(oxa_session::local_time);
     let Some(at) = local(timestamp) else {
         return "time not available (the host clock cannot format this observation)".into();
@@ -174,7 +177,7 @@ fn human_time(timestamp: u64, now: u64) -> String {
 /// The server renders an initial label; live.js re-labels it every 10 s with no
 /// request, so a quiet page never shows a stale age. Like `human_time`, an
 /// observation the host clock cannot format shows no raw value, only a reason.
-fn age(at: u64, now: u64) -> String {
+pub(crate) fn age(at: u64, now: u64) -> String {
     if i64::try_from(at).ok().and_then(oxa_session::local_time).is_none() {
         return "age not available (the host clock cannot format this observation)".into();
     }
@@ -199,7 +202,7 @@ fn age_text(at: u64, now: u64) -> String {
 
 /// Capitalize the first character of an allow-listed cause or hint so it reads as
 /// a sentence; the rest of the fixed text is never altered.
-fn sentence(text: &str) -> String {
+pub(crate) fn sentence(text: &str) -> String {
     let mut chars = text.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
@@ -210,7 +213,14 @@ fn sentence(text: &str) -> String {
 /// S3 (#2342): one missing observation state. Names the source, the allow-listed
 /// cause, the age of the last good value (ticking client-side) and the next step.
 /// Never a bare "unavailable", never a raw diagnostic, path or file content.
-fn say_why(html: &mut String, source: &str, cause: &str, next: &str, last_good_at: Option<u64>, now: u64) {
+pub(crate) fn say_why(
+    html: &mut String,
+    source: &str,
+    cause: &str,
+    next: &str,
+    last_good_at: Option<u64>,
+    now: u64,
+) {
     let _ = write!(
         html,
         "<p class=\"muted say-why\"><b>{} unavailable.</b> {}.",
@@ -230,7 +240,7 @@ fn say_why(html: &mut String, source: &str, cause: &str, next: &str, last_good_a
 
 /// The allow-listed cause and next step for a board gap (#2342). A view with no
 /// cause (no read attempted) keeps the generic observation-gap text.
-fn board_gap(view: &View<'_>) -> (&'static str, &'static str) {
+pub(crate) fn board_gap(view: &View<'_>) -> (&'static str, &'static str) {
     match view.board_cause {
         Some(cause) => (cause.text(), cause.hint()),
         None => (
@@ -332,6 +342,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             html.push_str("</div><div class=home-overview>");
             goal::row(&mut html, view, now);
             home::tiles(&mut html, view, now);
+            crate::lead_projection::render(&mut html, view, now);
             workers::render(&mut html, view, now);
             capacity(&mut html, view);
             html.push_str("<details class=home-work><summary>Observed work</summary>");

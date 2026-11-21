@@ -30,6 +30,11 @@ pub(crate) struct Observation {
     pub review_rejected: Vec<u64>,
     /// Optional GitHub work the owner's App reserve deferred in this sample.
     pub quota_deferred: Vec<Deferral>,
+    /// Verified main merges observed across the sample tail (#2346), decoded in
+    /// the same read as the board; the throughput projection's only input.
+    pub merges: crate::lead_projection::MergeHistory,
+    /// PRs held by `Restricts:` without `owner-accepted`; `None` when unobserved.
+    pub restricts_held: Option<Vec<u64>>,
     /// The Lead session's workers with their lanes and live state; `None` when no owner
     /// session was bound, an explicit error when the registry is absent or refused.
     pub bindings: Option<Result<Vec<Binding>, BindingsError>>,
@@ -50,7 +55,7 @@ impl Observation {
     pub(crate) fn read(board_path: &Path, situation_path: Option<&Path>, uid: u32, now_ms: u64) -> Self {
         // The default board keeps held asks and the stale policy; only a fixed
         // allowlisted cause and its hint reach operator status.
-        let (board, alarms, quota, threads, rejected, deferred, cause) =
+        let (board, alarms, quota, threads, rejected, deferred, merges, restricts, cause) =
             match lead_input::sample(board_path, uid) {
                 Ok(s) => (
                     s.board,
@@ -59,6 +64,8 @@ impl Observation {
                     s.threads,
                     s.review_rejected,
                     s.quota_deferred,
+                    s.merges,
+                    s.restricts_held,
                     None,
                 ),
                 Err(error) => (
@@ -68,6 +75,8 @@ impl Observation {
                     None,
                     Vec::new(),
                     Vec::new(),
+                    crate::lead_projection::MergeHistory::default(),
+                    None,
                     Some(lead_input::board_cause(error)),
                 ),
             };
@@ -85,6 +94,8 @@ impl Observation {
             threads,
             review_rejected: rejected,
             quota_deferred: deferred,
+            merges,
+            restricts_held: restricts,
             bindings: None,
             situation,
             now_ms,
