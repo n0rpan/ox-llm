@@ -56,6 +56,12 @@ pub(crate) fn loading_notice(e: &OxaError, noticed: &mut bool, sink: &mut dyn Ev
 
 /// After a reply of the loop, before its re-read check: a reply with an empty engine cache
 /// where one was expected (not the first request of the process) marks a reload.
+///
+/// A rebase since the last request (a model switch, a compaction, a fork or a context edit)
+/// with an empty cache is not a reload: the engine legitimately holds nothing for the new
+/// wire, the cache-miss report names that cause, and the model-switch notice already says what
+/// the target prefills. Claiming "engine reloaded / restarted" there blamed the wrong cause
+/// (owner report #2256: a cloud-to-local switch). The capabilities are still re-read.
 pub(crate) fn after_reply(
     st: &SessionState,
     first: bool,
@@ -67,6 +73,10 @@ pub(crate) fn after_reply(
         return;
     }
     st.shared.gate.reread_info.store(true, Ordering::SeqCst);
+    let rebased = st.transcript.expected_cache() == 0 && st.transcript.rebases().last().is_some();
+    if rebased {
+        return;
+    }
     sink.emit(&AgentEvent::Notice {
         level: Level::Info,
         text: RELOADED_TEXT.to_string(),
