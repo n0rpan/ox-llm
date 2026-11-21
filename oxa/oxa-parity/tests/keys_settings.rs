@@ -1401,7 +1401,19 @@ fn set_017() {
     // untrusted project's replacement ["ls"].
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "bash", "edit", "find", "grep", "ls", "read", "wait", "worker", "write"],
+        [
+            "ask",
+            "bash",
+            "deliverable",
+            "edit",
+            "find",
+            "grep",
+            "ls",
+            "read",
+            "wait",
+            "worker",
+            "write"
+        ],
         "the project's defaultTools is not applied"
     );
 }
@@ -1424,7 +1436,20 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "bash", "edit", "find", "grep", "ls", "read", "subagent", "wait", "worker", "write"],
+        [
+            "ask",
+            "bash",
+            "deliverable",
+            "edit",
+            "find",
+            "grep",
+            "ls",
+            "read",
+            "subagent",
+            "wait",
+            "worker",
+            "write"
+        ],
         "the default set on a large non-Flash model: the lead built-ins, worker and subagent"
     );
     let flash = ["--model", "flash", "--model-row", "flash:65536:2048:flash"];
@@ -1434,7 +1459,19 @@ fn set_018() {
         ok(&rig.print(&[]));
         assert_eq!(
             tools(&rig.bodies()[0]),
-            ["ask", "bash", "edit", "find", "grep", "ls", "read", "wait", "worker", "write"],
+            [
+                "ask",
+                "bash",
+                "deliverable",
+                "edit",
+                "find",
+                "grep",
+                "ls",
+                "read",
+                "wait",
+                "worker",
+                "write"
+            ],
             "{what}: the default set is the lead built-ins and worker"
         );
     }
@@ -1445,7 +1482,19 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "edit", "find", "grep", "ls", "read", "subagent", "wait", "worker", "write"],
+        [
+            "ask",
+            "deliverable",
+            "edit",
+            "find",
+            "grep",
+            "ls",
+            "read",
+            "subagent",
+            "wait",
+            "worker",
+            "write"
+        ],
         "-name removes"
     );
     let rig = with_agent(&small);
@@ -1453,7 +1502,18 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "edit", "find", "grep", "ls", "read", "wait", "worker", "write"],
+        [
+            "ask",
+            "deliverable",
+            "edit",
+            "find",
+            "grep",
+            "ls",
+            "read",
+            "wait",
+            "worker",
+            "write"
+        ],
         "-name removes (below 32K)"
     );
 
