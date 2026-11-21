@@ -222,12 +222,33 @@ impl NetSandbox {
         // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
         // `self.token()` loads a lazy token here too: the first networked command may be
         // `cat token.txt` from an earlier session.
-        self.redact_output(s.net, live, |live| run(&s, live))
+        self.sink(self.inner.host_rights(), s.net, &s.env, live, |live| {
+            run(&s, live)
+        })
+    }
+
+    /// The one output sink of every command: the session token is scrubbed from networked
+    /// commands; a command with the user's rights (`host`) also gets every host credential
+    /// scrubbed, whatever its network. A sandboxed command cannot read the host credentials,
+    /// so it does not trigger their discovery.
+    pub(crate) fn sink(
+        &self,
+        host: bool,
+        networked: bool,
+        env: &[(String, String)],
+        live: &mut dyn FnMut(&[u8]),
+        run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
+    ) -> ExecResult {
+        if host {
+            Self::redact_host_output(Some(self), env, live, run)
+        } else {
+            self.redact_output(networked, live, run)
+        }
     }
 
     /// Scrub command output using the session's GitHub token. Host execution keeps its
     /// own cleared environment and never receives a token through this method.
-    pub(crate) fn redact_output(
+    fn redact_output(
         &self,
         networked: bool,
         live: &mut dyn FnMut(&[u8]),
@@ -269,6 +290,8 @@ impl NetSandbox {
 
     /// Host shells mask known credentials even when the network is off and even if a
     /// variable was stripped from the command's environment. This never injects a value.
+    /// `controls` is the network guard of the run, whose session token and GitHub CLI
+    /// credentials (read the same with the network off) are masked too.
     pub(crate) fn redact_host_output(
         controls: Option<&Self>,
         env: &[(String, String)],
@@ -341,6 +364,9 @@ impl Sandbox for NetSandbox {
     }
     fn network_enforced(&self) -> bool {
         self.inner.network_enforced()
+    }
+    fn host_rights(&self) -> bool {
+        self.inner.host_rights()
     }
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         self.inner.bwrap_args(&self.clamp(s))

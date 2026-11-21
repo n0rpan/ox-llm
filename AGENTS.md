@@ -52,6 +52,7 @@ code, tests, CI and docs; the owner validates on hardware.
     lead-started, headless and unattended run it starts. Yolo never asks. It hard-refuses only
     publishing secrets and an OS-breaking wipe, and the owner's typed yes passes everything else.
     Exec hooks run unsandboxed under yolo too (`FullAccess::hook_sandbox`), `--offline` still holds.
+  - Where a command runs is one decision (`oxa-sandbox/src/decision.rs`, `ExecPolicy`). Exec hooks run in the sandbox: on Linux they are refused without bwrap, never run on the host instead; under yolo and off Linux they run with your rights, and `--offline` still holds. An attended interactive session with no OS sandbox requested and no usable bwrap keeps `oxa.sandbox.net: off` as a start warning only. The output of every command that runs with your rights has the host credentials scrubbed at one sink, on every path, and the GitHub CLI credential discovery for that scrub never gives `gh` the network the owner turned off.
   - **Unattended runs without yolo** (workers, subagents, headless, `oxa work`) keep bwrap by default.
   - **In-process guards stay in every mode:** secret masking, file-tool denials for private paths,
     user-only settings, offline mode.
