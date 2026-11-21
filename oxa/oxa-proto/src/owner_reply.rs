@@ -35,7 +35,10 @@ pub fn await_reply(session: &str, digest: &str) {
     let mut s = state();
     // A new question in this session withdraws an earlier approval of this session; another
     // session's request leaves it alone.
-    if s.approved.as_ref().is_some_and(|(shown, _)| shown == session) {
+    if s.approved
+        .as_ref()
+        .is_some_and(|(shown, _)| shown.as_str() == session)
+    {
         s.approved = None;
     }
     s.pending = Some((session.to_string(), digest.to_string()));
@@ -45,14 +48,20 @@ pub fn await_reply(session: &str, digest: &str) {
 pub fn typed(session: &str, line: &str) {
     let mut s = state();
     if line.trim().eq_ignore_ascii_case("yes") {
-        if let Some((shown, digest)) = s.pending.take_if(|(shown, _)| shown == session) {
+        if let Some((shown, digest)) = s.pending.take_if(|(shown, _)| shown.as_str() == session) {
             s.approved = Some((shown, digest));
         }
     } else {
-        if s.pending.as_ref().is_some_and(|(shown, _)| shown == session) {
+        if s.pending
+            .as_ref()
+            .is_some_and(|(shown, _)| shown.as_str() == session)
+        {
             s.pending = None;
         }
-        if s.approved.as_ref().is_some_and(|(shown, _)| shown == session) {
+        if s.approved
+            .as_ref()
+            .is_some_and(|(shown, _)| shown.as_str() == session)
+        {
             s.approved = None;
         }
     }
@@ -64,7 +73,7 @@ pub fn take_approved(session: &str, digest: &str) -> bool {
     let matches = s
         .approved
         .as_ref()
-        .is_some_and(|(shown, approved)| shown == session && approved == digest);
+        .is_some_and(|(shown, approved)| shown.as_str() == session && approved.as_str() == digest);
     if matches {
         s.approved = None;
     }
@@ -74,10 +83,16 @@ pub fn take_approved(session: &str, digest: &str) -> bool {
 /// Withdraw this session's pending text and its approval (the owner denied it).
 pub fn clear_for(session: &str) {
     let mut s = state();
-    if s.pending.as_ref().is_some_and(|(shown, _)| shown == session) {
+    if s.pending
+        .as_ref()
+        .is_some_and(|(shown, _)| shown.as_str() == session)
+    {
         s.pending = None;
     }
-    if s.approved.as_ref().is_some_and(|(shown, _)| shown == session) {
+    if s.approved
+        .as_ref()
+        .is_some_and(|(shown, _)| shown.as_str() == session)
+    {
         s.approved = None;
     }
 }

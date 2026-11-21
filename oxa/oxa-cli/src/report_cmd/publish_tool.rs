@@ -205,7 +205,7 @@ not count. Takes the draft path the draft command printed."
 
 /// The session that runs the tool: its `OXA_SESSION_ID`, which is also the scope of a typed
 /// publication `yes`. An empty scope (a direct test call) shares one process-wide scope.
-fn session_scope(ctx: &ToolCtx) -> &str {
+fn session_scope<'a>(ctx: &ToolCtx<'a>) -> &'a str {
     ctx.env
         .iter()
         .find(|(name, _)| name == "OXA_SESSION_ID")
