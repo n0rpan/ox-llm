@@ -1020,10 +1020,11 @@ mod tests {
     fn a_write_and_a_check_of_one_file_is_one_record() {
         let env = oxa_fake::TestEnv::new();
         env.write("work/answer.txt", "");
-        let (call, result) = declaration("answer.txt", "empty", Some(0), &env);
         let mut state = DoneState::default();
-        state.note_proof(&[call.clone()], &[result.clone()]);
-        state.note_proof(&[call], &[result]);
+        for _ in 0..2 {
+            let (call, result) = declaration("answer.txt", "empty", Some(0), &env);
+            state.note_proof(&[call], &[result]);
+        }
         assert_eq!(state.deliverables.len(), 1);
         let evidence = state.evidence().unwrap();
         assert_eq!(
@@ -1037,7 +1038,7 @@ mod tests {
 
     #[test]
     fn a_run_that_declared_nothing_has_no_record_and_no_extra_read() {
-        let mut state = DoneState::default();
+        let state = DoneState::default();
         assert!(state.evidence().is_none());
         assert_eq!(wrap_up_message(&state), crate::prompt::WRAP_UP);
     }
