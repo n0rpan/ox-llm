@@ -1,0 +1,1 @@
+- Desktop app (`oxa-desk`): the terminal UI and the desktop app now share one set of test event sequences (`oxa_fake::fixtures`: chat, a tool run with a diff, streaming bash, compaction, retry, error, worker cards, a secret ask), so their transcripts cannot drift apart unnoticed. Nothing users run changes.
