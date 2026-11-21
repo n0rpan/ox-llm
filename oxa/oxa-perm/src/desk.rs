@@ -20,6 +20,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const DIR_NAME: &str = "approvals";
 /// The advisory lock file of the desk, held across an answer or a consumption.
 const LOCK_NAME: &str = ".lock";
+/// The key prefix of the resolved push facts a grant is bound to (see `publish::push_facts`):
+/// `@facts <digest>` sits beside the danger keys of a pushing command. Never an `always` key.
+pub(crate) const FACTS_KEY: &str = "@facts";
+
+/// The grant key of a facts digest.
+pub(crate) fn facts_key(digest: &str) -> String {
+    format!("{FACTS_KEY} {digest}")
+}
+
 /// The answers the owner can give (`oxa send --approve <id> <answer>`).
 const ANSWERS: &[&str] = &["once", "session", "always", "deny"];
 
@@ -219,9 +228,25 @@ impl ApprovalDesk {
         hits: &[DangerHit],
         status: &str,
     ) -> io::Result<String> {
+        self.record_bound(session, cwd, command, hits, status, None)
+    }
+
+    /// Like [`ApprovalDesk::record`], with the digest of the resolved push facts the owner is
+    /// answering for (`@facts <digest>` beside the danger keys): the grant covers the command
+    /// only while those facts still hold.
+    pub fn record_bound(
+        &self,
+        session: &str,
+        cwd: &Path,
+        command: &str,
+        hits: &[DangerHit],
+        status: &str,
+        facts: Option<&str>,
+    ) -> io::Result<String> {
         // The same key the policy grants use: the rule over the complete command line, so an
         // approval is bound to the command the owner reviewed and never to a bare segment.
-        let keys: Vec<String> = hits.iter().map(|h| danger_key(h, command)).collect();
+        let mut keys: Vec<String> = hits.iter().map(|h| danger_key(h, command)).collect();
+        keys.extend(facts.map(facts_key));
         // Dedup and the write are one transition: two runs filing at once must not both insert.
         let _lock = self.lock()?;
         let dir = dir_key(cwd);

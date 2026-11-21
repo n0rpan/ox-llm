@@ -768,6 +768,60 @@ fn no_desk_keeps_the_ui_path() {
     assert!(p.danger_unattended(&exec(DANGEROUS), &cwd).is_none());
 }
 
+/// #2292: the preservation checkpoint note rides on the unattended request and the desk
+/// record of a destructive command, so the owner sees it on the approvals page too. It is
+/// the same request: same keys, same answers, no new refusal.
+#[test]
+fn preservation_note_rides_on_the_unattended_request_and_record() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    p.set_preservation(Some("keep commit abc123 exactly as it is"));
+    let text = p.danger_unattended(&exec(DANGEROUS), &cwd).expect("request");
+    assert!(text.contains("reversible checkpoint"), "{text}");
+    assert!(text.contains("keep commit abc123"), "{text}");
+    let id = request_id(&text);
+    let rec = desk
+        .records()
+        .expect("records")
+        .into_iter()
+        .find(|r| r.id == id)
+        .expect("record");
+    assert!(
+        rec.keys.iter().any(|k| k == KEY),
+        "the reviewed rule key is unchanged: {:?}",
+        rec.keys
+    );
+    assert!(
+        rec.reasons.iter().any(|r| r.contains("reversible checkpoint")),
+        "{:?}",
+        rec.reasons
+    );
+    // The owner's answer works exactly as before.
+    desk.answer(&id, "once").expect("answer");
+    assert_eq!(p.decide(Mode::Workspace, &exec(DANGEROUS), &cwd), Decision::Allow);
+}
+
+/// #2292: a refusal names the checkpoint too, and only for a destructive rule.
+#[test]
+fn preservation_note_rides_on_the_unattended_refusal() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Refuse, true);
+    p.set_preservation(Some("preserve the release branch"));
+    let text = p.danger_unattended(&exec(DANGEROUS), &cwd).expect("refusal");
+    assert!(
+        text.starts_with("Refused: dangerous command (git-push-force: "),
+        "{text}"
+    );
+    assert!(text.contains("reversible checkpoint"), "{text}");
+    assert!(text.contains("preserve the release branch"), "{text}");
+    let sudo = p.danger_unattended(&exec("sudo ls"), &cwd).expect("refusal");
+    assert!(!sudo.contains("reversible checkpoint"), "{sudo}");
+}
+
 /// #2097: a pipeline fed by a command the owner never saw (`cat targets | tee ...`) acts on data
 /// that can change after the answer, so it is refused unattended and its record cannot be
 /// answered; a literal producer fixes the data in the reviewed text and still files a request.
@@ -807,4 +861,87 @@ fn unattended_replay_refuses_a_pipeline_fed_by_a_file() {
     let text = p.danger_unattended(&exec(literal), &cwd).expect("request text");
     assert!(!text.contains("cannot be verified"), "{text}");
     assert_eq!(desk.pending().expect("pending").len(), 1);
+}
+
+/// A synthetic repository (plain files: HEAD, one branch, config, origin's default branch) under
+/// the test workspace.
+fn synthetic_repo(env: &TestEnv, oid: &str, url: &str) -> PathBuf {
+    env.write("work/.git/HEAD", "ref: refs/heads/x\n");
+    env.write("work/.git/refs/heads/x", &format!("{oid}\n"));
+    env.write(
+        "work/.git/refs/remotes/origin/HEAD",
+        "ref: refs/remotes/origin/main\n",
+    );
+    env.write(
+        "work/.git/config",
+        &format!("[remote \"origin\"]\n\turl = {url}\n"),
+    );
+    env.work()
+}
+
+/// #2055: a desk grant of a push is bound to the facts it was answered for: the same text after
+/// the source ref moved, or after origin's URL changed, files a new request instead of running.
+#[test]
+fn a_push_grant_is_bound_to_ref_ids_and_remote_identity() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let url = "https://example.invalid/r.git";
+    let cwd = synthetic_repo(&env, &"a".repeat(40), url);
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    let cmd = exec("git push --force origin x");
+
+    let first = p.danger_unattended(&cmd, &cwd).expect("request");
+    desk.answer(&request_id(&first), "once").expect("answer");
+    assert_eq!(
+        p.decide(Mode::Workspace, &cmd, &cwd),
+        Decision::Allow,
+        "claimable at the reviewed ids"
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &cmd, &cwd),
+        Decision::Ask,
+        "and only once"
+    );
+
+    let second = p.danger_unattended(&cmd, &cwd).expect("request");
+    desk.answer(&request_id(&second), "session").expect("answer");
+    assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Allow);
+    env.write("work/.git/refs/heads/x", &format!("{}\n", "b".repeat(40)));
+    assert_eq!(
+        p.decide(Mode::Workspace, &cmd, &cwd),
+        Decision::Ask,
+        "the source ref moved"
+    );
+    let third = p.danger_unattended(&cmd, &cwd).expect("a new request");
+    assert!(third.starts_with("Needs owner approval (request "), "{third}");
+    assert_ne!(request_id(&third), request_id(&second));
+
+    desk.answer(&request_id(&third), "session").expect("answer");
+    assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Allow);
+    env.write(
+        "work/.git/config",
+        "[remote \"origin\"]\n\turl = https://other.invalid/r.git\n",
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &cmd, &cwd),
+        Decision::Ask,
+        "origin points elsewhere"
+    );
+}
+
+/// A push whose refspec the shell computes cannot be verified for replay.
+#[test]
+fn a_push_with_a_computed_refspec_is_refused_unattended() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = synthetic_repo(&env, &"a".repeat(40), "https://example.invalid/r.git");
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    let refusal = p
+        .danger_unattended(&exec("git push --force origin $BRANCH"), &cwd)
+        .expect("refusal");
+    assert!(
+        refusal.contains("cannot be verified for unattended replay"),
+        "{refusal}"
+    );
+    assert!(desk.pending().expect("pending").is_empty());
 }

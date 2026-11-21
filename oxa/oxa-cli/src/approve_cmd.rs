@@ -313,7 +313,15 @@ pub(crate) fn approve_with(
         .map_err(|e| OxaError::io("cannot answer the approval request", &e))?;
     if answer == "always" {
         let mut settings = Settings::load(dirs, cwd, false);
-        oxa_interactive::append_always(&mut settings, dirs, cwd, &record.keys)?;
+        // `@facts <digest>` binds a desk grant to one push state (#2055); the owner's `always`
+        // line stays the exact `<rule> <command>` key.
+        let keys: Vec<String> = record
+            .keys
+            .iter()
+            .filter(|k| !k.starts_with('@'))
+            .cloned()
+            .collect();
+        oxa_interactive::append_always(&mut settings, dirs, cwd, &keys)?;
     }
     // Informational only: the running session learns of the answer and grants nothing itself.
     let note = format!("Approval {request} answered: {answer}; retry the command.");
@@ -447,6 +455,33 @@ mod tests {
         );
         // The answered request is no longer pending, so a second answer is refused.
         assert!(approve_with(&dirs, &cwd, "s1", &id, "once", &mut out, &mut |_| Some(true)).is_err());
+    }
+
+    /// The facts key that binds a desk grant to one push state is never copied into the owner's
+    /// `always` line.
+    #[test]
+    fn an_always_answer_writes_no_facts_key() {
+        let env = oxa_fake::TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let cwd = env.work();
+        let desk = ApprovalDesk::open(&dirs.agent_dir).expect("desk");
+        let id = desk
+            .record_bound(
+                "s1",
+                &cwd,
+                "git push --force origin main",
+                &[hit()],
+                "pending",
+                Some("0123abcd"),
+            )
+            .expect("record");
+        let mut out: Vec<u8> = Vec::new();
+        approve_with(&dirs, &cwd, "s1", &id, "always", &mut out, &mut |_| Some(true)).expect("approve");
+        let user = Settings::load(&dirs, &cwd, false).list("oxa.approval.always");
+        assert_eq!(
+            user,
+            vec!["git-push-force git push --force origin main".to_string()]
+        );
     }
 
     #[test]

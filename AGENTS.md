@@ -13,6 +13,18 @@ code, tests, CI and docs; the owner validates on hardware.
 
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
+- Resolve owner token commands through vetted tool paths, with no fallback to another source.
+  Every operand must be an absolute executable helper and pass the same permission, symlink and
+  location checks as the command. Refuse paths through the checkout, sandbox write mounts
+  (including implicit and shared worker caches), or writable parts of a home workspace. Run the
+  command outside the checkout with a fixed system PATH and only vetted home/config directory
+  variables; exclude checkout paths and symlinks into them, including `HOME`.
+  Run the local push scan before requesting a publication token; keep the exact destination scan.
+  Configured publish tokens go only to github.com over HTTPS without checkout Git config. Never
+  put a configured credential in a shell environment; only the isolated runner transport uses it.
+  Refresh after confirmation and during lane reads; never replay a mutation. Active output
+  redactors must see newly registered tokens, and a configured source's token stays masked from the
+  first command that needs one, loaded or not.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
   authority, login/token paths and `oxa.inbox.headless` user-only. A project file must never
   override these decisions. Enforce that boundary both when loading settings and when adopting a
@@ -39,12 +51,6 @@ code, tests, CI and docs; the owner validates on hardware.
   warning only when no sandbox was requested. Plan commands and non-yolo project hooks still
   require bwrap on Linux; unattended runs that require bwrap fail closed.
 - **Extension exec directory:** an extension's `oxa.exec` whose `cwd` is outside the session directory asks like a write (or read) outside the project before the directory is mounted; yolo does not ask, a `cwd` inside the session directory is unchanged (`exec_gated`, `oxa-core/src/host.rs`).
-- **Owner yes:** an approval comes only from the owner: the owner's typed message, the owner's
-  answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
-  broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
-  files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
-  records it. The broker socket is owned by the session (dir 0700, socket 0600). Do not add
-  `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
   - **Interactive CLI the owner talks to:** no OS sandbox by default, on Linux and macOS alike. A
     dangerous command gets an owner approval (once, this session, always, deny), never bwrap.
@@ -60,6 +66,7 @@ code, tests, CI and docs; the owner validates on hardware.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+  - **Git config guard (owner decision, #639):** sandboxed bash may change the git `config` keys of the user-only `oxa.sandbox.gitConfigAllow` (default `branch.*`, `user.*`, `remote.*.fetch`); the sandbox leaves an existing plain `config` unbound and restores the whole file after a command that changed any other key. That is deliberate, not a missing read-only bind; a finding that asks for the old read-only `config` contradicts this rule.
   - Headless runs pursuing a goal and ownerless RPC count as unattended. Host tool shells use a
     cleared toolchain environment. Preserve exact-value masking in live and captured output for
     known GitHub credentials, the engine bearer key and nonempty environment values named with
@@ -135,16 +142,6 @@ code, tests, CI and docs; the owner validates on hardware.
 - Go review quota and same-diff checks read at most 200 GitHub comment pages (20,000 comments).
   If either history exceeds that bound, the review defers before reserving quota or requesting a
   provider token; an incomplete history must never authorize another review.
-- **Intent:** the change must do what its linked issue and PR description say, and nothing else.
-  Flag as P1: missing or contradicted acceptance criteria from the linked issue; unrelated changes
-  mixed in; a default that contradicts the owner decision stated in the linked issue or PR body
-  (on-by-default with an opt-out setting is normal and is not itself a finding); deleted or
-  disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
-  body; a test weakened, skipped or rewritten to pass instead of fixing the code.
-- **Security policy changes carry their rules:** a change to approval, sandbox, credential, secret or
-  publish behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and the user
-  docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A change to an ordinary
-  default, limit or budget updates the user docs; a missing docs update is P3 and is fixed forward.
 - **Dev publishing:** the rolling dev release requires both reproducible Linux archives. Its native
   macOS arm64 archive is best effort and may be absent without blocking Linux publication. Every
   archive that is published is included in the versioned checksum file and build provenance.
@@ -152,12 +149,6 @@ code, tests, CI and docs; the owner validates on hardware.
   generated index and lock file is owner-only (`0600`). A save must tighten an existing directory
   with looser permissions before writing; review changes against this upgrade behaviour as well as
   new stores.
-- **Early-stage process (owner decision, until v0.3):**
-  - Only P0/P1 findings, security findings and an open security review block a merge. P2/P3 findings are filed as follow-ups and fixed forward on main.
-  - Prefer one PR per feature, up to about 800 changed lines, over stacks of small PRs.
-  - A merge that breaks required checks on main is reverted at once, then fixed forward. A review finding
-  that contradicts an owner decision stated in the linked issue or PR is answered by updating these
-  rules in that PR, not by changing the behaviour.
 - **Publication scan:** `oxa work --publish` and lane pushes refuse secrets in the commits they push (keys,
   known tokens also after a word character, opaque credential assignments (also `_key`/`credentials`
   names) and quoted literals, secret-store content, configured secret values). A file is refused for its
@@ -194,8 +185,6 @@ code, tests, CI and docs; the owner validates on hardware.
   lists them in the user-only `oxa.sandbox.sockets` (default empty) and permits network access.
   An online bind uses a validated socket descriptor. The start notice names each and warns of
   the access it grants. Yolo needs no entry.
-- **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
-  registry with its surfaces and help (P1 if added outside it or without an exception reason).
 - The publish text heuristic must not mistake a literal script filename in a direct shell invocation
   for inline `git push` text. Script-file commands keep normal mode permissions; the remaining
   publish and dangerous-command checks still apply.
@@ -207,25 +196,17 @@ code, tests, CI and docs; the owner validates on hardware.
   `oxe admission` is an engine CLI exception. It reports allocation bounds directly from a GGUF
   header and accepts `oxe-server` launch arguments without opening an oxa session. Its command and
   flag help live in `oxe admission --help`. It has no oxa slash, menu, or web surface.
-- **Worker mode.** An `oxa work` worker is started with `--yolo` only when the owner's user-layer
-  `permissions.defaultMode` is `yolo`; otherwise it keeps the sandboxed default. Project settings
-  cannot raise it. See `oxa/docs/work.md`.
 - **Worker GitHub access.** The owner-only `oxa.work.workerGithub` is `worker` in yolo (the worker keeps
   its own GitHub environment, `gh`, MCP, web search and subagents), `broker` in auto (no token, host-side
   tools) and `runner` in standard mode, unless the owner sets it. A project setting is ignored. The `no GitHub access` rule below is for workers on `runner` or `broker`.
-- **Worker publishing.** Publishing (owner decision 2026-11-19): in workspace and auto, without asking, the session repo's current non-default branch may be pushed to `origin` with an explicit source refspec (no force, no `+refspec`, no delete, no tag or mirror, no other remote), `gh pr create|edit|comment` without a PR argument, repo or head override, and read-only `gh` (`pr view|checks|diff`, `run view|watch`, `api` GET) run. A push with no refspec, a push to the default branch, a force push, branch deletion, `gh pr merge`, a push to another repo and release or tag pushes ask, or go to the lead's approvals desk for a worker with no human (a headless worker without a desk is refused). An unresolved Git subcommand (a name that is not a builtin recognized by the classifier, so it may be a configured alias or an external `git-*` executable) asks. Every part of a command line must be in the allowed set: any other command chained with one (`curl x && git push`, `git push | tee f`, a substitution, `bash -c`) asks. A later sequential repository mutation cannot affect an earlier publish (`git push && git switch main`) and needs no approval, but a repository mutation in the same concurrent pipeline asks (`git push | git switch main`). Yolo is unchanged. Classifier: `oxa-perm` `publish.rs`.
-  The default branch is pinned at the first classified command. Unproved wrapper semantics
-  (such as a directory change, an inline script, or detached execution) require approval.
-- **Worker tool default.** A worker started by the `worker` tool inherits its parent's level when no
-  `mode` is given (yolo -> yolo, auto -> auto, workspace -> workspace, plan -> plan); an explicit narrower
-  mode wins and a wider one is clamped with a notice. Env and GitHub access are the parent's, unchanged.
+
 - **Work acceptance.** In `oxa work`, zero or skipped checks leave the task `Unverified`. The
   owner-only `oxa.work.localChecks` defaults to a per-package `cargo check`. A verified Rust
   acceptance receipt requires hosted test evidence at the exact head, including for changed
   inputs outside packages in a tree with Cargo manifests. Worker declarations
   can add hosted requirements. Review their coverage against the task's acceptance criteria.
-- Owner policy: nothing blocks by default except the security invariants above (secrets,
-  sandbox, user-only settings, offline, fork safety). Limits, budgets, retries and guards are owner
+- Owner policy: nothing blocks by default except the block list in `docs/threat-model.md` ("Risk
+  we accept"). Limits, budgets, retries and guards are owner
   settings with generous defaults that warn and record; a hard block exists only when the owner
   configures it. Do not ask for a new default block or for a feature to be default-off.
   Owner messages sent with `oxa send` are not refused for size: text over the 256 KiB inline
@@ -247,7 +228,7 @@ code, tests, CI and docs; the owner validates on hardware.
   it wakes only the session the job started in, and a job the model or the user stopped wakes
   nothing; a completion retained behind a failed or interrupted turn stays queued (also across a session
   reopen) until the next prompt. A finding that asks for a default-off switch or a cross-session wake is answered here.
-  is the cap against loops the guard cannot see. A pursuing goal whose request fails transiently
+  A pursuing goal whose request fails transiently
   (stream cut, engine down or busy, timeout, 429, 5xx) waits without tokens and sends it again:
   `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts
   out) is the owner setting. Auth errors, refusals, the repetition stop, aborts and an owner budget
@@ -259,7 +240,10 @@ code, tests, CI and docs; the owner validates on hardware.
   owner-scoped (`once` is consumed by the retrying run; `session` expires when that run ends;
   `always` persists through user settings) and a project file
   or model output cannot grant one. Shell parameter or command substitution markers anywhere in
-  the command prevent reuse of a saved grant. A finding that asks for a default-off switch or for
+  the command prevent reuse of a saved grant. An explicit user requirement to preserve work adds
+  one reversible-checkpoint sentence to a destructive rule's existing question (#2292): additive
+  text on the same prompt, refusal and request, never a new prompt, refusal or cap, and approval
+  authority is unchanged. A finding that asks for a default-off switch or for
   an unattended run to wait is answered here.
 
   The board degrades per item, not per snapshot: a PR whose GitHub evidence exceeds a read page
@@ -396,8 +380,9 @@ gh run view <run-id> --log-failed | tail -100
 Owner decision for the early stage, until v0.3:
 
 - **Required checks** are green at the exact head. This always applies.
-- **Review:** the latest Codex review on the exact head decides. Only P0/P1 findings, security findings and an open
-  security review block. P2/P3 findings become follow-up issues and are fixed forward on main. Only threads opened on
+- **Restrictions:** a PR with a `Restricts:` line merges only with the owner's `owner-accepted` label.
+- **Review:** the latest Codex review on the exact head decides. Only P0/P1 findings and an open security review
+  block. A security finding is P0/P1 only when it hits the block list in `docs/threat-model.md`. P2/P3 findings become follow-up issues and are fixed forward on main. Only threads opened on
   the current head count. Never bulk-resolve review threads.
 - **Security core:** the sandbox and permissions, secrets and credentials, login, redaction, publishing and owner
   confirmation, install, packaging and update, and `.github/`. The review rule above always applies there.
@@ -463,7 +448,16 @@ read its result; they never launch builds or tests.
 
 **How to review**
 
-- Reserve P0/P1 for a violated invariant below, concrete data loss or a crash. Report only introduced, actionable
+- **Power is the default; restrictions need the owner (owner 2026-11-21).** Any change that makes oxa less powerful (a new refusal, prompt, cap, fail-closed path, narrower default, or a removed capability) needs the owner's explicit acceptance. Its PR body carries one line per restriction: `Restricts: <what> — <why> — <drawback for the user>`, and the PR merges only after the owner accepts it with the `owner-accepted` label. This holds for review findings too: a finding that asks for such a change states the same three things, and outside the block list it is a P3 suggestion, never a blocker.
+- **Security severity is calibrated to a power tool** (owner 2026-11-21, `docs/threat-model.md` "Risk we accept").
+  P0/P1 security is only the block list: a secret leaving the machine or reaching the model, logs or session files; a
+  remote party (network, LAN guest, fork PR, provider stream) gaining code execution, credentials or spend; metered
+  money past a configured cap; an untrusted project changing user-only settings; data loss or an OS-breaking wipe
+  under default settings; offline mode using the network. Everything else is P3 hardening at most and is filed as a
+  follow-up: attacks that need code already running as the owner, shell obfuscation that only reaches what the mode
+  allows anyway, anything in yolo beyond its two hard refusals, and theoretical chains. Do not ask for new refusals,
+  prompts, caps or fail-closed behaviour outside the block list.
+- Reserve P0/P1 for a violated security invariant below, concrete data loss or a crash. Report only introduced, actionable
   defects with a failure scenario; skip style and speculative risks. Do not ask to split a PR of up to about 800
   lines.
 - A finding is a claim to verify, not an order. Whoever acts on a review finding first shows it is real (a failing
@@ -487,25 +481,39 @@ read its result; they never launch builds or tests.
   these is P1.
 - **Reuse before you write:** search for an existing helper (settings and env parsing, trusted executable lookup,
   private/atomic file writes, subprocess limits, GitHub calls, retry, redaction, test fixtures) and call it. A second
-  implementation of the same responsibility is a P2 review finding; a weaker one (looser permissions, symlinks,
-  limits) is P1.
+  implementation of the same responsibility is a P2 review finding; a weaker one is P1 only when it hits the block
+  list (for example looser permissions on a secret), otherwise P2.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command registry with
   its surfaces and help (P1 if added outside it or without an exception reason).
 
 **Security invariants**
-- Inbox child creation, publication, scanning and privacy wipes must stay relative to opened
-  no-follow directory descriptors on Linux and macOS. Do not re-resolve a saved pathname.
-
+- Project trust defaults to a saved folder decision, including the closest saved parent. Report new or
+  changed gated resources by path when loading them. `projectTrustPolicy: "content"` is user-only and
+  retains executable-content re-approval; loading changes under folder trust does not approve those
+  bytes for content policy or managed-worktree inheritance. Preserve explicit denials, safe paths and
+  the existing owner approval route. Trusted unattended checks run; untrusted checks report why and
+  how the owner can approve the source rather than silently skipping.
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests; use synthetic fixtures.
   Do not open real credential files during review.
 - Keep engine transport selection, native binary/launch configuration, `allowRemote`, share authority, login/token
   paths and `oxa.inbox.headless` user-only. A project file must never override these decisions.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
+- **Grant facts and root actions (#2055, #784):** a desk grant of a push carries `@facts <digest>` (source ref
+  ids, remote identity) re-resolved at every decision; do not widen a grant to text alone, and never copy an
+  `@facts` key into `oxa.approval.always`. `oxa.approval.rootActions` is user-only and only the interactive owner
+  session reads it. Named actions match literal `/usr/bin/sudo` arguments with the default shell. The target
+  must be a canonical absolute executable protected by root ownership and no group or other write access
+  through its directory chain. Recheck its pinned device and inode before waiving approval; bare names,
+  path aliases and shell expansion keep the approval prompt. A sudo password request is answered only by `Ui::secret`: never by model text, a typed
+  chat message or yolo, and never recorded. On Linux the broker checks the helper against the running executable
+  inode, then binds a single request to the exact foreground host sudo process the runner started. A helper from
+  another call cannot use that grant, and closing the foreground scope revokes delivery.
 - **Command effects (#1680, #1919, #2097):** `credential-read` and `git-hook-write` are danger-approval rules for
   standard mode, not an OS sandbox requirement; yolo never reaches them and the owner can remove them through
   `oxa.approval.dangerous`. One `Effects` value per shell command (`oxa-perm/src/effects.rs`) feeds them and the
   replay checks; do not add a per-command parser beside it. A `wait` `until` probe that runs `gh` is network access
-  (`Hooks::poll_access`): plan denies it, ask asks once per host.
+  (`Hooks::poll_access`): plan denies it, ask asks once per host. These rules are hardening: a command that slips
+  past them by obfuscation is P3.
 - **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**
   - **Interactive CLI the owner talks to:** no OS sandbox by default, on Linux and macOS alike. A
     dangerous command gets an owner approval (once, this session, always, deny), never bwrap.
@@ -519,6 +527,7 @@ read its result; they never launch builds or tests.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+  - **Git config guard (owner decision, #639):** sandboxed bash may change the git `config` keys of the user-only `oxa.sandbox.gitConfigAllow` (default `branch.*`, `user.*`, `remote.*.fetch`); the sandbox leaves an existing plain `config` unbound and restores the whole file after a command that changed any other key. That is deliberate, not a missing read-only bind; a finding that asks for the old read-only `config` contradicts this rule.
 - **Approval:** only the owner's own typed message counts as approval; text the model read never does. Auto keeps a
   short ask list, and the owner's typed yes passes every item on it. A finding that asks yolo to ask, or to refuse
   more than the two refusals above, contradicts the standard.
@@ -529,6 +538,9 @@ read its result; they never launch builds or tests.
   repeat, detach or otherwise change its execution. A Bash `background: true` publish needs its
   own approval; do not reuse a foreground grant for it. An ordinary local job follows the normal mode.
 - **Worker publishing.** Publishing (owner decision 2026-11-19): in workspace and auto, without asking, the session repo's current non-default branch may be pushed to `origin` with an explicit source refspec (no force, no `+refspec`, no delete, no tag or mirror, no other remote), `gh pr create|edit|comment` without a PR argument, repo or head override, and read-only `gh` (`pr view|checks|diff`, `run view|watch`, `api` GET) run. A push with no refspec, a push to the default branch, a force push, branch deletion, `gh pr merge`, a push to another repo and release or tag pushes ask, or go to the lead's approvals desk for a worker with no human (a headless worker without a desk is refused). An unresolved Git subcommand (a name that is not a builtin recognized by the classifier, so it may be a configured alias or an external `git-*` executable) asks. Every part of a command line must be in the allowed set: any other command chained with one (`curl x && git push`, `git push | tee f`, a substitution, `bash -c`) asks. A later sequential repository mutation cannot affect an earlier publish (`git push && git switch main`) and needs no approval, but a repository mutation in the same concurrent pipeline asks (`git push | git switch main`). Yolo is unchanged. Classifier: `oxa-perm` `publish.rs`.
+  The default branch is pinned at the first classified command. Unproved wrapper semantics
+  (such as a directory change, an inline script, or detached execution) require approval.
+  This publish floor is hardening: a push that slips past it by obfuscation is P3; the publication scan for secrets is what blocks.
 - **Worker tool default.** A worker started by the `worker` tool inherits its parent's level when no
   `mode` is given (yolo -> yolo, auto -> auto, workspace -> workspace, plan -> plan); an explicit narrower
   mode wins and a wider one is clamped with a notice. Env and GitHub access are the parent's, unchanged.
@@ -536,10 +548,15 @@ read its result; they never launch builds or tests.
   unknown authors need `ok-to-review` before token-spending review.
 - Nothing shipped or installed runs Python. Small Python dev and CI tools outside the release are fine.
 
+**Hardening (not blocking, P3 at most)**
+- Inbox child creation, publication, scanning and privacy wipes stay relative to opened no-follow directory
+  descriptors on Linux and macOS; do not re-resolve a saved pathname.
+- Sandbox scratch usage walks through no-follow directory handles, honors command cancellation, and keeps the
+  estimate advisory with entry, time and open-directory budgets.
+
 **Owner policy: limits warn and record**
 
-- Nothing blocks by default except the security invariants above (secrets, the sandbox standard, user-only settings,
-  offline, fork safety). Limits, budgets, retries and guards are owner settings with generous defaults that warn and
+- Nothing blocks by default except the block list in `docs/threat-model.md`. Limits, budgets, retries and guards are owner settings with generous defaults that warn and
   record; a hard block exists only when the owner configures it. Do not ask for a new default block or for a feature
   to be default-off.
 - **Ledger.** Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps across

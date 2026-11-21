@@ -140,6 +140,23 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             report(err, error)
         }
     };
+    if a.wire_evidence
+        && (a.subcommand.is_some()
+            || a.export.is_some()
+            || a.list_models.is_some()
+            || a.lead
+            || choose_mode(&a, stdin_is_tty, stdout_is_tty) != RunMode::Interactive
+            || is_agent(env)
+            || crate::child::ChildIdentity::from_env(env, &mut Vec::new()).nested())
+    {
+        return report(
+            &mut *stderr,
+            &OxaError::new(
+                codes::USAGE,
+                "--wire-evidence needs a foreground owner terminal session",
+            ),
+        );
+    }
     // A long flag oxa does not know may belong to an extension (`registerFlag`): the session
     // paths resolve it once the extensions are loaded (`build_hooks`). The paths that load no
     // extension (subcommands, `--export`, `--list-models`) refuse it here.
@@ -247,6 +264,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                         crate::lead_loop::asks(&dirs, &cwd, env, &mut *stdout)
                     }
                     CommandId::Usage => crate::usage_cmd::run(&words.0, &dirs, &cwd, &mut *stdout),
+                    CommandId::Cache => crate::cache_cmd::run(&words.0, &dirs, &cwd, env, &mut *stdout),
                     CommandId::Lead
                     | CommandId::LeadServe
                     | CommandId::LeadBoard
@@ -777,6 +795,9 @@ impl Built {
                 oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
                     .with_owner_present(self.ask_owner_present),
             ));
+            // #2293 A: the model records the file a request asks it to produce, and the run's
+            // end record checks it once more. Evidence only: no gate, no exit code.
+            tools.push(Arc::new(oxa_tools::DeliverableTool::new()));
         }
         if !self.supervised_child && !self.lead {
             if let Some(env) = &self.report_dialog {
@@ -1013,6 +1034,7 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
+
     if !crate::in_process::cloud_enabled(&user_settings, dirs) {
         notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
     }
@@ -1021,16 +1043,17 @@ fn prepare(
     let inherited_source = env
         .get(oxa_work::WORKTREE_TRUST_SOURCE_ENV)
         .filter(|_| mode == RunMode::Json);
-    let trusted = if let Some(source) = inherited_source.filter(|_| a.approve.is_none()) {
-        let source = Path::new(source);
-        let store = TrustStore::load(&dirs.trust_file());
+    let managed_source = inherited_source.map(Path::new).filter(|source| {
         let path = std::ffi::OsStr::new(env.get("PATH").unwrap_or(""));
-        let trusted = store.lookup(source) == Some(true)
-            && crate::netguard::trusted_executable_for("git", Some(path), Some(cwd), Some(&dirs.home))
-                .is_some_and(|git| oxa_work::verify_managed_worktree(&git, path, source, cwd).is_ok())
-            && store.approved_worktree_resources(source, cwd);
+        crate::netguard::trusted_executable_for("git", Some(path), Some(cwd), Some(&dirs.home))
+            .is_some_and(|git| oxa_work::verify_managed_worktree(&git, path, source, cwd).is_ok())
+    });
+    let trusted = if inherited_source.is_some() && a.approve.is_none() {
+        let trusted = managed_source.is_some_and(|source| {
+            TrustStore::load(&dirs.trust_file()).approved_worktree_resources(source, cwd)
+        });
         if !trusted {
-            report_untrusted_project(dirs, cwd, &gated, &mut notices);
+            report_untrusted_project(&gated, &mut notices);
         }
         trusted
     } else {
@@ -1047,6 +1070,23 @@ fn prepare(
     // Inherited trust covers verified resources. Project settings, MCP and
     // agent definitions need direct approval.
     let direct_project_trust = trusted && inherited_source.is_none();
+    if !trusted && Settings::project_declares_done(dirs, cwd) {
+        if managed_source.is_some() {
+            notices.push((
+                Level::Info,
+                "Managed worktree: the work runner handles project done checks".into(),
+            ));
+        } else {
+            let fix = format!(
+                "{}, or pass --approve for this run",
+                crate::approval::approval_fix(cwd)
+            );
+            if mode != RunMode::Interactive || !stdin_is_tty || !stdout_is_tty {
+                return Err(OxaError::new(codes::DENIED, UNTRUSTED_DONE).with_hint(fix));
+            }
+            notices.push((Level::Warning, format!("{UNTRUSTED_DONE}\nFix: {fix}")));
+        }
+    }
     let mut settings = child.apply(if direct_project_trust {
         Settings::load(dirs, cwd, true)
     } else {
@@ -1057,6 +1097,21 @@ fn prepare(
         // local done round just because trusted project resources were loaded.
         settings = settings.with_override("done", Value::Array(Vec::new()));
     }
+    // A custom shell or prefix can change the argv after classification. Named root actions
+    // are for the interactive owner with the default shell, never delegated runs.
+    let danger = if mode == RunMode::Interactive
+        && !child.nested()
+        && !a.lead
+        && settings.shell_path(&dirs.home).is_none()
+        && settings.shell_command_prefix().is_none()
+    {
+        let (rules, warnings) =
+            danger.with_root_actions(&user_settings.user_list(oxa_perm::SETTING_ROOT_ACTIONS));
+        notices.extend(warnings.into_iter().map(|w| (Level::Warning, w)));
+        rules
+    } else {
+        danger
+    };
     // CLI-045 (pi cli.md): `--verbose` overrides `quietStartup` for this run (in memory only).
     if a.verbose {
         settings = settings.with_override("quietStartup", Value::Bool(false));
@@ -1319,8 +1374,14 @@ fn prepare(
     );
     policy.os_sandbox = os_sandbox;
     policy.attended_tui = interactive;
-    let host_net =
-        crate::netguard::with_net_policy(sandbox, &settings, &policy, env, endpoint.api_key.as_deref());
+    let host_net = crate::netguard::with_net_policy(
+        sandbox,
+        &settings,
+        &policy,
+        env,
+        endpoint.api_key.as_deref(),
+        crate::netguard::TokenWorkspace::new(cwd, &dirs.home, &layout),
+    );
     let sandbox: Arc<dyn Sandbox> = host_net.clone();
     let (sandbox, net_notice) = bash_sandbox(sandbox, interactive && !os_sandbox, oxa_proto::offline());
     if let Some(notice) = net_notice {
@@ -1450,11 +1511,16 @@ fn prepare(
         .as_deref()
         .map(crate::usage_log::UsageLog::create)
         .transpose()?;
-    let result_facts = Arc::new(
-        crate::result_facts::ResultFacts::new(status.clone())
-            .with_billing(cloud_diagnostics.clone())
-            .with_usage_log(usage_log),
-    );
+    let mut result_facts = crate::result_facts::ResultFacts::new(status.clone())
+        .with_billing(cloud_diagnostics.clone())
+        .with_usage_log(usage_log);
+    // #2297: only a task that explicitly supplies an allowed changed-file set gets the
+    // tool-observed changed-file evidence; every other run keeps the unavailable record.
+    if !a.allowed_changed_files.is_empty() {
+        result_facts =
+            result_facts.with_changed_file_scope(cwd.to_path_buf(), a.allowed_changed_files.clone());
+    }
+    let result_facts = Arc::new(result_facts);
     let built = Built {
         lead: a.lead,
         status,
@@ -1575,7 +1641,7 @@ pub(crate) fn project_trusted(
             }
         }
     };
-    // B4: what runs outside the sandbox loads only as the user approved it (content hashes).
+    // Apply the owner's folder or content policy only after resolving trust.
     let trusted = if trusted && !gated.is_empty() {
         crate::approval::check(crate::approval::Check {
             env,
@@ -1585,6 +1651,7 @@ pub(crate) fn project_trusted(
             via_flag: approve == Some(true),
             via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
             asked_now,
+            content: user_settings.project_trust_requires_content(),
             interactive,
             notices,
         })?
@@ -1598,12 +1665,14 @@ pub(crate) fn project_trusted(
         trust_store.record_baseline(&dirs.trust_file(), cwd)?;
     }
     if !trusted {
-        report_untrusted_project(dirs, cwd, gated, notices);
+        report_untrusted_project(gated, notices);
     }
     Ok(trusted)
 }
 
-fn report_untrusted_project(dirs: &Dirs, cwd: &Path, gated: &[String], notices: &mut Vec<(Level, String)>) {
+const UNTRUSTED_DONE: &str = "done checks in .oxa/settings.json were not run: project is not trusted";
+
+fn report_untrusted_project(gated: &[String], notices: &mut Vec<(Level, String)>) {
     if !gated.is_empty() {
         notices.push((
             Level::Warning,
@@ -1611,14 +1680,6 @@ fn report_untrusted_project(dirs: &Dirs, cwd: &Path, gated: &[String], notices: 
                 "project resources were skipped (not trusted): {}",
                 gated.join(", ")
             ),
-        ));
-    }
-    // `done` is a project-only key in practice: an untrusted project's list is never merged,
-    // so say that its checks will not run.
-    if Settings::project_declares_done(dirs, cwd) {
-        notices.push((
-            Level::Warning,
-            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
         ));
     }
 }
@@ -1670,15 +1731,30 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
         Some("never") => DefaultTrust::Untrusted,
         _ => DefaultTrust::Ask,
     };
+    let store = TrustStore::load(&dirs.trust_file());
+    let saved = store.lookup(cwd);
     let gated = gated_resources(cwd);
     let trusted = resolve_trust(&TrustInputs {
         flag: a.approve,
         extension: None,
-        saved: TrustStore::load(&dirs.trust_file()).lookup(cwd),
+        saved,
         default,
         interactive: false,
         has_gated: !gated.is_empty(),
     }) == TrustOutcome::Trusted;
+    let trusted = if trusted && !gated.is_empty() {
+        if user.project_trust_requires_content() {
+            let blanket = a.approve == Some(true) || (saved.is_none() && default == DefaultTrust::Trust);
+            blanket || !matches!(store.approval(cwd), oxa_perm::Approval::Changed(_))
+        } else {
+            if let Some(text) = store.folder_changes_notice(cwd) {
+                write_diagnostics(err, [(Level::Warning, text)].into_iter());
+            }
+            true
+        }
+    } else {
+        trusted
+    };
     let settings = Settings::load(&dirs, cwd, trusted);
     let opts = match discover_opts(a, &dirs, cwd, trusted) {
         Ok(o) => o,
@@ -2057,9 +2133,10 @@ fn run_headless(
             headless_inbox_enabled(&built.settings),
         ),
     };
-    built.result_facts.ci_polls(session.stats().ci_polls);
+    let stats = session.stats();
+    built.result_facts.ci_polls(stats.ci_polls);
     built.result_facts.goal(session.goal());
-    built.result_facts.finish(session.stats());
+    built.result_facts.finish(stats);
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
@@ -2348,11 +2425,17 @@ fn run_tui(
         yolo: Some(yolo),
         os_sandbox: crate::run_kind::os_sandbox_active(built.os_sandbox, oxa_proto::OS_SANDBOX),
     };
+    let evidence = a.wire_evidence.then(|| session.arm_wire_evidence());
     let result = if pinned {
         oxa_interactive::run_pinned(session, opts, "oxa lead")
     } else {
         run_interactive(session, opts)
     };
+    if let Some(evidence) = evidence {
+        if let Ok(report) = serde_json::to_string(&evidence.finish()) {
+            let _ = writeln!(stderr, "Wire adjacency (oxa handoff only): {report}");
+        }
+    }
     let result = match &built.status {
         Some(status) => status.finish_interactive(result, stderr),
         None => result,

@@ -359,6 +359,9 @@ pub struct ModePolicy {
     unattended: UnattendedMode,
     /// #1512 S5: this run has the OS sandbox (`oxa.sandbox.unattended`, S3).
     os_sandbox: bool,
+    /// #2292: the user's explicit preservation requirement, a bounded quote of their own
+    /// message (see [`Policy::set_preservation`]). `None` = no requirement tracked.
+    preservation: Option<String>,
 }
 
 impl PartialEq for ModePolicy {
@@ -378,6 +381,7 @@ impl PartialEq for ModePolicy {
             && self.session_id == other.session_id
             && self.unattended == other.unattended
             && self.os_sandbox == other.os_sandbox
+            && self.preservation == other.preservation
     }
 }
 
@@ -440,10 +444,26 @@ impl ModePolicy {
     fn danger_hits(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
         let open = self.danger_open(a, cwd);
         if self.desk_grant(a, cwd, &open).is_some() {
-            Vec::new()
-        } else {
-            open
+            return Vec::new();
         }
+        // #2292: an explicit preservation requirement adds one reversible-checkpoint
+        // sentence to the existing question of a destructive rule. Additive: the keys, the
+        // answers and every decision stay exactly as they were; no new prompt or refusal.
+        let Some(requirement) = self.preservation.as_deref() else {
+            return open;
+        };
+        open.into_iter()
+            .map(|mut hit| {
+                if crate::preserve::destructive(&hit.rule) {
+                    hit.reason = format!(
+                        "{}. {}",
+                        hit.reason,
+                        crate::preserve::checkpoint_note(requirement)
+                    );
+                }
+                hit
+            })
+            .collect()
     }
 
     /// The classified hits of `a` minus the keys a session or always grant covers. Inspect
@@ -495,7 +515,15 @@ impl ModePolicy {
         {
             return None;
         }
-        let keys: Vec<String> = open.iter().map(|h| danger_key(h, command)).collect();
+        let mut keys: Vec<String> = open.iter().map(|h| danger_key(h, command)).collect();
+        // A push is granted for the facts it acts on (source ref ids, remote identity), read
+        // now, immediately before the run: the same text after a commit, a reset or a changed
+        // remote is a new question (#2055). Facts that cannot be resolved grant nothing.
+        match push_facts_of(command, cwd) {
+            None => {}
+            Some(Ok(digest)) => keys.push(crate::desk::facts_key(&digest)),
+            Some(Err(())) => return None,
+        }
         desk.covers(&self.session_id, cwd, &keys)
             .then_some((desk.as_ref(), keys))
     }
@@ -745,6 +773,10 @@ impl Policy for ModePolicy {
         self.session_id = id.to_string();
     }
 
+    fn set_preservation(&mut self, requirement: Option<&str>) {
+        self.preservation = requirement.map(str::to_string);
+    }
+
     /// #1512 S5: an exec that needs an answer in a run with no one to ask. With no desk, `None`
     /// (the caller asks the `Ui`, which refuses). Otherwise the refusal text, or the request
     /// text naming the filed request id.
@@ -757,7 +789,11 @@ impl Policy for ModePolicy {
         if hits.is_empty() {
             return None;
         }
-        if hits.iter().any(|hit| hit.rule == crate::desk::OPAQUE_SHELL_INPUT) || has_mutable_input(command) {
+        let facts = push_facts_of(command, cwd);
+        if hits.iter().any(|hit| hit.rule == crate::desk::OPAQUE_SHELL_INPUT)
+            || has_mutable_input(command)
+            || facts == Some(Err(()))
+        {
             return Some(
                 "Refused: shell input cannot be verified for unattended replay. Ask the owner to review and run it."
                     .into(),
@@ -776,7 +812,15 @@ impl Policy for ModePolicy {
         } else if refuse {
             tool_errors::DANGEROUS_REFUSED_SETTING.replace("{why}", &why)
         } else {
-            match desk.record(&self.session_id, cwd, command, &hits, "pending") {
+            let digest = facts.and_then(Result::ok);
+            match desk.record_bound(
+                &self.session_id,
+                cwd,
+                command,
+                &hits,
+                "pending",
+                digest.as_deref(),
+            ) {
                 Ok(id) => tool_errors::DANGEROUS_REQUESTED
                     .replace("{id}", &id)
                     .replace("{session}", &self.session_id)
@@ -836,6 +880,15 @@ impl Policy for ModePolicy {
             return None;
         }
         self.hidden.clone().map(|h| h as Arc<dyn PathFilter>)
+    }
+}
+
+/// The resolved facts of the pushes in `command` (see `publish::push_facts`); `None` when it
+/// pushes nothing. Text the tokenizer cannot read is unresolvable.
+fn push_facts_of(command: &str, cwd: &Path) -> Option<Result<String, ()>> {
+    match crate::danger::parse_line(command) {
+        Some(stages) => crate::publish::push_facts(&stages, cwd),
+        None => None,
     }
 }
 

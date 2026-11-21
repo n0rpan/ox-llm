@@ -126,6 +126,10 @@ fn not_fired_without_gated_resources() {
 #[test]
 fn config_created_during_a_session_is_not_auto_approved_next_start() {
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"projectTrustPolicy":"content"}"#,
+    );
     let trust = env.agent_dir().join("trust.json");
     let mut store = oxa_perm::TrustStore::load(&trust);
     store.save(&trust, &env.work(), true).expect("save trust");
@@ -134,12 +138,77 @@ fn config_created_during_a_session_is_not_auto_approved_next_start() {
     // What a tool of that session wrote (the sandbox leaves `.oxa` writable on purpose).
     env.write("work/.oxa/settings.json", r#"{"done": ["echo planted"]}"#);
     let (code, err) = go(&env);
-    assert_eq!(code, 0, "{err}");
-    assert!(err.contains("Project config not loaded"), "{err}");
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("done checks in .oxa/settings.json were not run") && err.contains("--approve"),
+        "{err}"
+    );
     assert!(err.contains("settings.json"), "{err}");
     let store = oxa_perm::TrustStore::load(&trust);
     assert!(
         matches!(store.approval(&env.work()), oxa_perm::Approval::Changed(_)),
         "the planted file is still not approved"
     );
+}
+
+#[test]
+fn parent_folder_trust_loads_changes_without_granting_content_approval() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let trust = env.agent_dir().join("trust.json");
+    let mut store = oxa_perm::TrustStore::load(&trust);
+    store.save(&trust, work.parent().unwrap(), true).unwrap();
+    project_ext(&env);
+    env.write("work/.oxa/settings.json", "{}");
+    let (code, err) = go(&env);
+    assert_eq!(code, 0, "{err}");
+    let marker = work.join("project-log.txt");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "loaded");
+    std::fs::remove_file(&marker).unwrap();
+
+    env.write(
+        "work/.oxa/extensions/local.js",
+        "export default function (oxa) { oxa.on('session_start', (e, ctx) => { ctx.fs.writeFile('project-log.txt', 'updated'); }); }",
+    );
+    env.write("work/.oxa/settings.json", r#"{"quietStartup":true}"#);
+    env.write(
+        "work/.oxa/themes/new-theme.json",
+        r##"{"name":"new-theme","colors":{"notARole":"#fff"}}"##,
+    );
+    let (code, err) = go(&env);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "updated");
+    let notice = err
+        .lines()
+        .find(|line| line.contains("loaded under folder trust"))
+        .expect(&err);
+    assert!(notice.contains("local.js (changed)"), "{notice}");
+    assert!(notice.contains("settings.json (changed)"), "{notice}");
+    assert!(notice.contains("new-theme.json (new)"), "{notice}");
+    std::fs::remove_file(&marker).unwrap();
+
+    // Switching to strict mode still sees the original approval, and the project cannot opt out.
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"projectTrustPolicy":"content"}"#,
+    );
+    env.write("work/.oxa/settings.json", r#"{"projectTrustPolicy":"folder"}"#);
+    let (code, err) = go(&env);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("Project config not loaded") && err.contains("local.js"),
+        "{err}"
+    );
+    assert!(!marker.exists());
+
+    // An explicit child denial still beats the saved parent grant under folder policy.
+    env.write("home/.oxa/agent/settings.json", "{}");
+    store.save(&trust, &work, false).unwrap();
+    let (code, err) = go(&env);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("not trusted") && !err.contains("loaded under folder trust"),
+        "{err}"
+    );
+    assert!(!marker.exists());
 }

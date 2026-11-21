@@ -217,9 +217,11 @@ unverified pending tests in hosted lane CI at the exact head.
 The worker can name additional acceptance crates by ending its final reply with
 `<oxa-acceptance>["crate-name"]</oxa-acceptance>`; a block that is not readable crate
 names, or a crate that is not part of the repository, keeps the task unverified.
-The source project must pass the existing
-trust and executable-content approval before a task starts. Invoking `work` does
-not approve an untrusted project. Acceptance runs in the normal bwrap sandbox;
+The source project must be trusted before a task starts. By default a trusted
+folder's changed `done` commands are reported and run; `projectTrustPolicy: "content"`
+requires fresh approval of changed executable project content. Invoking `work` does
+not approve an untrusted project. If checks cannot run for lack of trust, the error
+points to the source folder and interactive `/trust` route. Acceptance runs in the normal bwrap sandbox;
 missing or unusable bwrap blocks the task. Checkout has a ten-minute limit. Each
 check and the change inventory have a ten-minute ceiling within the remaining task deadline.
 `in subdirectory: command` selects a folder inside that sandbox. The runner rejects
@@ -329,7 +331,16 @@ task lock, changing state, constructing a model or calling GitHub. Its separate
 `liveness` is `running`, `finished`, `interrupted`, or `unknown` when the kernel
 cannot establish ownership. A missing original parent is not proof of a stopped
 child: status also checks the inherited stdin lock. Without `--json` it prints
-one short line per task.
+one summary line per task, plus any pending publication and its next step.
+
+For a saved head that differs from its base, status distinguishes a commit with
+no recorded push, an unconfirmed destination, and a branch whose exact head was
+pushed but has no recorded PR. The age is time since the runner saved that head,
+not the last retry; old checkpoints may have no age. These are local observations,
+not proof that GitHub currently has no PR or that a manually pushed branch is absent.
+Status adds no network probes. An authorized local worker owns the push, ready PR,
+CI fixes and review replies; a worker without GitHub access hands off to its authorized
+runner. Seeing a pending row does not grant publication authority.
 
 The [checkpoint integration contract](work-state.md) defines the runner's public
 event hook. Event/situation/standing stores and their CLI adapters are a separate

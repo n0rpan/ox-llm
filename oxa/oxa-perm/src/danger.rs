@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 /// The owner setting that lists the rules (`oxa.approval.dangerous`); user settings only.
 pub const SETTING_DANGEROUS: &str = "oxa.approval.dangerous";
 
+/// The owner setting that names root actions (`oxa.approval.rootActions`); user settings only.
+pub const SETTING_ROOT_ACTIONS: &str = "oxa.approval.rootActions";
+
 /// Every built-in rule: (id, one-line reason).
 pub const BUILTIN_RULES: &[(&str, &str)] = &[
     (
@@ -89,6 +92,8 @@ impl DangerHit {
 pub struct DangerRules {
     builtin: Vec<&'static str>,
     custom: Vec<Vec<String>>,
+    /// Owner-named root actions (`oxa.approval.rootActions`), pinned to protected executables.
+    root_actions: Vec<RootAction>,
 }
 
 /// Recursion cap for nested `$( )`, backticks and `sh -c` strings.
@@ -128,6 +133,7 @@ impl DangerRules {
         DangerRules {
             builtin: BUILTIN_RULES.iter().map(|row| row.0).collect(),
             custom: Vec::new(),
+            root_actions: Vec::new(),
         }
     }
 
@@ -155,7 +161,62 @@ impl DangerRules {
                 warnings.push(format!("{SETTING_DANGEROUS}: unknown rule `{e}` ignored"));
             }
         }
-        (DangerRules { builtin, custom }, warnings)
+        (
+            DangerRules {
+                builtin,
+                custom,
+                root_actions: Vec::new(),
+            },
+            warnings,
+        )
+    }
+
+    /// The owner's named root actions (`oxa.approval.rootActions`, user settings only): each
+    /// entry is `<name>: <command words>`, where `*` matches exactly one word. A line that is
+    /// exactly one simple command, `/usr/bin/sudo` (optionally `-n`) and a listed command,
+    /// raises no `sudo` hit; every other rule still applies. Sudo itself still decides whether
+    /// a password is needed. Invalid entries are ignored and reported in the warnings.
+    pub fn with_root_actions(mut self, entries: &[String]) -> (DangerRules, Vec<String>) {
+        let mut warnings = Vec::new();
+        for entry in entries {
+            let action = entry
+                .split_once(':')
+                .filter(|(name, _)| !name.trim().is_empty())
+                .and_then(|(_, command)| RootAction::parse(command));
+            match action {
+                Some(action) => {
+                    if !self.root_actions.contains(&action) {
+                        self.root_actions.push(action);
+                    }
+                }
+                None => warnings.push(format!(
+                    "{SETTING_ROOT_ACTIONS}: entry `{}` ignored (expected `<name>: <protected absolute executable> [arguments]`)",
+                    entry.trim()
+                )),
+            }
+        }
+        (self, warnings)
+    }
+
+    /// `true` for a listed action invoked via the absolute system sudo path.
+    fn is_root_action(&self, command: &str, stages: &[Stage]) -> bool {
+        if self.root_actions.is_empty() {
+            return false;
+        }
+        let Some(words) = literal_sudo_words(command, stages) else {
+            return false;
+        };
+        let argv: &[String] = match words {
+            // Even a call that cannot use the foreground broker must not resolve sudo via PATH.
+            [sudo, rest @ ..] if sudo == "/usr/bin/sudo" => match rest {
+                [flag, tail @ ..] if flag == "-n" => tail,
+                _ => rest,
+            },
+            _ => return false,
+        };
+        // The launcher chain must be just that `sudo`: the same argv comes out of `effects::of`.
+        let fx = effects::of(words, &[], false);
+        fx.privileged && fx.argv == argv && self.root_actions.iter().any(|action| action.matches(argv))
     }
 
     /// Every simple command of `command` that matches an enabled rule. `cwd` is the workspace
@@ -168,7 +229,12 @@ impl DangerRules {
         };
         let mut hits: Vec<DangerHit> = Vec::new();
         match parse_line(command) {
-            Some(stages) => self.check_stages(&stages, &ctx, 0, false, &mut hits),
+            Some(stages) => {
+                self.check_stages(&stages, &ctx, 0, false, &mut hits);
+                if self.is_root_action(command, &stages) {
+                    hits.retain(|hit| hit.rule != "sudo");
+                }
+            }
             None => self.push(&mut hits, "unparsed", command.trim()),
         }
         hits
@@ -408,7 +474,9 @@ impl DangerRules {
                 guard: ctx.guard,
             };
             match base.resolve(dir) {
-                Some(next) => moved = Some(next),
+                // The shell chdirs into the directory itself, so a symbolic link is followed before the next
+                // wrapper's `..`: `env -C link env -C ..` lands in the target's parent (#1768).
+                Some(next) => moved = Some(std::fs::canonicalize(&next).unwrap_or(next)),
                 None => unknown = true,
             }
         }
@@ -1015,6 +1083,103 @@ impl DangerRules {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RootAction {
+    words: Vec<String>,
+    identity: (u64, u64),
+}
+
+impl RootAction {
+    fn parse(command: &str) -> Option<Self> {
+        let words: Vec<String> = command.split_whitespace().map(str::to_string).collect();
+        if words.iter().any(|word| has_dynamic(word)) {
+            return None;
+        }
+        let identity = protected_executable(words.first()?)?;
+        Some(Self { words, identity })
+    }
+
+    fn matches(&self, argv: &[String]) -> bool {
+        let Some((program, args)) = argv.split_first() else {
+            return false;
+        };
+        let (expected, pattern) = self.words.split_first().expect("validated root action");
+        program == expected
+            && pattern.len() == args.len()
+            && pattern.iter().zip(args).all(|(a, w)| a == "*" || a == w)
+            && protected_executable(program) == Some(self.identity)
+    }
+}
+
+#[cfg(unix)]
+fn protected_executable(program: &str) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    let path = Path::new(program);
+    // Match the actual absolute argv, not an alias sudo might resolve differently. Unlike
+    // canonicalizing a tool we launch ourselves, we must reject symlink spellings here.
+    if !path.is_absolute() || path.canonicalize().ok()?.as_os_str() != path.as_os_str() {
+        return None;
+    }
+    // Walk from the root: once a parent is verified, the model cannot swap its child entry.
+    let chain: Vec<_> = path.ancestors().collect();
+    let mut identity = None;
+    for entry in chain.into_iter().rev() {
+        let info = std::fs::symlink_metadata(entry).ok()?;
+        if info.uid() != 0 || info.mode() & 0o022 != 0 {
+            return None;
+        }
+        if entry == path {
+            if !info.is_file() || info.mode() & 0o111 == 0 {
+                return None;
+            }
+            identity = Some((info.dev(), info.ino()));
+        } else if !info.is_dir() {
+            return None;
+        }
+    }
+    identity
+}
+
+#[cfg(not(unix))]
+fn protected_executable(_: &str) -> Option<(u64, u64)> {
+    None
+}
+
+/// Literal argv for a direct sudo invocation. Shared by named root actions and the
+/// password broker's direct launch; neither may infer an argv from shell expansion.
+pub fn literal_sudo_argv(command: &str) -> Option<Vec<String>> {
+    let stages = parse_line(command)?;
+    literal_sudo_words(command, &stages).map(<[String]>::to_vec)
+}
+
+fn literal_sudo_words<'a>(command: &str, stages: &'a [Stage]) -> Option<&'a [String]> {
+    // Inspect raw text. The general classifier strips quotes and escapes and does not
+    // expand pathname patterns, braces or tildes. Be conservative even within quotes.
+    if command
+        .chars()
+        .any(|c| (c.is_control() && c != '\t') || "$`*?[]{}~\\#;|&<>()!".contains(c))
+    {
+        return None;
+    }
+    let [stage] = stages else { return None };
+    let [sudo, _, ..] = stage.words.as_slice() else {
+        return None;
+    };
+    matches!(sudo.as_str(), "sudo" | "/usr/bin/sudo" | "/bin/sudo").then_some(stage.words.as_slice())
+}
+
+/// `true` when some simple command of `command` runs through a privilege launcher (`sudo`,
+/// `doas`, `su`, `pkexec`, `run0`).
+pub fn runs_privileged(command: &str) -> bool {
+    parse_line(command).is_some_and(|stages| {
+        stages
+            .iter()
+            .filter(|st| st.mark.is_none())
+            .any(|st| effects::of(&st.words, &st.redirects, false).privileged)
+    })
+}
+
 /// A write target git runs later: the worktree's `.git` file, a hooks directory, `config`,
 /// `config.worktree`, `commondir` or `gitdir` of any `.git` directory (any depth), or the same
 /// files of a linked worktree's git directory.
@@ -1225,7 +1390,7 @@ fn push_subshell(out: &mut Vec<Stage>, inner: &str, depth: usize) -> Option<()> 
 /// Splits a line into simple commands, flattening command substitutions, backticks and
 /// subshells into the same list. `None` when the line cannot be read (an open quote, a
 /// trailing backslash, too much nesting).
-fn parse_line(src: &str) -> Option<Vec<Stage>> {
+pub(crate) fn parse_line(src: &str) -> Option<Vec<Stage>> {
     parse_depth(src, 0)
 }
 
@@ -1850,6 +2015,7 @@ fn skip_env(
     unknown: &mut bool,
 ) -> usize {
     let mut i = from;
+    let mut moved = false;
     while i < words.len() {
         let w = words[i].as_str();
         if let Some(value) = w
@@ -1857,12 +2023,14 @@ fn skip_env(
             .or_else(|| w.strip_prefix("-C").filter(|v| !v.is_empty()))
         {
             dirs.push(value.to_string());
+            moved = true;
             i += 1;
             continue;
         }
         if matches!(w, "-C" | "--chdir") && i + 1 < words.len() {
             // The wrapped command runs in this directory, not in the current one.
             dirs.push(words[i + 1].clone());
+            moved = true;
             i += 2;
             continue;
         }
@@ -1895,7 +2063,14 @@ fn skip_env(
             break;
         }
     }
-    i.min(words.len())
+    i = i.min(words.len());
+    // `env -C a env -C b cmd` runs in `a` then in `b`: the nested wrapper's directory is relative to the one
+    // this `env` moved to, so it composes here (`b` is resolved against `a` by the caller's chain) rather than
+    // standing alone against the shell's own directory (#1768).
+    if moved && words.get(i).is_some_and(|w| w == "env") {
+        i = skip_env(words, i + 1, inline, dirs);
+    }
+    i
 }
 
 /// The word after the first of `flags` at or after `from`.

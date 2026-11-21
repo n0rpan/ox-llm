@@ -7,10 +7,11 @@ use oxa_core::{append_entry, run_loop, Queue, RunEnd, SessionState, Shared, Stat
 use oxa_fake::{Recorded, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    codes, miss_cause, shown_why, tool_errors, Access, AgentEvent, AssistantTurn, CancelToken, ChatRequest,
-    CommandSpec, Engine, EngineInfo, Entry, EntryBody, Exposure, Finish, FrozenPrefix, HeadlessUi, HookPoint,
-    HookReply, Hooks, Mode, OxaError, Policy, Source, StreamEvent, ThinkingLevel, Tool, ToolCall, ToolClass,
-    ToolCtx, ToolOutput, ToolSpec, Ui, Value, VecSink, WireMsg,
+    codes, miss_cause, shown_why, tool_errors, Access, AgentEvent, Answer, AssistantTurn, CancelToken,
+    ChatRequest, CommandSpec, DangerAnswer, Engine, EngineInfo, Entry, EntryBody, Exposure, Finish,
+    FrozenPrefix, HeadlessUi, HookPoint, HookReply, Hooks, Mode, OxaError, Placement, Policy, Source,
+    StreamEvent, ThinkingLevel, Tool, ToolCall, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui, Value, VecSink,
+    WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -1726,6 +1727,150 @@ fn prepare_dangerous_unattended_error_names_rule() {
     assert_ne!(refused, tool_errors::DENIED_BY_USER);
     assert!(
         refused.starts_with("Refused: dangerous command (git-push-force: "),
+        "{refused}"
+    );
+    assert!(
+        refused.ends_with("This run has no one to approve it; nobody declined it."),
+        "{refused}"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 0, "a refused command never runs");
+}
+
+/// #2292: an interactive Ui that records the dangerous-command question and approves it once.
+#[derive(Default)]
+struct DangerUi {
+    reasons: Vec<String>,
+}
+
+impl Ui for DangerUi {
+    fn select(&mut self, _t: &str, _o: &[String], _ms: Option<u32>) -> Option<usize> {
+        None
+    }
+    fn confirm(&mut self, _t: &str, _b: &str, _ms: Option<u32>) -> Option<bool> {
+        None
+    }
+    fn input(&mut self, _t: &str, _p: &str) -> Option<String> {
+        None
+    }
+    fn editor(&mut self, _t: &str, _p: &str) -> Option<String> {
+        None
+    }
+    fn notify(&mut self, _text: &str, _level: oxa_proto::Level) {}
+    fn set_status(&mut self, _k: &str, _t: Option<&str>) {}
+    fn set_widget(&mut self, _k: &str, _l: Option<&[String]>, _at: Placement) {}
+    fn set_title(&mut self, _t: &str) {}
+    fn set_editor_text(&mut self, _t: &str) {}
+    fn ask_access(&mut self, _a: &Access) -> Answer {
+        Answer::Once
+    }
+    fn ask_dangerous(&mut self, _a: &Access, reasons: &[String], _keys: &[String]) -> DangerAnswer {
+        self.reasons.extend(reasons.iter().cloned());
+        DangerAnswer::Once
+    }
+    fn interactive(&self) -> bool {
+        true
+    }
+}
+
+/// #2292: a user message that explicitly asks to keep work adds the reversible-checkpoint
+/// note to the dangerous command's existing question, before the command runs. The owner's
+/// answer still decides: an approval runs the command, nothing new is refused.
+#[test]
+fn preservation_requirement_rides_on_the_dangerous_question() {
+    let env = TestEnv::new();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let r1 = Arc::clone(&runs);
+    let bash = tool_with(
+        "bash",
+        ToolClass::Exec,
+        Box::new(|_a: &Value, _cx: &ToolCtx| {
+            Ok(vec![Access::Exec {
+                command: "git push --force origin main".to_string(),
+                net: false,
+                background: false,
+            }])
+        }),
+        Box::new(move |_a: &Value, _c: &ToolCtx| {
+            r1.fetch_add(1, Ordering::SeqCst);
+            ToolOutput::ok("pushed")
+        }),
+    )
+    .0;
+    let turns = vec![
+        turn_calls(vec![("b1", "bash", "{}")]),
+        ScriptTurn::text("understood"),
+    ];
+    let (mut st, _eng) = scripted_state(&env, turns, vec![bash], Mode::Workspace);
+    st.policy =
+        Box::new(ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()));
+    say(
+        &mut st,
+        "remove the secret from history, but keep commit abc123 exactly as it is",
+    );
+    let mut ui = DangerUi::default();
+    let mut sink = VecSink::default();
+    let end = run_loop(&mut st, &mut sink, &mut ui).expect("run_loop");
+    assert_eq!(end, RunEnd::Stopped);
+    assert_eq!(
+        ui.reasons.len(),
+        1,
+        "the existing dangerous-command question asked once"
+    );
+    let reason = &ui.reasons[0];
+    assert!(reason.starts_with("git-push-force: "), "{reason}");
+    assert!(reason.contains("reversible checkpoint"), "{reason}");
+    assert!(reason.contains("keep commit abc123 exactly as it is"), "{reason}");
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "the owner's approval still runs the command"
+    );
+}
+
+/// #2292: with no one to ask, the refusal of a destructive command names the preservation
+/// requirement and the checkpoint; the command never runs.
+#[test]
+fn preservation_requirement_rides_on_the_dangerous_refusal() {
+    let env = TestEnv::new();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let r1 = Arc::clone(&runs);
+    let bash = tool_with(
+        "bash",
+        ToolClass::Exec,
+        Box::new(|_a: &Value, _cx: &ToolCtx| {
+            Ok(vec![Access::Exec {
+                command: "git push --force origin main".to_string(),
+                net: false,
+                background: false,
+            }])
+        }),
+        Box::new(move |_a: &Value, _c: &ToolCtx| {
+            r1.fetch_add(1, Ordering::SeqCst);
+            ToolOutput::ok("pushed")
+        }),
+    )
+    .0;
+    let turns = vec![
+        turn_calls(vec![("b1", "bash", "{}")]),
+        ScriptTurn::text("understood"),
+    ];
+    let (mut st, _eng) = scripted_state(&env, turns, vec![bash], Mode::Workspace);
+    st.policy =
+        Box::new(ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()));
+    say(
+        &mut st,
+        "remove the secret from history, but keep commit abc123 exactly as it is",
+    );
+    let (end, _) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    let refused = tool_text(&st.transcript.wire()[2]);
+    assert!(
+        refused.starts_with("Refused: dangerous command (git-push-force: "),
+        "{refused}"
+    );
+    assert!(refused.contains("reversible checkpoint"), "{refused}");
+    assert!(
+        refused.contains("keep commit abc123 exactly as it is"),
         "{refused}"
     );
     assert!(

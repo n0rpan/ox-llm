@@ -46,9 +46,9 @@ Print, JSON and RPC runs write exactly one terminal JSON result on standard erro
 
 The `outcome` is `done`, `nothing_to_do`, `blocked`, `failed` or `interrupted`. `error_class` is a stable error code (for example `engine_http`, `stream_broken`, `done_checks_failed` or `output_limit`), or `null` for successful and no-op runs. Diagnostics remain human-readable; callers should use the result and exit code instead of matching their wording.
 
-The same record also carries `session_id`, `requests`, `turns`, `tokens`, `usage_scope`, `web_lookups` (the number of `web_search` calls), `files_changed` and `files_changed_evidence`. The session id is the current saved session, or `null` for an ephemeral/unopened session. Request and token counters cover engine calls observed in this invocation (`usage_scope: "process"`), including discarded replies, summaries and prefills; resuming does not recount saved usage. `turns` counts attempted chat/subagent calls, including retries, and excludes summary/prefill calls. Child processes report their own usage separately.
+The same record also carries `session_id`, `requests`, `turns`, `tokens`, `usage_scope`, `web_lookups` (the number of `web_search` calls), `files_changed`, `files_changed_evidence`, `files_changed_extra` and `files_changed_allowed`. The session id is the current saved session, or `null` for an ephemeral/unopened session. Request and token counters cover engine calls observed in this invocation (`usage_scope: "process"`), including discarded replies, summaries and prefills; resuming does not recount saved usage. `turns` counts attempted chat/subagent calls, including retries, and excludes summary/prefill calls. Child processes report their own usage separately.
 
-`tokens` has `prompt`, `completion`, `cached`, `complete` and `unreported_requests`. Sums are over reported usage; missing usage makes them explicit lower bounds (`complete: false`), and an omitted cache count remains `null`. An in-flight request at shutdown is incomplete. Before a session opens, counters are `null` rather than a claim of zero work. `files_changed` is `null` with evidence `"unavailable"`: this worker record has no checked filesystem/commit diff. A successful tool call or model statement does not supply that evidence; the runner reports verified worktree/commit evidence separately.
+`tokens` has `prompt`, `completion`, `cached`, `complete` and `unreported_requests`. Sums are over reported usage; missing usage makes them explicit lower bounds (`complete: false`), and an omitted cache count remains `null`. An in-flight request at shutdown is incomplete. Before a session opens, counters are `null` rather than a claim of zero work. `files_changed` is `null` with evidence `"unavailable"`: this worker record has no checked filesystem/commit diff. A successful tool call or model statement does not supply that evidence; the runner reports verified worktree/commit evidence separately. With `--allowed-changed-files <list>`, the record instead reports `files_changed` as the tool-observed list of files the run's successful `edit`/`write` calls named (evidence `"tool-observed"`), `files_changed_allowed` as the supplied set, and `files_changed_extra` as the observed files outside it. Both sides are resolved against the working directory and compared as workspace-relative names. This is acceptance evidence only: a shell rewrite names no file here, and nothing is refused because of it.
 
 Every saved CLI session has a small atomic `<session>.status.json` sibling, private like the session file. `oxa status <session-id|session-file> [--session-dir <dir>]` reads it without contacting an engine. JSON mode's session header and RPC `get_state` expose its `statusFile` path. `--no-session` creates no status file.
 
@@ -107,10 +107,11 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
-| `oxa work <taskfile> \| --issue N \| --pr N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
+| `oxa work <taskfile> \| --issue N \| --pr N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` shows saved heads awaiting publication, their age and next step, without querying GitHub ([work.md](../work.md)) |
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
+| `oxa cache <session-id\|path> [--json]` | [report saved prompt-cache evidence](#prompt-cache-report) for a local or cloud session |
 | `oxa models [--json] [search]` | list the local and cloud models this install can serve — where each runs, its limits and which one is the default; `--json` prints one `oxa_models` object, and a search word filters by place, provider or model name; reads no key and no ledger, runs no model |
 | `oxa send [--follow-up] <session-id> <text\|-> [--wait SECONDS]` | send one message to the session's TUI, RPC owner, headless goal run or a running `oxa work` worker (which takes it at its next turn boundary): a steer for its next tool boundary, or with `--follow-up` a follow-up for the end of its turn; `-` reads standard input. Prints one JSON line `{"id":<message-id>,"outcome":"queued"\|"delivered"\|"not_delivered"}`. With `--wait` the command waits up to that many seconds for the owner to take the file: `delivered` exits 0, `not_delivered` exits 3 |
 | `oxa send <session-id> --retry <message-id> [--wait SECONDS]` | check the same message again without publishing it a second time (same receipt line and exit codes) |
@@ -155,6 +156,24 @@ Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price, and 
 `oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes` in a terminal. Inside an interactive oxa session, ask for the draft to be published instead: in yolo it posts at once and shows the result; otherwise oxa shows the exact text in an approval dialog (or you type `yes`), and the model can request it but never answer it.
 
 `oxa config` lists the settings as oxa resolves them.
+
+### Prompt-cache report
+
+Run `oxa cache <session-id|path>` for a table, or add `--json` for a versioned `oxa_cache` object. The command reads a saved local or cloud session without contacting a model, changing the session, or adding anything to prompts. An id may be abbreviated if unique; use the `.jsonl` path if the session is outside your current session directory.
+
+There is one row per **saved usage record**, in file order. Retries, failures, discarded replies and some prefills may have no record. The row number is not a provider request id. `input` and `cached` are recorded token counts; `null` (shown as `?` in the table) means not reported, not zero. The optional `previous_input_reuse_estimate` is what reusing the entire previous saved chat input would count as. It is a comparison baseline, not an expected engine hit or proof of which earlier request supplied a cache entry.
+
+When two successive saved chats have known frozen system text and tool lists, the report compares those saved anchors. A system difference is a zero-based UTF-8 byte offset within the saved system text, not an offset in the full outbound request, a provider's rendered prompt, or the engine's tokens. A recorded boundary such as an epoch or compaction is an observation, not a miss cause. The runtime expectation, source request, full request divergence and miss cause remain unknown when the session did not retain that evidence. An equal anchor or equal token count does not establish an equal request. No text, hashes, tool data, or session, request or token IDs are printed.
+
+The scan reads at most 256 MiB or 200,000 entries from the file as it existed at open. Lines over 2 MiB are skipped; an unreadable line or torn tail also makes the report partial (`scan_complete: false`). A complete scan still only describes saved records. If id lookup reaches its limit, give the file path instead.
+
+### Foreground wire evidence
+
+Run `oxa --wire-evidence` in an owner terminal, then exit normally to see a small JSON report on stderr. It is off by default, cannot be turned on in settings, and does not follow `/new`, `/resume`, or a model switch. Print, JSON, RPC and delegated agent runs cannot arm it.
+
+The report compares ordered messages **at oxa's transport handoff**, after hooks and image shaping, with separate system-text and tool-list equality flags. `common_leading_messages` counts consecutive matching items from the beginning. Request and attempt numbers start at one and are local to this run; an oxa retry within the same request is another attempt. A failed or cancelled attempt, an intervening non-chat handoff, or an incomplete snapshot leaves a gap. A missing match or usage field is `null`, not zero. A rebase marker reports an observed transcript rebase, not its cause or its effect on caching.
+
+The capture keeps one prior fingerprint snapshot, allows up to 4,096 messages and 4 MiB of fingerprint input per snapshot, and stops collecting after 64 rows. It never limits chat. The report contains no message text, tool data, token IDs, fingerprints or session, model or request identifiers. It is not added to saved sessions, hook events, or `oxa cache` output. Provider serialization, engine tokens, provider or engine retries, and cache ownership are outside this observation. Neither a matching wire prefix nor a cached-token count proves which request was reused or why a cache missed.
 
 ### Local models
 
@@ -244,6 +263,8 @@ $ oxa memory rm <name>
 | `--max-time <seconds>` | softly limit a run, then allow one final wrap-up turn |
 | `--max-tokens <N>` | softly limit new prompt + output tokens; cached tokens are free |
 | `--usage-log <file>` | write one JSONL record per model call (tokens, duration, model, turn); owner-only file, no message text |
+| `--wire-evidence` | show [adjacent wire observations](#foreground-wire-evidence) on exit; owner terminal only |
+| `--allowed-changed-files <list>` | comma-separated allowed changed-file set; the result reports tool-observed extra files against it (acceptance evidence, never a refusal) |
 | `--stall-timeout <seconds>` | flag a session as stalled after this long without progress; a signal that never cancels the run |
 | `--export <input> [output]` | export a session file to HTML and exit |
 
@@ -390,6 +411,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 | `OXA_CODING_AGENT`, `AI_AGENT` | *set*: process markers; `OXA_CODING_AGENT` is `true` and `AI_AGENT` is `oxa` in child processes |
 | `OXA_CONFIRM_SOCK` | *set*: the path of the session's private owner confirm socket (directory 0700, socket 0600), through which oxa commands ask you for a yes |
 | `OXA_TOOL_CALL_ID` | *set*: the id of the running tool call, in the environment of an extension tool |
+| `SUDO_ASKPASS` | *set*: on the one foreground `sudo` child of a named root action, the path of the session's `oxa-askpass` helper, which asks you for the password over the owner confirm socket ([security.md](security.md#grants-named-root-actions-and-the-sudo-password)); it is never set for any other command |
 | `OXA_WORK_OWNER_CONFIRMED` | `1` from a surface that holds the owner's own confirmation: confirms the lane push of `oxa work` without the terminal question. Ignored while a coding-agent marker (`OXA_CODING_AGENT`, `AI_AGENT`, `OXA_SUBAGENT_DEPTH`) is set |
 | `OXA_WORK_OUTPUT_DIR` | *set*: `oxa work` sets it for done-check commands to the task's private output directory, when it has one |
 | `OXA_RUNNING_BIN` | *set*: inside the bash sandbox, the absolute path of the running `oxa` binary, when that file is readable there |
@@ -409,6 +431,7 @@ These are set by oxa for its own child processes, or are test hooks. They are no
 - `OXA_WORKTREE_TRUST_SOURCE`: `oxa work` names the trusted source checkout of a managed worktree; it counts only in `--mode json`, and only when the checkout, the trust record and the approved resources verify.
 - `OXA_RUNNER_OWNS_GITHUB`: `oxa work` sets `1` in a worker: the runner owns GitHub access, so the worker runs no `gh`.
 - `OXA_NATIVE_STEERING_FD`: `oxa work` passes the inherited descriptor of the steering lease to a native worker.
+- `OXA_SUDO_LAUNCH`: the host runner puts a private selector in the environment of one foreground bash call and routes that call to the sudo launch it just registered; the selector is removed before the child starts and never reaches a model command.
 - `OXE_API_KEY_FILE`: oxa sets it for a local engine child it starts: the private file with the child's bearer token.
 - `OXE_API_KEY`: oxa does not read it; a local engine profile that sets this name or `OXE_API_KEY_FILE` is refused.
 - `OXA_TEST_ISOLATION`, `OXA_TEST_PANIC`, `OXA_BRAVE_BASE_URL`: test hooks, honoured only in test processes (`OXA_BRAVE_BASE_URL` only for a loopback URL).

@@ -167,6 +167,7 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         .ok_or("task checkpoint record is missing")?;
     let optional = [
         "pull_request",
+        "head_saved_at_ms",
         "draft",
         "problem_notes",
         "reports",
@@ -369,6 +370,8 @@ mod tests {
                 push_approved: false,
                 content_scan: None,
                 runner_owns_github: false,
+                github_token_command: Vec::new(),
+                github_token_write_paths: Vec::new(),
                 autonomy: Default::default(),
                 worker_github: Default::default(),
                 authority_now: None,

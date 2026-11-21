@@ -1258,6 +1258,7 @@ dependencies = [
  "oxa-sandbox",
  "oxa-session",
  "oxa-tools",
+ "serde",
  "serde_json",
  "sha2",
 ]
@@ -1510,6 +1511,7 @@ dependencies = [
 name = "oxa-work"
 version = "0.2.1"
 dependencies = [
+ "base64 0.22.1",
  "libc",
  "oxa-proto",
  "oxa-session",

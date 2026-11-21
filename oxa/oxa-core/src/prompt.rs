@@ -586,15 +586,30 @@ pub const TOOL_INTERRUPTED: &str = "Tool call was interrupted: oxa stopped befor
 pub const REPEAT_NOTICE_HEAD: &str = "Not repeated:";
 
 /// The tool result that replaces a call whose identical result is already in the context
-/// `identical` times in a row (the newest one is the previous result of this call).
-/// Deterministic (W4): the call is quoted as the model wrote it.
-pub fn repeat_notice(name: &str, args_raw: &str, identical: u32) -> String {
-    format!(
-        "{REPEAT_NOTICE_HEAD} this exact call ({name} {args_raw}) already returned the same result \
-         {identical} times in a row; it is unchanged and is in the earlier tool results above. Do \
-         not call it again. Change your approach and continue the task: make the edit the task \
-         needs, run a different command, or read a different range or file."
-    )
+/// `identical` times in a row (the newest one is the previous result of this call). `attempt`
+/// counts the calls of this loop so far: the identical results and the notices before this one,
+/// plus this one. The change-of-approach suggestion is written once, on the first notice; each
+/// later notice stays short, names its attempt and points back to that suggestion, so a loop gets
+/// a new number every time instead of the same paragraph again. Deterministic (W4): the call is
+/// quoted as the model wrote it.
+pub fn repeat_notice(name: &str, args_raw: &str, identical: u32, attempt: u32) -> String {
+    let unchanged = format!(
+        "this exact call ({name} {args_raw}) already returned the same result {identical} times in a row"
+    );
+    if attempt <= identical + 1 {
+        format!(
+            "{REPEAT_NOTICE_HEAD} {unchanged}; it is unchanged and is in the earlier tool results \
+             above. Do not call it again. Change your approach and continue the task: make the edit \
+             the task needs, run a different command, or read a different range or file. \
+             (Attempt {attempt}.)"
+        )
+    } else {
+        format!(
+            "{REPEAT_NOTICE_HEAD} {unchanged}; attempt {attempt} of this call, and it is still \
+             unchanged and in the earlier results. The change-of-approach suggestion above still \
+             stands: do not call it again."
+        )
+    }
 }
 
 // ---- T2: the tool-call repair turn (oxa only; pi never sees a malformed call) ----
@@ -677,6 +692,26 @@ pub const HEADLESS_NUDGE: &str = "Nobody can answer you and the task is not fini
 /// The finish decision's nudge for a run that changed files and ran no passing check since
 /// (`oxa.done.proveIt`). One per run.
 pub const PROVE_IT_NUDGE: &str = "You changed files and no check has passed since your last change. Run the project's check for what you changed (tests, build or lint) and fix what fails, or say in one line why no check exists. Then finish.";
+
+/// The finish decision's nudge for a run whose task names the tool its acceptance runs through
+/// (T6) and that never ran it. One per run; never a refusal, and nothing is installed for it.
+pub fn toolchain_nudge(tool: &str, tries: &[String]) -> String {
+    let tried = if tries.is_empty() {
+        String::new()
+    } else {
+        format!(" The run named {tool} in: {}.", tries.join(" · "))
+    };
+    format!(
+        "This task's acceptance names {tool}, and no command in this run ran it.{tried} \
+         Say which check did not run with {tool} and what that leaves unverified. If you can \
+         obtain it here (its package manager or a container), do that and run the acceptance \
+         with it; use a substitute only when it cannot be run. Then finish."
+    )
+}
+
+/// The finish decision's nudge for a run that read an image file and changed files with no
+/// check since the image was read (`oxa.done.imageCrossCheck`). One per run.
+pub const IMAGE_CROSS_CHECK_NUDGE: &str = "You read an image and wrote files, but nothing has checked your reading of the image independently. State the assumption your reading depends on (glyph set, font, grid, colour mapping) and run one concrete check that could falsify it: re-render your result and diff it against the source image, compare against an independent reader (such as OCR) if one is available, or test an invariant that must hold (counts, sums, a checksum against a hint already in the task). Fix what the check contradicts, or say in your final message which image-derived claim stays unverified and why. Then finish.";
 
 /// The finish decision's nudge for background jobs still running when a goal completes or a
 /// headless run ends (`oxa.done.waitForJobs`). One per run.

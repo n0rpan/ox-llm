@@ -194,11 +194,11 @@ fn read_image(
 ) -> Result<ToolOutput, String> {
     let placeholder = image_placeholder(shown, w, h);
     let Some(mime) = image_mime(head).filter(|_| cx.tune.image_input) else {
-        return Ok(ToolOutput::ok(placeholder));
+        return Ok(image_read_out(placeholder));
     };
     let max = u64::from(cx.tune.max_image_bytes);
     if max > 0 && size > max {
-        return Ok(ToolOutput::ok(format!(
+        return Ok(image_read_out(format!(
             "[image {shown} {w}x{h}: not sent, {size} bytes is over the limit of {max} (oxa.read.maxImageBytes)]"
         )));
     }
@@ -207,17 +207,26 @@ fn read_image(
     let bytes = match bytes {
         ImageBytes::Within(bytes) => bytes,
         ImageBytes::OverLimit(actual) => {
-            return Ok(ToolOutput::ok(format!(
+            return Ok(image_read_out(format!(
                 "[image {shown} {w}x{h}: not sent, at least {actual} bytes is over the limit of {max} (oxa.read.maxImageBytes)]"
             )))
         }
     };
-    let mut out = ToolOutput::ok(format!("[image {shown} {w}x{h}: shown to the model]"));
+    let mut out = image_read_out(format!("[image {shown} {w}x{h}: shown to the model]"));
     out.images = vec![WireImage {
         mime: mime.to_string(),
         base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
     }];
     Ok(out)
+}
+
+/// An image-read result, marked for the finish decision (`oxa.done.imageCrossCheck`): the run
+/// consulted an image file, even when the model only got the placeholder line. The marker is
+/// display-only state (`ToolOutput::ui`); it never reaches the wire.
+fn image_read_out(text: String) -> ToolOutput {
+    let mut out = ToolOutput::ok(text);
+    out.ui = serde_json::json!({ "imageRead": true });
+    out
 }
 
 enum ImageBytes {
