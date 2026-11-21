@@ -1295,3 +1295,71 @@ fn publication_never_pushes_tags_implicitly() {
     let tags = git(&env, &env.work(), &["--git-dir", "remote.git", "tag", "--list"]);
     assert!(tags.is_empty(), "{tags}");
 }
+#[test]
+fn a_normal_publish_records_a_receipt_read_back_from_the_remote() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let path = configure(&env);
+    let record = run_args(&env, edits(), &["work", "../tasks.json", "--publish"], Some(path));
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(record["publish_receipt"]["class"], "published", "{record}");
+    assert_eq!(
+        record["publish_receipt"]["remote"], record["head_sha"],
+        "{record}"
+    );
+    assert_eq!(
+        record["publish_receipt"]["requested"], record["head_sha"],
+        "{record}"
+    );
+}
+#[test]
+fn an_operator_commit_on_the_target_branch_is_reported_with_its_exact_sha_and_never_forced() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let path = configure(&env);
+    // The operator lands a different commit on the target branch through another clone.
+    git(&env, &env.work(), &["clone", "remote.git", "operator"]);
+    let operator = env.work().join("operator");
+    git(&env, &operator, &["config", "user.name", "Operator"]);
+    git(
+        &env,
+        &operator,
+        &["config", "user.email", "operator@example.invalid"],
+    );
+    env.write("work/operator/operator.txt", "operator\n");
+    git(&env, &operator, &["add", "."]);
+    git(&env, &operator, &["commit", "-m", "operator commit"]);
+    git(&env, &operator, &["push", "origin", "HEAD:refs/heads/agent/test"]);
+    let remote_sha = git(&env, &operator, &["rev-parse", "HEAD"]);
+    // The operator's commit is known locally (fetched), so its relation can be classified; a
+    // commit that is not in the local repository is reported as `remote_unknown` with its SHA.
+    git(
+        &env,
+        &env.work().join("project"),
+        &["fetch", "origin", "agent/test"],
+    );
+    let record = run_args(&env, edits(), &["work", "../tasks.json", "--publish"], Some(path));
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert_eq!(record["publish_receipt"]["class"], "diverged", "{record}");
+    assert_eq!(
+        record["publish_receipt"]["remote"],
+        remote_sha.as_str(),
+        "{record}"
+    );
+    let detail = record["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains(&remote_sha)
+            && detail.contains("diverged")
+            && detail.contains("nothing was force-pushed"),
+        "{record}"
+    );
+    assert_eq!(
+        git(
+            &env,
+            &env.work(),
+            &["--git-dir", "remote.git", "rev-parse", "refs/heads/agent/test"]
+        ),
+        remote_sha,
+        "the remote branch must be unchanged"
+    );
+}

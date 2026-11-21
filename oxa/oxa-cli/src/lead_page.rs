@@ -33,6 +33,16 @@ pub struct Alarms {
     pub overdue_queue: Option<Vec<PullRequest>>,
 }
 
+impl Alarms {
+    /// The single rule for a queue-age alarm: the alarm intersected with queue
+    /// membership at the exact (number, head). `None` when either source is
+    /// unobserved, so neither the page nor the loop can act on half a record.
+    pub fn overdue_in_queue(&self) -> Option<Vec<&PullRequest>> {
+        let (queue, overdue) = (self.queue.as_deref()?, self.overdue_queue.as_deref()?);
+        Some(queue.iter().filter(|pr| overdue.contains(pr)).collect())
+    }
+}
+
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
 #[derive(Default)]
 pub struct View<'a> {
@@ -44,6 +54,11 @@ pub struct View<'a> {
     pub owner_goal: Option<(&'a oxa_session::Goal, oxa_core::goal::GoalObservation<'a>)>,
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
+    /// The Lead session's workers from its registry and their status files. An error is
+    /// an explicit state: no workers recorded, or a registry that was refused.
+    pub workers: Option<&'a Result<Vec<crate::workers::tool::Binding>, crate::workers::tool::BindingsError>>,
+    /// Optional GitHub work the owner's App reserve deferred in the latest sample.
+    pub quota_deferred: &'a [oxa_work::shadow::Deferral],
     /// Open owner asks read live from the authorized durable Lead Session, with
     /// their original revisions. Distinct from the runner situation: an absent
     /// runner source never hides these, and vice versa.
@@ -250,14 +265,7 @@ fn attention(html: &mut String, view: &View<'_>) {
     let alarms = view.alarms;
     // The queue-age alarm binds each PR to its exact observed head: membership
     // and landing age must come from the same protected record.
-    let overdue: Vec<&PullRequest> = alarms
-        .and_then(|a| match (a.queue.as_deref(), a.overdue_queue.as_deref()) {
-            (Some(queue), Some(overdue)) => {
-                Some(queue.iter().filter(|pr| overdue.contains(pr)).collect::<Vec<_>>())
-            }
-            _ => None,
-        })
-        .unwrap_or_default();
+    let overdue: Vec<&PullRequest> = alarms.and_then(Alarms::overdue_in_queue).unwrap_or_default();
     let main_red = alarms.and_then(|a| a.main_red);
     let merge_stalled = alarms.and_then(|a| a.main_merge_stalled);
     let stalled_runs = alarms.and_then(|a| a.stalled_runs.as_deref());
@@ -482,8 +490,51 @@ fn usage(html: &mut String, view: &View<'_>) {
     html.push_str("</section>");
 }
 
+/// One live worker row: name, lane, model, state and how old its status is.
+fn binding_row(html: &mut String, binding: &crate::workers::tool::Binding) {
+    use crate::workers::registry::WorkerState;
+    let state = match &binding.state {
+        WorkerState::Starting => "Starting".to_owned(),
+        WorkerState::Working => "Working".to_owned(),
+        WorkerState::Idle => "Idle".to_owned(),
+        WorkerState::Finished(outcome) => format!("Finished ({outcome})"),
+        WorkerState::Dead => "Dead: its process is gone".to_owned(),
+        WorkerState::Stopped => "Stopped".to_owned(),
+    };
+    let active = matches!(
+        binding.state,
+        WorkerState::Starting | WorkerState::Working | WorkerState::Idle
+    );
+    let age = match binding.status_age_secs {
+        Some(age) if active && age > 300 => format!(" · status stale ({age} s old)"),
+        Some(age) => format!(" · status {age} s old"),
+        None => " · no status file".to_owned(),
+    };
+    let _ = write!(
+        html,
+        "<article><b>{}</b><p>{} · {} · {}{}</p></article>",
+        escape(&binding.name),
+        escape(&binding.branch),
+        escape(&binding.model),
+        escape(&state),
+        age
+    );
+}
+
 fn workers(html: &mut String, view: &View<'_>, now: u64) {
+    use crate::workers::tool::BindingsError;
     html.push_str("<section id=lanes><h2>Workers</h2>");
+    let live = matches!(view.workers, Some(Ok(_)));
+    match view.workers {
+        Some(Ok(bindings)) => {
+            html.push_str("<p class=muted>Live workers of the Lead session</p>");
+            bindings.iter().for_each(|binding| binding_row(html, binding));
+        }
+        Some(Err(BindingsError::Refused)) => html.push_str(
+            "<p>Live workers refused: the worker registry is unreadable or corrupt. It was left untouched.</p>",
+        ),
+        Some(Err(BindingsError::Absent)) | None => {}
+    }
     if let Some(s) = view.situation {
         let _ = write!(
             html,
@@ -528,7 +579,7 @@ fn workers(html: &mut String, view: &View<'_>, now: u64) {
                 }
             }
         }
-    } else {
+    } else if !live && !matches!(view.workers, Some(Err(BindingsError::Refused))) {
         html.push_str("<p>Lane status unavailable. No runner observation reached this page, so workers and their state cannot be shown; the source did not say why.</p>");
     }
     html.push_str("</section>");
@@ -2019,6 +2070,47 @@ return true;
             assert!(!render_at(&payload, MERGED + 45 * 60), "{field}");
         }
     }
+    #[test]
+    fn live_worker_rows_render_and_each_unavailable_state_is_explicit() {
+        use crate::workers::{
+            registry::WorkerState,
+            tool::{Binding, BindingsError},
+        };
+        let binding = |name: &str, state, age| Binding {
+            name: name.into(),
+            branch: format!("agent/{name}"),
+            model: "provider/model".into(),
+            state,
+            started_ms: 0,
+            status_age_secs: age,
+        };
+        let found: Result<Vec<Binding>, BindingsError> = Ok(vec![
+            binding("alive", WorkerState::Working, Some(5)),
+            binding("gone", WorkerState::Dead, None),
+            binding("slow", WorkerState::Idle, Some(900)),
+        ]);
+        let page = |workers| {
+            document_for(
+                Page::Workers,
+                &View {
+                    workers,
+                    ..Default::default()
+                },
+                100,
+            )
+        };
+        let html = page(Some(&found));
+        assert!(html.contains("agent/alive") && html.contains("Working"));
+        assert!(html.contains("Dead: its process is gone"));
+        assert!(html.contains("status stale (900 s old)"));
+        assert!(!html.contains("Lane status unavailable"));
+        let refused = Err(BindingsError::Refused);
+        assert!(page(Some(&refused)).contains("Live workers refused"));
+        let absent = Err(BindingsError::Absent);
+        assert!(page(Some(&absent)).contains("Lane status unavailable"));
+        assert!(page(None).contains("Lane status unavailable"));
+    }
+
     #[test]
     fn workers_put_reported_stalls_first_and_keep_observation_order_within_groups() {
         use oxa_proto::work::{Event, Fact, Incident};

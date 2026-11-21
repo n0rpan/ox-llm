@@ -2,10 +2,13 @@
 use super::{checked, state, tree, CheckpointObserver, LockedTask, Outcome, Record, Result, RunPolicy, Task};
 use state::Step;
 mod landing;
+mod receipt;
 pub use landing::{
     Admission, AdmissionAcknowledgment, AdmissionReceipt, DeliveryReceipt, LandingPublisher, NoticeIntent,
     RejectedLanding, RetryIntent,
 };
+pub(crate) use receipt::push_with_receipt;
+pub use receipt::{Divergence, PublishReceipt};
 use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
     fs::File,
@@ -968,6 +971,7 @@ fn publish_locked(
     value.record.acceptance_outcome = Some(accepted);
     writer.save(&mut value, Step::Publishing, observer)?;
     let git = |repo: &Path, args: &[&str]| super::git(policy, repo, args);
+    let receipt_slot: std::cell::RefCell<Option<PublishReceipt>> = std::cell::RefCell::new(None);
     let result = (|| -> Result<(String, bool)> {
         if policy.offline {
             return Err("publishing is unavailable in offline mode".into());
@@ -1067,6 +1071,9 @@ fn publish_locked(
             lock,
             &remote,
         )?;
+        // Read the destination back into the saved receipt: a push that reports
+        // success must show the pushed commit at the branch tip.
+        receipt_slot.replace(Some(receipt::read_back(policy, repo, &remote, &task.branch, &head)));
         let draft = false;
         let body = policy.storage.join(format!("{}.pr-body.md", task.id));
         crate::checkpoint::write_atomic(&body, text.as_bytes(), body.exists())?;
@@ -1121,6 +1128,7 @@ fn publish_locked(
         let _ = std::fs::remove_file(body);
         Ok((result.trim().to_string(), draft))
     })();
+    value.record.publish_receipt = receipt_slot.into_inner();
     match result {
         Ok((url, draft)) => {
             value.record.pull_request = Some(url);

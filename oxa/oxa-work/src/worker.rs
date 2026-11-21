@@ -216,6 +216,7 @@ pub(crate) fn run(
         .env_remove(crate::WORKTREE_TRUST_SOURCE_ENV)
         .env_remove(oxa_proto::names::ENV_UNATTENDED);
     mark_unattended(&mut command);
+    command.env("OXA_WORK_INBOX", "1");
     command.current_dir(root).args([
         "--mode=json",
         "--model",

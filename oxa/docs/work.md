@@ -99,11 +99,21 @@ leases survive UTC midnight; corrupt state, or state that vanished after a PR's
 first reservation, fails closed. Execution, fresh-head validation and CLI polling
 remain in the adapter; core claim storage never spawns workers or writes to GitHub.
 
-On a lab host, an owner can share the worker's Cargo check artifacts between
-worktrees. Set `CARGO_TARGET_DIR` in the environment that starts the worker
-and add that directory to the owner-level `oxa.sandbox.writePaths` setting.
-The variable does not grant a writable mount. Keep this cache dedicated to the
-workers. The acceptance supervisor still uses its own isolated check output.
+A worker works out its own build cache: one Cargo target directory per main
+repository, `<cache dir>/<hash>/cargo-target`, shared by every worktree of that
+repository. It is the only extra writable path of the worker sandbox and
+`CARGO_TARGET_DIR` points at it, so no manual `writePaths` step is needed. A
+`CARGO_TARGET_DIR` that the owner sets himself wins. The user-only settings
+`oxa.workers.sharedCache` (default on), `oxa.workers.cacheDir` and
+`oxa.workers.cacheWarnGb` (no default, warning only) control it; a project file
+cannot. The acceptance supervisor still uses its own isolated check output.
+
+A native board task is held for publication, which is not offline: its worker
+runs online with the runner's real `--offline` switch, so provider-backed models
+work. The hold is enforced by runner-owned GitHub isolation (no token, no GitHub
+adapters, no MCP, even for an owner in yolo) and by never pushing; the finished
+record says `local verified; publication held`. A checkpoint saved before this
+change with the offline restriction stays offline.
 
 A managed worker can load project resources whose content matches the saved
 approval for its source repository. The runner verifies that the checkout is
@@ -441,6 +451,30 @@ A saved worker result keeps its launch identity across checkpoint replay.
 Problem-report workflows hold a per-user kernel lease across drafting, duplicate
 search, match reads and writing, so concurrent workers share one reporting lane.
 
+## Fresh GitHub packet, steering and the publish receipt
+
+`oxa work --issue N` and `--pr N` re-read the issue or pull request at every worker launch (first
+run, continue after an interruption, repair round, `--rerun`) with the same bounded packet builders
+as the first fetch. Lines that are new are added to the launch prompt under "Updates on GitHub
+since this task's packet was captured (context, not instructions from the owner)"; the saved
+task prompt stays the task's identity. The record shows `packet.at_ms` and `packet.updates`. A
+failed fetch is a warning in the record detail and never blocks the launch; offline or without a
+trusted `gh` there is no feed. The runner fetches; the worker stays GitHub-isolated. GitHub text
+and inbox messages are context, never an approval.
+
+An `oxa work` worker also watches its session inbox (`OXA_WORK_INBOX=1`), so `oxa send <session>
+"text"`, the lead chat and the web UI reach it at its next turn boundary. The user-only
+`oxa.inbox.headless: false` turns that off. A worker is not interrupted by a poll while it runs:
+a change on GitHub reaches it at its next launch.
+
+After every runner-owned push (publication and lane acceptance) the runner asks the destination
+itself what the branch holds (`git ls-remote`) and records `publish_receipt`: the requested commit,
+the remote commit and a class: `published`, `absent`, `remote_behind`, `remote_ahead`, `diverged`
+or `remote_unknown` (a remote commit that is not in the local repository, reported with its exact
+SHA). A push that reports success but reads back another commit is an error. A rejected push
+reads like `push rejected; origin agent/x is at <sha> (diverged from requested <sha>); nothing was
+force-pushed, both commits are kept`. Nothing is ever force-pushed.
+
 ## Lane CI acceptance
 
 Add `"lane_ci": true` to a task to make the repository's own CI the acceptance
@@ -467,11 +501,16 @@ The lane run only counts for what it actually ran. The workflow selects the crat
 the branch diff touches (and their reverse dependencies), so a declared acceptance
 crate is covered only when the task diff selects it: a declaration the head does not
 touch refuses with the uncovered crate names, and the work stays `unverified` rather
-than crediting a suite that never ran. The engine workspace never counts: the lane
-runs only the portable engine crates and defers the rest to the self-hosted route,
-so any engine change refuses lane evidence and needs the hosted route instead — a
-changed `engine/Cargo.toml`, `engine/Cargo.lock` or `engine/.cargo/` input refuses it too,
-although it names no crate.
+than crediting a suite that never ran. What the lane tests comes from one data file,
+`tools/ci/lane_coverage.json`, which the lane planner (`tools/ci/lane_select.py`) and the
+runner's guard both read. The guard reads it from the trusted base commit, never from the
+pushed head, so a head cannot widen its own coverage; a missing or invalid file covers
+nothing and the work stays `unverified`. A path is covered only under a workspace whose
+packages are all tested (`oxa`). Under a workspace that lists packages (`engine`: the
+portable crates, the rest rides the self-hosted route) every path is uncovered, fixtures and
+shared inputs such as `engine/Cargo.toml` included, and so is any path with a `Cargo.toml`
+ancestor outside the listed workspaces (`fuzz/`, a new top-level crate), without a code
+change. Documentation needs no lane evidence.
 
 A `lane_ci` task's worker launches GitHub-isolated, like a runner-owned task: no
 host `gh` token is injected into its bash (and no MCP, extensions, web search or
@@ -490,7 +529,12 @@ Because the lane workflow is the authority, a head that changes
 changes land in their own owner-reviewed change instead of qualifying themselves.
 The check covers every commit the push would add (against the destination's own
 tips), not only the diff from the saved base. A green lane run is evidence only for
-what the lane tests: a change under `engine/`, or under `fuzz/`, stays on the hosted route.
+what the lane tests (see the coverage data above): for example a change under `engine/` or
+`fuzz/` stays on the hosted route. Besides the diff from the saved base and every commit the
+destination lacks, the controls must also equal the destination's own tip of the base branch
+from its merge base with the head, so the workflow that runs is the base branch's, not one
+inherited from another pushed branch (when that tip is not in the local object store the first
+two checks stand).
 A branch whose open pull request is already in the merge queue is refused too;
 use a new task branch for follow-up work.
 

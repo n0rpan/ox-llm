@@ -176,6 +176,8 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         "lane",
         "lane_repairs",
         "checks",
+        "publish_receipt",
+        "packet",
     ];
     if keys.iter().any(|key| !record.contains_key(*key))
         || record

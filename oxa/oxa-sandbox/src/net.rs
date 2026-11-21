@@ -46,7 +46,8 @@ struct TokenState {
 /// The replacement for a redacted token in tool output.
 const REDACTED: &str = "[redacted]";
 
-/// Mask tokens in left-to-right order. Tokens are nonempty and sorted longest first.
+/// Mask tokens in left-to-right order before `emit`. Tokens are nonempty and sorted longest
+/// first.
 fn redact_prefix<T: AsRef<[u8]>>(bytes: &[u8], emit: usize, tokens: &[T]) -> (Vec<u8>, usize) {
     let mut out = Vec::with_capacity(emit);
     let mut i = 0;
@@ -131,14 +132,31 @@ impl StreamRedactor {
         // Any secret that starts before `emit` ends inside `pending` (start + len <=
         // emit - 1 + hold + 1 = pending.len()), so every position decided here is decided on
         // full data.
-        let (out, consumed) = redact_prefix(&self.pending, emit, &self.tokens);
+let (out, consumed) = self.mask(&self.pending, emit);
         self.pending.drain(..consumed);
         out
     }
 
     /// At EOF, mask all matches in the pending tail before flushing it.
     fn finish(&mut self) -> Vec<u8> {
-        redact(&std::mem::take(&mut self.pending), &self.tokens)
+        let pending = std::mem::take(&mut self.pending);
+        self.mask(&pending, pending.len()).0
+    }
+
+    /// Mask tokens at every position before `emit`; returns the bytes and how many were consumed.
+    fn mask(&self, bytes: &[u8], emit: usize) -> (Vec<u8>, usize) {
+        let mut out = Vec::with_capacity(emit);
+        let mut i = 0;
+        while i < emit {
+            if let Some(t) = self.tokens.iter().find(|t| bytes[i..].starts_with(t)) {
+                out.extend_from_slice(REDACTED.as_bytes());
+                i += t.len();
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        (out, i)
     }
 }
 
@@ -158,9 +176,8 @@ impl NetSandbox {
 
     /// The credentials to scrub from the output of commands that run with the user's own
     /// rights (no OS sandbox), whatever the bash network setting: `source` runs lazily, once,
-    /// at the first such command, and returns every GitHub CLI token on the machine (all
-    /// accounts, all hosts), so `gh auth token --user other` or a read of the token file is
-    /// scrubbed too.
+    /// at the first such command. The session supplies its known values, including GitHub
+    /// CLI tokens for every account and host.
     pub fn with_host_secrets_lazy(
         mut self,
         source: impl Fn() -> Vec<String> + Send + Sync + 'static,
@@ -304,6 +321,10 @@ impl NetSandbox {
         run: impl FnOnce(&ExecSpec, &mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
         let (s, consulted) = self.clamp_run(spec);
+        if !self.inner.network_enforced() {
+            // The portable executor also runs hooks and extension commands with host rights.
+            return Self::redact_host_output(Some(self), &s.env, live, |live| run(&s, live));
+        }
         // Injection is per command, but redaction covers every networked command once the
         // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
         // `self.token()` loads a lazy token here too: the first networked command may be
@@ -362,35 +383,72 @@ impl NetSandbox {
         all
     }
 
+    /// The secrets a host-rights command's output must mask, as two views: the live session
+    /// view (`controls`, re-read while a command runs so a refreshed token is masked) and the
+    /// env-carried host secrets in `env`, which never change.
+    fn host_secret_views(
+        controls: Option<&Self>,
+        env: &[(String, String)],
+    ) -> (Vec<String>, Vec<String>) {
+        let live = controls.map(Self::host_redaction_secrets).unwrap_or_default();
+        let statics: Vec<String> = env
+            .iter()
+            .filter(|(name, value)| crate::is_host_secret_name(name) && !value.is_empty())
+            .map(|(_, value)| value.clone())
+            .collect();
+        (live, statics)
+    }
+
     /// [`redacted_run`](Self::redacted_run) for commands that run with the user's rights:
     /// scrubs every GitHub credential, whether or not the command has the network (a file-backed
     /// token reads the same with the network off). The environment stays cleared; nothing is
-    /// injected.
+    /// injected. A source that can still register a token keeps the stream masked even with no
+    /// token yet, and the session view is re-read while the command runs.
     pub(crate) fn redact_host_output(
-        &self,
+        controls: Option<&Self>,
+        env: &[(String, String)],
         live: &mut dyn FnMut(&[u8]),
         run: impl FnOnce(&mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
-        self.token();
-        let secrets = self.host_redaction_secrets();
-        if self.gh_source.is_none() && secrets.is_empty() {
+        if let Some(c) = controls {
+            c.token();
+        }
+        let (mut view, statics) = Self::host_secret_views(controls, env);
+        if view.is_empty() && statics.is_empty() && controls.is_some_and(|c| c.gh_source.is_none()) {
             return run(live);
         }
-        let mut sr = StreamRedactor::many(&secrets);
+        let mut all: Vec<Vec<u8>> = view
+            .iter()
+            .chain(statics.iter())
+            .filter(|t| !t.is_empty())
+            .map(|t| t.as_bytes().to_vec())
+            .collect();
+        all.sort_by_key(|t| std::cmp::Reverse(t.len()));
+        let mut sr = StreamRedactor::many(&view);
         let mut r = run(&mut |b: &[u8]| {
-            sr.refresh(&self.host_redaction_secrets());
+            // A session copy may register a token (or a refresh) while this command runs.
+            let next = Self::host_secret_views(controls, env).0;
+            if next != view {
+                view = next;
+                all.extend(
+                    view.iter()
+                        .filter(|t| !t.is_empty())
+                        .map(|t| t.as_bytes().to_vec()),
+                );
+                all.sort_by_key(|t| std::cmp::Reverse(t.len()));
+                sr.refresh(&all);
+            }
             let o = sr.push(b);
             if !o.is_empty() {
                 live(&o);
             }
         });
-        let secrets = self.host_redaction_secrets();
-        sr.refresh(&secrets);
+        sr.refresh(&all);
         let tail = sr.finish();
         if !tail.is_empty() {
             live(&tail);
         }
-        r.output = redact(&r.output, &secrets);
+        r.output = sr.mask(&r.output, r.output.len()).0;
         r
     }
 
@@ -647,7 +705,7 @@ mod tests {
         let n = NetSandbox::new(inner, false, true)
             .with_host_secrets_lazy(|| vec!["SYNTH_ACCOUNT_A".into(), "SYNTH_ACCOUNT_B".into()]);
         let mut live = Vec::new();
-        let r = n.redact_host_output(&mut |b| live.extend_from_slice(b), |live| {
+        let r = NetSandbox::redact_host_output(Some(&n), &[], &mut |b| live.extend_from_slice(b), |live| {
             live(b"a=SYNTH_ACCOUNT_A b=SYNTH_ACC");
             live(b"OUNT_B end");
             ExecResult {
@@ -1064,7 +1122,7 @@ mod tests {
             NetSandbox::new(inner, true, false).with_gh_token_refreshing(src, std::time::Duration::ZERO);
         assert_eq!(sandbox.token().as_deref(), Some("ghs_TOKEN_0"));
         let mut live = Vec::new();
-        let result = sandbox.redact_host_output(&mut |chunk| live.extend_from_slice(chunk), |output| {
+        let result = NetSandbox::redact_host_output(Some(&sandbox), &[], &mut |chunk| live.extend_from_slice(chunk), |output| {
             assert_eq!(sandbox.token().as_deref(), Some("ghs_TOKEN_2"));
             output(b"ghs_TOKEN_0 ghs_TO");
             output(b"KEN_2");

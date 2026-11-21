@@ -79,6 +79,8 @@ struct Sample<'a> {
     runs: Option<&'a [Value]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     app_quota: Option<AppQuota>,
+    #[serde(skip_serializing_if = "<[Deferral]>::is_empty")]
+    quota_deferred: &'a [Deferral],
 }
 
 pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
@@ -216,6 +218,41 @@ mod tests {
         let refused = open_log_for_owner(&path, other).is_err();
         std::fs::remove_file(path).unwrap();
         assert!(refused);
+    }
+
+    #[test]
+    fn an_oversized_sample_drops_queued_run_pages_before_the_app_quota() {
+        if crate::lock_process::in_parent() {
+            return;
+        }
+        let path = path("degrade");
+        let mut log = open_log(&path).unwrap();
+        let window = GitHubWindow {
+            limit: 5000,
+            remaining: 4000,
+            resets_at: 600,
+        };
+        let page = serde_json::json!({"workflow_runs": "x".repeat(120_000)});
+        run_with_landing(
+            &mut log,
+            true,
+            || {
+                Ok(LandingSample {
+                    runs: Some(vec![page.clone(); 9]),
+                    app_quota: Some(AppQuota {
+                        core: Some(window),
+                        graphql: None,
+                    }),
+                    ..LandingSample::default()
+                })
+            },
+            |_| {},
+        )
+        .unwrap();
+        let line: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(line.get("runs").is_none());
+        assert_eq!(line["app_quota"]["core"]["remaining"], 4000);
     }
 
     fn snapshot_bytes() -> Vec<u8> {
@@ -363,8 +400,38 @@ pub struct LandingDecision {
     pub queue: Option<QueueObservation>,
     #[serde(skip)]
     pub latest_reviews: landing::LatestReviews,
+    /// Review threads read in the same batch as the review comments (#1549).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<ThreadHold>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub would_notify_rejection: Option<RejectionNotice>,
+}
+
+/// The unresolved review threads of one PR, as read by the Reader. `incomplete` is
+/// reported, never treated as zero: the page was cut off or a node was malformed.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ThreadHold {
+    pub unresolved: u32,
+    /// Unresolved and not outdated: the threads that hold landing.
+    pub current: u32,
+    /// Creation time (unix seconds) of the oldest unresolved thread; 0 when unknown.
+    pub oldest_at: u64,
+    /// Distinct thread authors, at most four.
+    pub authors: Vec<String>,
+    pub incomplete: bool,
+}
+
+/// Optional GitHub work the owner's App reserve kept back in one sample (#1413): a
+/// recorded, non-fatal deferral that says why a source is absent.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct Deferral {
+    pub work: String,
+    pub resource: String,
+    /// The window reset the work waits for; absent when no window was observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_observation: bool,
 }
 
 #[derive(Serialize)]
@@ -394,6 +461,7 @@ pub struct LandingSample {
     pub panels: Option<Value>,
     pub runs: Option<Vec<Value>>,
     pub app_quota: Option<AppQuota>,
+    pub quota_deferred: Vec<Deferral>,
 }
 
 /// Persist the board and its projections in one owner-only sample.
@@ -415,6 +483,7 @@ pub fn run_with_landing(
             panels,
             runs,
             app_quota,
+            quota_deferred,
         } = snapshot()?;
         let matched_queue_admissions = if landing.is_empty() {
             BTreeMap::new()
@@ -448,20 +517,22 @@ pub fn run_with_landing(
             panels: panels.as_ref(),
             runs: runs.as_deref(),
             app_quota,
+            quota_deferred: &quota_deferred,
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         // The Lead sample bound is fixed: the largest optional records degrade
         // first, and a degraded record is an explicit partial observation.
-        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
-            sample.app_quota = None;
-            line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
-        }
-        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
-            sample.runs = None;
-            line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
-        }
-        if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
-            sample.panels = None;
+        // The App quota is small and decides whether the rest may be read: it goes last.
+        for step in 0..4 {
+            if line.len() as u64 <= MAX_LEAD_SAMPLE_BYTES {
+                break;
+            }
+            match step {
+                0 => sample.quota_deferred = &[],
+                1 => sample.runs = None,
+                2 => sample.panels = None,
+                _ => sample.app_quota = None,
+            }
             line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         }
         if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
