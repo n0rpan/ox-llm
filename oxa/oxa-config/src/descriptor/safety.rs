@@ -186,6 +186,19 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .web(WebEdit::Confirm)
     .widens("Lets bash use these host sockets; the docker socket gives root on this machine."),
     d(
+        "oxa.sandbox.gitConfigAllow",
+        Group::Safety,
+        "Bash sandbox",
+        "Git config keys bash may change",
+        "Keys of the repository's git config that sandboxed commands may change (patterns like branch.*); every other change is reverted after the command.",
+    )
+    .key(Kind::StringList, "[\"branch.*\", \"user.*\", \"remote.*.fetch\"]")
+    .control(Control::List(Item::Text))
+    .user_only()
+    .apply(Apply::Restart)
+    .web(WebEdit::Confirm)
+    .widens("Lets bash commands change these git config keys, which git acts on outside the sandbox."),
+    d(
         "oxa.sandbox.scratchWarnSize",
         Group::Safety,
         "Bash sandbox",

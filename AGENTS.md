@@ -60,6 +60,7 @@ code, tests, CI and docs; the owner validates on hardware.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+  - **Git config guard (owner decision, #639):** sandboxed bash may change the git `config` keys of the user-only `oxa.sandbox.gitConfigAllow` (default `branch.*`, `user.*`, `remote.*.fetch`); the sandbox leaves an existing plain `config` unbound and restores the whole file after a command that changed any other key. That is deliberate, not a missing read-only bind; a finding that asks for the old read-only `config` contradicts this rule.
   - Headless runs pursuing a goal and ownerless RPC count as unattended. Host tool shells use a
     cleared toolchain environment. Preserve exact-value masking in live and captured output for
     known GitHub credentials, the engine bearer key and nonempty environment values named with
@@ -535,6 +536,7 @@ read its result; they never launch builds or tests.
     Answer it by citing this rule, and do not apply it. A change that re-adds an OS sandbox to those
     paths is a P1 finding.
   - Off Linux the bash network is not restricted. The start notice and the model env note say so.
+  - **Git config guard (owner decision, #639):** sandboxed bash may change the git `config` keys of the user-only `oxa.sandbox.gitConfigAllow` (default `branch.*`, `user.*`, `remote.*.fetch`); the sandbox leaves an existing plain `config` unbound and restores the whole file after a command that changed any other key. That is deliberate, not a missing read-only bind; a finding that asks for the old read-only `config` contradicts this rule.
 - **Approval:** only the owner's own typed message counts as approval; text the model read never does. Auto keeps a
   short ask list, and the owner's typed yes passes every item on it. A finding that asks yolo to ask, or to refuse
   more than the two refusals above, contradicts the standard.

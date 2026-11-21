@@ -18,6 +18,7 @@ mod decision;
 mod full;
 mod gitdirs;
 mod layout;
+mod markers;
 mod net;
 mod offline;
 mod run;
@@ -34,6 +35,7 @@ pub use layout::{
     protected_paths, sensitive_paths, toolchain_env, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE,
     SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
 };
+pub use markers::Markers;
 pub use net::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
 pub use offline::{no_network_argv, offline_argv};
 pub use run::PinnedCwd;
@@ -93,8 +95,13 @@ impl Bwrap {
     pub fn session(&self) -> Bwrap {
         let mut b = self.clone();
         b.layout.scratch = None;
+        b.layout.markers = None;
         if let Some(Ok(s)) = self.layout.scratch_root.as_deref().map(Scratch::create) {
             b.layout = b.layout.with_scratch(s);
+        }
+        // #276, #639: the session's marker ledger (sweeps what a killed session left).
+        if let Some(root) = self.layout.scratch_root.as_deref() {
+            b.layout.markers = Markers::new(root).map(Arc::new);
         }
         b
     }
@@ -171,22 +178,10 @@ impl Sandbox for Bwrap {
         bwrap_args_with(s, &self.home, &self.layout)
     }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
-            return refused(why);
-        }
-        bwrap::create_missing_git_files(s, &self.home, &self.layout);
-        self.launch(s, None, c, live, true)
+        self.exec(s, None, c, live, true)
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
-            // The job reader sees only what went to `live`: give it the reason too.
-            live(why.as_bytes());
-            let mut r = refused(why);
-            r.output.clear();
-            return r;
-        }
-        bwrap::create_missing_git_files(s, &self.home, &self.layout);
-        self.launch(s, None, c, live, false)
+        self.exec(s, None, c, live, false)
     }
     fn run_with_stdin(
         &self,
@@ -195,11 +190,55 @@ impl Sandbox for Bwrap {
         c: &CancelToken,
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
+        self.exec(s, Some(stdin), c, live, true)
+    }
+}
+
+impl Bwrap {
+    /// The one way a command runs: the refusals, the git files the plan binds, the marker
+    /// ledger, the command in bwrap, then the git config guard (#276, #639).
+    fn exec(
+        &self,
+        s: &ExecSpec,
+        stdin: Option<&[u8]>,
+        c: &CancelToken,
+        live: &mut dyn FnMut(&[u8]),
+        capture: bool,
+    ) -> ExecResult {
         if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
-            return refused(why);
+            let mut r = refused(why);
+            if !capture {
+                // The job reader sees only what went to `live`: give it the reason too.
+                live(&r.output);
+                r.output.clear();
+            }
+            return r;
         }
-        bwrap::create_missing_git_files(s, &self.home, &self.layout);
-        self.launch(s, Some(stdin), c, live, true)
+        let created = bwrap::create_missing_git_files(s, &self.home, &self.layout);
+        let markers = self.layout.markers.as_deref();
+        if let Some(m) = markers {
+            m.register(&created);
+            let mut dirs: Vec<PathBuf> = self.layout.git.paths().cloned().collect();
+            dirs.push(bwrap::canon_existing(&s.cwd).join(".git"));
+            m.adopt_under(&dirs);
+        }
+        let guarded = bwrap::guarded_config_files(s, &self.home, &self.layout);
+        let guard = markers
+            .zip(self.layout.git_config_allow.as_deref())
+            .filter(|_| !guarded.is_empty());
+        if let Some((m, allow)) = guard {
+            m.guard_begin(&guarded, allow);
+        }
+        let mut res = self.launch(s, stdin, c, live, capture);
+        if let Some((m, allow)) = guard {
+            if let Some(note) = m.guard_end(&guarded, allow) {
+                live(note.as_bytes());
+                if capture || stdin.is_some() {
+                    res.output.extend_from_slice(note.as_bytes());
+                }
+            }
+        }
+        res
     }
 }
 
@@ -323,13 +362,18 @@ impl Bwrap {
             }
         }
         let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
-        argv.extend(bwrap::bwrap_args_pinned(
+        let (args, dir_markers) = bwrap::bwrap_args_marked(
             &public,
             &self.home,
             &self.layout,
             bwrap::account_home().as_deref(),
             &sockets,
-        ));
+        );
+        argv.extend(args);
+        if let Some(m) = self.layout.markers.as_deref() {
+            // The mount points bwrap is about to create in the host's git directory.
+            m.register(&dir_markers);
+        }
         let mut args_fd = None;
         if !secret.is_empty() {
             let mut data = Vec::new();

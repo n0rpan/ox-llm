@@ -6,6 +6,7 @@ use crate::gitdirs::{
 use crate::layout::{
     home_protected_paths, is_home_itself, is_home_or_above, protected_paths, sensitive_paths, Layout,
 };
+use crate::markers::{Marker, MarkerKind};
 use crate::run::run_argv;
 use crate::Bwrap;
 use oxa_proto::{codes, CancelToken, ExecSpec, OxaError};
@@ -84,7 +85,21 @@ pub(crate) fn bwrap_args_pinned(
     real_home: Option<&Path>,
     sockets: &[(&Path, i32)],
 ) -> Vec<String> {
-    let mut a = mount_plan(s, home, layout, real_home, sockets).emit();
+    bwrap_args_marked(s, home, layout, real_home, sockets).0
+}
+
+/// [`bwrap_args_pinned`] and the mount points the argv makes the host directory grow
+/// ([`Marker`]), for the caller to register before it runs the command.
+pub(crate) fn bwrap_args_marked(
+    s: &ExecSpec,
+    home: &Path,
+    layout: &Layout,
+    real_home: Option<&Path>,
+    sockets: &[(&Path, i32)],
+) -> (Vec<String>, Vec<Marker>) {
+    let plan = mount_plan(s, home, layout, real_home, sockets);
+    let markers = plan.markers.clone();
+    let mut a = plan.emit();
     let home_s = home.to_string_lossy().into_owned();
     let cwd = canon(&s.cwd).to_string_lossy().into_owned();
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
@@ -95,7 +110,7 @@ pub(crate) fn bwrap_args_pinned(
         push(&mut a, &["--setenv", &k, &v]);
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
-    a
+    (a, markers)
 }
 
 /// The canonical account home that is hidden besides `$HOME` (#53), if any.
@@ -158,6 +173,7 @@ pub(crate) fn mount_plan(
         .map(|(_, value)| value);
     let mut a: Vec<String> = Vec::new();
     let mut late: Vec<String> = Vec::new();
+    let mut markers: Vec<Marker> = Vec::new();
     push(&mut a, &["--unshare-all"]);
     if owner_confirm.is_some() {
         // `--cap-drop ALL` does not survive `unshare -Urm`: in a nested user namespace a
@@ -357,12 +373,17 @@ pub(crate) fn mount_plan(
         .chain(&layout.git.protect)
         .filter(|p| !p.starts_with(cwd_path) && !cwd_path.starts_with(p))
     {
+        if config_open(layout, p) {
+            // #639: an existing plain `config` stays unbound (git renames `config.lock` over
+            // it); `Bwrap::exec` verifies it after the command.
+            continue;
+        }
         if std::fs::symlink_metadata(p).is_ok() {
             let p = p.to_string_lossy();
             push(&mut a, &["--ro-bind", &p, &p]);
         } else if git_writable {
             // sbx-hooks: a missing hook dir or config file cannot be created either.
-            mask_missing(&mut a, p);
+            mask_missing(&mut a, &mut markers, p);
         }
     }
     // B4: what runs outside the sandbox later stays as it is.
@@ -372,7 +393,7 @@ pub(crate) fn mount_plan(
         let dotgit_writable = is_real_dir(&dotgit) && unsafe_reason(&dotgit).is_none();
         let protected = protected_paths(cwd_path);
         for p in &protected {
-            if is_real(p) {
+            if is_real(p) && !config_open(layout, p) {
                 let p = p.to_string_lossy();
                 push(&mut a, &["--ro-bind", &p, &p]);
             }
@@ -382,8 +403,8 @@ pub(crate) fn mount_plan(
         if dotgit_writable {
             for p in protected_entries(&dotgit, &dotgit) {
                 if !is_real(&p) {
-                    mask_missing(&mut a, &p);
-                } else if !protected.contains(&p) {
+                    mask_missing(&mut a, &mut markers, &p);
+                } else if !protected.contains(&p) && !config_open(layout, &p) {
                     let p = p.to_string_lossy();
                     push(&mut a, &["--ro-bind", &p, &p]);
                 }
@@ -396,7 +417,15 @@ pub(crate) fn mount_plan(
     // sbx-hooks: git runs the hooks of `core.hooksPath` (a repository config may name a
     // directory inside the project or a writable cache). Protect it even in plan mode: the
     // layout's read-write binds are writable there.
-    protect_hooks_paths(&mut a, cwd_path, &home_c, layout, mode, &home_entries_c);
+    protect_hooks_paths(
+        &mut a,
+        &mut markers,
+        cwd_path,
+        &home_c,
+        layout,
+        mode,
+        &home_entries_c,
+    );
     // Host runtime IPC is not part of the project and not a network socket, so the network
     // namespace does not contain it. A command can otherwise reach the user's session bus
     // (which starts processes outside the sandbox), the system bus and the Docker/Podman
@@ -525,7 +554,11 @@ pub(crate) fn mount_plan(
         };
         late = late_run_block(sock, &files);
     }
-    MountPlan { head: a, late }
+    MountPlan {
+        head: a,
+        late,
+        markers,
+    }
 }
 
 /// The one ordered mount plan of a command: `head` is everything up to the masks, `late` what
@@ -536,6 +569,9 @@ pub(crate) fn mount_plan(
 pub(crate) struct MountPlan {
     pub head: Vec<String>,
     pub late: Vec<String>,
+    /// The mount points bwrap creates in host directories for masks whose destination is
+    /// missing: they are removed again when the session ends (`markers.rs`).
+    pub markers: Vec<Marker>,
 }
 
 impl MountPlan {
@@ -754,16 +790,69 @@ fn is_dir_entry(p: &Path) -> bool {
 /// without that step (still safe, but git cannot read a device node on a read-only bind, and
 /// it refuses an unreadable `config`). Nothing when the parent is not a real directory (never
 /// through a symlink).
-fn mask_missing(a: &mut Vec<String>, p: &Path) {
+fn mask_missing(a: &mut Vec<String>, markers: &mut Vec<Marker>, p: &Path) {
     if !p.parent().is_some_and(is_real_dir) {
         return;
     }
     let ps = p.to_string_lossy();
     if is_dir_entry(p) {
         push(a, &["--tmpfs", &ps, "--remount-ro", &ps]);
+        markers.push(Marker {
+            path: p.to_path_buf(),
+            kind: MarkerKind::Dir,
+        });
     } else {
         push(a, &["--ro-bind", "/dev/null", &ps]);
+        markers.push(Marker {
+            path: p.to_path_buf(),
+            kind: MarkerKind::File(Vec::new()),
+        });
     }
+}
+
+/// #639: `p` is a git `config` / `config.worktree` that stays writable for ordinary git
+/// operations because the session verifies it after each command. Only with the guard on (the
+/// layout carries the allowed keys and the session its marker state) and for an existing plain
+/// file; a missing one stays masked.
+fn config_open(layout: &Layout, p: &Path) -> bool {
+    layout.git_config_allow.is_some()
+        && layout.markers.is_some()
+        && p.file_name()
+            .is_some_and(|n| n == "config" || n == "config.worktree")
+        && std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
+}
+
+/// #639: the git config files a command of `s` may change and the guard verifies: the
+/// existing plain `config` / `config.worktree` of the cwd's `.git` and of the layout's
+/// protected git entries, when the git directories are writable. Sorted.
+pub(crate) fn guarded_config_files(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<PathBuf> {
+    let cwd_c = canon(&s.cwd);
+    let cwd = cwd_c.as_path();
+    if layout.git_config_allow.is_none()
+        || effective_mode(s, home, layout, account_home().as_deref()) != CwdMode::Writable
+    {
+        return Vec::new();
+    }
+    let git_writable = layout
+        .git
+        .rw
+        .iter()
+        .all(|d| unsafe_reason(d).is_none() && std::fs::metadata(d).is_ok());
+    let mut files: Vec<PathBuf> = layout
+        .git
+        .protect
+        .iter()
+        .filter(|p| git_writable && !p.starts_with(cwd) && !cwd.starts_with(p))
+        .cloned()
+        .collect();
+    let dotgit = cwd.join(".git");
+    if is_real_dir(&dotgit) && unsafe_reason(&dotgit).is_none() {
+        files.extend(protected_entries(&dotgit, &dotgit));
+    }
+    files.retain(|p| config_open(layout, p));
+    files.sort();
+    files.dedup();
+    files
 }
 
 /// sbx-hooks: before a writable command runs, create every missing protected git *file* of
@@ -772,8 +861,8 @@ fn mask_missing(a: &mut Vec<String>, p: &Path) {
 /// directory, never over anything that exists (`create_new` does not follow a symlink); errors
 /// are ignored (the argv then masks the file with `/dev/null`). The `hooks` directory needs
 /// no such step: its tmpfs mask is readable.
-pub(crate) fn create_missing_git_files(s: &ExecSpec, home: &Path, layout: &Layout) {
-    create_missing_git_files_homes(s, home, layout, account_home().as_deref());
+pub(crate) fn create_missing_git_files(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<Marker> {
+    create_missing_git_files_homes(s, home, layout, account_home().as_deref())
 }
 
 /// [`create_missing_git_files`] with the real account home given explicitly (tests).
@@ -782,11 +871,12 @@ pub(crate) fn create_missing_git_files_homes(
     home: &Path,
     layout: &Layout,
     real_home: Option<&Path>,
-) {
+) -> Vec<Marker> {
+    let mut created = Vec::new();
     let cwd_c = canon(&s.cwd);
     let cwd = cwd_c.as_path();
     if effective_mode(s, home, layout, real_home) != CwdMode::Writable {
-        return;
+        return created;
     }
     // sbx-gitsym: nothing is created for git directories that are bound read-only.
     let git_writable = layout
@@ -819,8 +909,14 @@ pub(crate) fn create_missing_git_files_homes(
         if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
             use std::io::Write as _;
             let _ = f.write_all(body);
+            // Only what was created now is the sandbox's to remove again.
+            created.push(Marker {
+                path: p.clone(),
+                kind: MarkerKind::File(body.to_vec()),
+            });
         }
     }
+    created
 }
 
 /// sbx-gitsym: why the command `s` must not run at all, or `None`. Only for a repository whose
@@ -1182,6 +1278,7 @@ fn has_symlink_ancestor(p: &Path, root: &Path) -> bool {
 /// nothing. A symlink or a missing parent is refused by [`refusal`].
 fn protect_hooks_paths(
     a: &mut Vec<String>,
+    markers: &mut Vec<Marker>,
     cwd: &Path,
     home: &Path,
     layout: &Layout,
@@ -1210,6 +1307,10 @@ fn protect_hooks_paths(
                 push(a, &["--ro-bind", "/dev/null", &p]);
             }
             Err(_) if p.parent().is_some_and(is_real_dir) => {
+                markers.push(Marker {
+                    path: p.clone(),
+                    kind: MarkerKind::Dir,
+                });
                 let p = p.to_string_lossy();
                 push(a, &["--tmpfs", &p, "--remount-ro", &p]);
             }
@@ -1255,7 +1356,7 @@ fn mount_view(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode, home_entr
             .git
             .protect
             .iter()
-            .filter(|p| !p.starts_with(cwd) && !cwd.starts_with(p))
+            .filter(|p| !p.starts_with(cwd) && !cwd.starts_with(p) && !config_open(layout, p))
             .cloned(),
     );
     if writable {
@@ -1267,9 +1368,11 @@ fn mount_view(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode, home_entr
                 mounts.ro.push(dotgit);
             }
         }
-        mounts
-            .ro
-            .extend(protected_paths(cwd).into_iter().filter(|p| is_real(p)));
+        mounts.ro.extend(
+            protected_paths(cwd)
+                .into_iter()
+                .filter(|p| is_real(p) && !config_open(layout, p)),
+        );
     }
     // GH config is read-only online and masked offline. Its late mount hides earlier
     // writable binds below it; source aliases elsewhere keep their own mount permissions.
