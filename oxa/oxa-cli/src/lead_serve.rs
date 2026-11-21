@@ -803,7 +803,7 @@ impl Source {
         });
         use crate::lead_page::Page;
         let approvals_page = matches!(page, Page::Home | Page::Board | Page::BoardQuery(_));
-        let chat_page = matches!(page, Page::Chat(_));
+        let chat_page = matches!(page, Page::Chat(..));
         // Owner chat is configured only for a single verified Tailscale identity.
         let bound_owner = self
             .owner
@@ -849,7 +849,19 @@ impl Source {
                 Some(OwnerSession::Attached(_)) => "Back to the default session",
                 None => "Close the session view",
             });
-        let view = crate::lead_page::View {
+        // The dedicated Lead chat's thread reads that Session's entries without its writer
+        // lock, so a running turn still shows. A refused or absent reading stays `None` and
+        // the page says so; an attached page reads its own tail above.
+        let dedicated = match &current {
+            Some(OwnerSession::Dedicated(binding)) => Some(binding),
+            _ => None,
+        };
+        let short_id = dedicated.map(|binding| binding.session_id().chars().take(8).collect::<String>());
+        let entries = dedicated.and_then(|binding| match binding.read_entries() {
+            Ok(entries) => Some(entries),
+            Err(_) => None,
+        });
+        let mut view = crate::lead_page::View {
             sessions: owner
                 .zip(rows.as_deref())
                 .map(|(owner, rows)| crate::lead_page::SessionListView {
@@ -883,6 +895,8 @@ impl Source {
                     reply: latest.as_ref().map(|latest| &latest.reply),
                     proposal: latest.as_ref().and_then(|latest| latest.proposal.as_ref()),
                     confirmed: latest.as_ref().is_some_and(|latest| latest.confirmed),
+                    entries: entries.as_deref(),
+                    short_id: short_id.as_deref(),
                 }),
             board: good.map(|g| &g.board),
             situation: observation.as_ref().and_then(|o| o.situation.as_ref()),
@@ -901,6 +915,19 @@ impl Source {
             fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
             ..Default::default()
         };
+        // The chat page's own item: the canonical goal and its matching observation read
+        // from the same bound, owner-only Session as the thread.
+        let goal = dedicated.and_then(|binding| binding.goal().ok()).flatten();
+        if let Some((goal, revision, session)) = goal.as_ref() {
+            view.owner_goal = Some((
+                goal,
+                oxa_core::goal::GoalObservation {
+                    session,
+                    revision: *revision,
+                    status: Some(goal.status),
+                },
+            ));
+        }
         if fragment {
             crate::lead_page::content_for(page, &view, now)
         } else {
@@ -1236,11 +1263,17 @@ mod tests {
         owner
             .post(OwnerSubmission::Message("/goal is literal".into()), &env)
             .unwrap();
-        let page = crate::lead_page::Page::Chat(crate::lead_page::Prompt::Status);
+        let page = crate::lead_page::Page::Chat(crate::lead_page::Prompt::Status, None);
         let html = source.render(page, false);
-        assert!(html.contains("fixture &lt;b&gt;reply&lt;/b&gt;"));
-        assert!(!html.contains("fixture <b>reply</b>"));
-        assert!(html.contains("Confirm proposal"));
+        // The reply is the thread's newest lead bubble, escaped, with its confirmation.
+        let bubble = html
+            .split("class=\"msg lead\"")
+            .find(|part| part.contains("fixture &lt;b&gt;reply&lt;/b&gt;"))
+            .expect("the reply is a lead bubble");
+        assert!(!bubble.contains("fixture <b>reply</b>"));
+        assert!(bubble.contains("Confirm proposal"), "{bubble}");
+        // The model's own JSON answer never reaches the page.
+        assert!(!html.contains("\"facts\"") && !html.contains("```json"));
         assert_eq!(
             owner.post(OwnerSubmission::Confirm("wrong".into()), &env),
             Err("409 Conflict")

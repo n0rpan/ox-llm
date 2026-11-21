@@ -9,6 +9,7 @@ mod chat;
 mod filters;
 mod goal;
 mod item;
+mod md;
 mod pages;
 mod proposals;
 mod quotas;
@@ -139,6 +140,21 @@ pub struct OwnerChatView<'a> {
     pub(crate) reply: Option<&'a crate::lead_chat::conversation::ConversationReply>,
     pub proposal: Option<&'a (String, serde_json::Value)>,
     pub confirmed: bool,
+    /// The bound Lead Session's entries, read without its writer lock (#2349). The thread is
+    /// rendered from this source. `None` means the reading was refused or absent, which the
+    /// page says; an empty slice is an empty session.
+    pub entries: Option<&'a [oxa_proto::Entry]>,
+    /// The bound Lead Session's id, first eight characters only, as main's page named it.
+    pub short_id: Option<&'a str>,
+}
+
+/// Every role a session entry can show as in the thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ItemKind {
+    Owner,
+    Lead,
+    /// A tool step or its result: consecutive steps fold into one `<details>`.
+    Step,
 }
 
 fn escape(text: &str) -> String {
@@ -376,7 +392,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             html.push_str("</div>");
         }
         Page::Item(number) => item::render(&mut html, view, number, now),
-        Page::Chat(prompt) => chat::render(&mut html, view, prompt, now),
+        Page::Chat(prompt, _) => chat::render(&mut html, view, prompt, page.chat_before(), now),
         Page::Usage => {
             usage(&mut html, view, now);
             quotas::render(&mut html, view, now);
@@ -706,104 +722,7 @@ pub const STYLE: &str = concat!(
 "#
 );
 
-pub const SCRIPT: &str = r#"const themeBtn=document.getElementById('theme');
-if(themeBtn){
-  const root=document.documentElement;
-  let saved=null;try{saved=localStorage.getItem('lead-theme')}catch(e){}
-  if(saved==='light'||saved==='dark')root.dataset.theme=saved;
-  const dark=()=>root.dataset.theme?root.dataset.theme==='dark':matchMedia('(prefers-color-scheme:dark)').matches;
-  themeBtn.setAttribute('aria-pressed',String(dark()));
-  themeBtn.addEventListener('click',()=>{
-    const next=dark()?'light':'dark';root.dataset.theme=next;
-    themeBtn.setAttribute('aria-pressed',String(next==='dark'));
-    try{localStorage.setItem('lead-theme',next)}catch(e){}
-  });
-}
-const badge=document.getElementById('connection');
-const live=!!document.querySelector('meta[name=oxa-live-events]');
-const digest=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
-let runningSha=document.querySelector('meta[name=oxa-running-sha256]')?.content;
-if(!digest(runningSha))runningSha=null;
-let timer,pending,stream,reconnectTimer,streamOk=false,reloadNeeded=false;
-let ageTimer=null;
-function ageText(at,now){if(at>now+60)return 'ahead of this clock';const d=Math.max(0,now-at);if(d<60)return d+' s old';if(d<3600)return Math.floor(d/60)+' min old';if(d<86400)return Math.floor(d/3600)+' h old';return Math.floor(d/86400)+' d old';}
-function tickAges(){if(typeof document.querySelectorAll!=='function')return;const now=Math.floor(Date.now()/1000);document.querySelectorAll('time[data-at]').forEach(el=>{const at=Number(el.getAttribute('data-at'));if(Number.isFinite(at))el.textContent=ageText(at,now);});}
-function scheduleAges(){if(typeof document.querySelectorAll!=='function')return;tickAges();ageTimer=setTimeout(()=>{ageTimer=null;if(!document.hidden)scheduleAges();},10000);}
-function unavailable(){
-  badge.textContent='Refresh unavailable';
-  const notice=document.getElementById('refresh-error');if(notice)notice.hidden=false;
-}
-function reloadWhenIdle(){
-  clearTimeout(timer);if(document.hidden)return;
-  if(readerActive()||document.querySelector('#lead-message')?.value){
-    badge.textContent='Update ready';timer=setTimeout(reloadWhenIdle,15000);
-  }else location.reload();
-}
-function readerActive(){return document.querySelector('main').contains(document.activeElement)&&document.activeElement.matches('a,button,input,textarea,select,summary,[tabindex]');}
-async function refresh(){
-  clearTimeout(timer);
-  if(document.hidden||(stream&&!streamOk))return;
-  if(reloadNeeded){reloadWhenIdle();return;}
-  if(readerActive()){timer=setTimeout(refresh,15000);return;}
-  if(pending)pending.abort();
-  const active=new AbortController();pending=active;
-  const target=new URL(location.href);target.searchParams.set('fragment','1');
-  try{
-    const response=await fetch(target,{cache:'no-store',signal:active.signal});
-    if(!response.ok)throw new Error('refresh refused');
-    const doc=new DOMParser().parseFromString(await response.text(),'text/html');
-    const next=doc.querySelector('main');
-    if(!next)throw new Error('refresh unavailable');
-    if(pending===active&&!active.signal.aborted&&!document.hidden&&!readerActive()&&(!stream||streamOk)){
-      const current=document.querySelector('main'),work=current.querySelector('details.home-work');
-      const replacement=next.querySelector('details.home-work');
-      if(work&&replacement)replacement.open=work.open;
-      const draft=current.querySelector('#lead-message');
-      if(draft?.value){
-        const nextDraft=next.querySelector('#lead-message');
-        if(!nextDraft)return;
-        nextDraft.value=draft.value;
-      }
-      current.replaceWith(next);badge.textContent='Connected';
-    }
-  }catch(error){if(!active.signal.aborted)unavailable();}
-  finally{if(pending===active){pending=null;if(!document.hidden&&(!stream||readerActive()))timer=setTimeout(refresh,15000);}}
-}
-function connect(){
-  stream=new EventSource('/events/live');streamOk=false;
-  const activeStream=stream;
-  const waitForEvent=()=>{reconnectTimer=null;if(stream===activeStream&&!document.hidden&&!streamOk)unavailable();};
-  reconnectTimer=setTimeout(waitForEvent,15000);
-  stream.addEventListener('lead-update',async event=>{
-    if(document.hidden||stream!==activeStream)return;
-    let value;
-    try{
-      if(typeof event.data!=='string'||event.data.length>128||/[\r\n]/.test(event.data))throw new Error();
-      value=JSON.parse(event.data);
-      if(!value||Array.isArray(value)||Object.keys(value).length!==1||!Object.prototype.hasOwnProperty.call(value,'running_sha256')||
-        (value.running_sha256!==null&&!digest(value.running_sha256)))throw new Error();
-    }catch{streamOk=false;unavailable();return;}
-    streamOk=true;clearTimeout(reconnectTimer);reconnectTimer=null;
-    if(value.running_sha256!==null){
-      if(runningSha&&runningSha!==value.running_sha256)reloadNeeded=true;
-      if(!reloadNeeded)runningSha=value.running_sha256;
-    }
-    if(reloadNeeded)reloadWhenIdle();else await refresh();
-  });
-  stream.onerror=()=>{
-    if(stream!==activeStream)return;
-    streamOk=false;if(!reconnectTimer)reconnectTimer=setTimeout(waitForEvent,15000);
-  };
-}
-document.addEventListener('visibilitychange',()=>{
-  clearTimeout(timer);clearTimeout(reconnectTimer);reconnectTimer=null;if(pending)pending.abort();
-  if(ageTimer){clearTimeout(ageTimer);ageTimer=null;}
-  if(stream){stream.close();stream=null;streamOk=false;}
-  if(!document.hidden){if(live&&typeof EventSource==='function')connect();else refresh();scheduleAges();}
-});
-if(live&&typeof EventSource==='function')connect();else timer=setTimeout(refresh,15000);
-scheduleAges();
-"#;
+pub const SCRIPT: &str = include_str!("lead_page/live.js");
 
 #[cfg(test)]
 mod tests {
@@ -889,7 +808,7 @@ mod tests {
             Page::Workers,
             Page::Asks,
             Page::Item(17),
-            Page::Chat(Prompt::Status),
+            Page::Chat(Prompt::Status, None),
         ] {
             let html = document_for(page, &view, 100);
             assert!(html.contains("01:00 CET"), "{page:?}");
@@ -904,8 +823,16 @@ mod tests {
             assert!(html.contains("02:00 CET"), "lease or quota reset: {page:?}");
             assert!(!html.contains("expires 3600") && !html.contains("resets at 3600"));
         }
-        for page in [Page::Home, Page::Chat(Prompt::Status)] {
+        for page in [Page::Home, Page::Chat(Prompt::Status, None)] {
             let html = document_for(page, &view, 100);
+            if matches!(page, Page::Chat(..)) {
+                // The chat page carries the goal as a header chip, not as the goal section.
+                assert!(
+                    html.contains("class=\"chip quiet\">Goal pursuing</span>"),
+                    "{html}"
+                );
+                continue;
+            }
             let section = owner_goal_section(&html);
             assert!(section.contains("Started 01:00 CET") && section.contains("Observed 02:00 CET"));
             assert!(!section.contains("1970-01-01"));
@@ -1105,7 +1032,7 @@ mod tests {
     #[test]
     fn canonical_goal_checks_render_without_private_binding_or_new_controls() {
         let (goal, reference) = owner_goal_fixture();
-        for page in [Page::Home, Page::Chat(Prompt::Status)] {
+        for page in [Page::Home] {
             let html = owner_goal_html(page, &goal, &reference, None);
             let section = owner_goal_section(&html);
             for expected in [
@@ -1237,15 +1164,15 @@ mod tests {
                 ],
             ),
             (
-                Page::Chat(Prompt::Status),
+                Page::Chat(Prompt::Status, None),
                 vec!["This question needs a board observation"],
             ),
             (
-                Page::Chat(Prompt::Workers),
+                Page::Chat(Prompt::Workers, None),
                 vec!["This question needs a runner observation"],
             ),
             (
-                Page::Chat(Prompt::Attention),
+                Page::Chat(Prompt::Attention, None),
                 vec!["This question needs a runner observation"],
             ),
         ] {
@@ -1362,7 +1289,7 @@ mod tests {
                 }),
                 "/board",
             ),
-            (Page::Chat(Prompt::Status), "/chat"),
+            (Page::Chat(Prompt::Status, None), "/chat"),
         ] {
             let html = document_for(
                 page,
@@ -1403,7 +1330,7 @@ mod tests {
             assert_eq!(nav.matches("<svg ").count(), 6);
             assert!(nav.contains("class=rail-only href=/chat"));
             assert!(nav.contains("<span class=badge aria-hidden=true>"));
-            if matches!(page, Page::Chat(_)) {
+            if matches!(page, Page::Chat(..)) {
                 assert!(!html.contains("class=fab"));
             } else {
                 assert!(html.contains("<a class=fab href=/chat"));
@@ -1440,7 +1367,7 @@ mod tests {
             Page::Workers,
             Page::Usage,
             Page::Item(17),
-            Page::Chat(Prompt::Status),
+            Page::Chat(Prompt::Status, None),
         ] {
             let document = document_for(page, &View::default(), 100);
             let fragment = content_for(page, &View::default(), 100);
@@ -1617,10 +1544,13 @@ function makeMain(open, message=null) {
     replaceWith:next=>{current=next;}};
 }
 const document={hidden:false, documentElement:{dataset:{}}, activeElement:{matches:selectors=>selectors.split(',').includes(focused)},
-  getElementById:id=>id==='theme'?themeButton:id==='connection'?connectionBadge:id==='refresh-error'?current.notice:null,
-  querySelector:selector=>selector==='meta[name=oxa-live-events]'?(liveEnabled?{}:null):selector.startsWith('meta')?(initialDigest?{content:initialDigest}:null):selector==='#lead-message'?current?.draft:current,
+  getElementById:id=>id==='theme'?themeButton:id==='connection'?connectionBadge:id==='refresh-error'?current.notice:id==='lead-message'?current?.draft:null,
+  querySelector:selector=>selector==='meta[name=oxa-live-events]'?(liveEnabled?{}:null):selector.startsWith('meta')?(initialDigest?{content:initialDigest}:null):selector==='#lead-message'?current?.draft:selector==='.thread'?null:current,
   addEventListener:(name,fn)=>{if(name==='visibilitychange')visibilityListener=fn;}};
 const setTimeout=(fn,ms)=>{const id=++serial;timers.set(id,{fn:()=>{timers.delete(id);return fn();},ms});return id;}, clearTimeout=id=>timers.delete(id);
+// The chat script starts at the newest message on the next frame and follows the
+// on-screen keyboard; the measured page has no frame scheduler and no keyboard.
+const requestAnimationFrame=()=>{};
 class AbortController { constructor(){this.signal={aborted:false};} abort(){this.signal.aborted=true;} }
 class URL { constructor(href){this.href=href;this.searchParams={set:(key,value)=>{this.href+=(href.includes('?')?'&':'?')+key+'='+value;}};} }
 const location={href:'http://example.invalid/board?f=fix&p=2',reload:()=>{reloads++;}};
@@ -1671,7 +1601,7 @@ class EventSource {{
             Page::Board,
             Page::Workers,
             Page::Usage,
-            Page::Chat(Prompt::Status),
+            Page::Chat(Prompt::Status, None),
         ] {
             let view = View {
                 running_sha256: Some(&digest),
@@ -1890,6 +1820,223 @@ return true;
     }
 
     #[test]
+    fn chat_page_is_one_header_strip_one_thread_and_one_composer() {
+        use crate::lead_chat::conversation::{ActionDraft, ConversationReply, ProposedAction};
+        use oxa_work::standing::Source;
+
+        let entries = session::fixture();
+        // The synthetic entry times are read against a "now" of one hour: the newest
+        // entry is 70 s old at that clock, so the session reads as running.
+        let now = 3_600;
+        let reply = ConversationReply {
+            text: "Because the fixture item is waiting for a review.".into(),
+            facts: vec![],
+            action: Some(ProposedAction {
+                draft: ActionDraft::FollowUp {
+                    task: "task-example".into(),
+                    text: "Run the fixture check".into(),
+                },
+                source: Source::SessionEntry {
+                    session_id: "private-session-source".into(),
+                    entry_id: "private-entry-source".into(),
+                },
+            }),
+        };
+        let proposal = ("proposal-example".to_owned(), serde_json::Value::Null);
+        let owner = OwnerChatView {
+            csrf: "csrf-example",
+            reply: Some(&reply),
+            proposal: Some(&proposal),
+            confirmed: false,
+            entries: Some(&entries),
+            short_id: Some("a1b2c3d4"),
+        };
+        let (goal, reference) = owner_goal_fixture();
+        let observation = oxa_core::goal::GoalObservation {
+            session: &reference,
+            revision: 7,
+            status: Some(goal.status),
+        };
+        let read = |view: &View<'_>| document_for(Page::Chat(Prompt::Status, None), view, now);
+        let html = read(&View {
+            owner_chat: Some(owner),
+            owner_goal: Some((&goal, observation)),
+            fixed_prompt_csrf: Some("fixed-csrf"),
+            ..Default::default()
+        });
+        // Header strip, thread and composer, in that order, once each.
+        let order: Vec<_> = [
+            "<div class=chat-head>",
+            "<div class=thread",
+            "<div class=composer2>",
+        ]
+        .iter()
+        .map(|part| html.find(part).unwrap_or_else(|| panic!("{part} missing")))
+        .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{order:?}");
+        // The fixed questions, the reply's action card and the composer are the three
+        // /chat forms; the owner's textarea is the only message field.
+        assert_eq!(html.matches("method=post action=/chat").count(), 3, "{html}");
+        assert_eq!(html.matches("name=message").count(), 1, "{html}");
+        assert!(
+            html.contains("Status: running")
+                && html.contains("1200 tokens")
+                && html.contains("Lead session a1b2c3d4"),
+            "{html}"
+        );
+        assert!(
+            html.contains("class=\"chip quiet\">Goal pursuing</span>"),
+            "{html}"
+        );
+        // The fixed questions keep their no-JS form and CSRF value, and the composer its
+        // one message form and CSRF value: the requests are the ones the route answers.
+        assert!(html.contains("class=fixed-prompts method=post action=/chat"));
+        assert!(html.contains("name=csrf value=\"fixed-csrf\""));
+        assert!(html.contains("href=\"/chat?prompt=workers\""));
+        assert!(html.contains("name=csrf value=\"csrf-example\""));
+        // The process's validated reply is the newest lead bubble, and its action card is
+        // under that bubble with the one confirmation the route accepts.
+        let bubble = html
+            .split("class=\"msg lead\"")
+            .find(|part| part.contains("Because the fixture item is waiting for a review."))
+            .expect("the reply is a lead bubble");
+        assert!(
+            bubble.contains("name=proposal_id value=\"proposal-example\""),
+            "{bubble}"
+        );
+        assert!(bubble.contains("Confirm proposal"), "{bubble}");
+        assert!(bubble.contains("Proposed follow-up"), "{bubble}");
+        // A chat page never renders the tool the owner did not ask to see as a bubble, and
+        // never the private ids a session carries.
+        assert!(!html.contains("private-session-source") && !html.contains("private-entry-source"));
+        assert!(!html.contains(&reference.id));
+        for invented in ["not connected yet", "No answer"] {
+            assert!(!html.contains(invented), "{invented}: {html}");
+        }
+        // Without owner chat the composer says why in words, and no message form exists.
+        let off = read(&View {
+            fixed_prompt_csrf: Some("fixed-csrf"),
+            ..Default::default()
+        });
+        assert!(off.contains("Chat is off: enable <code>oxa.lead.serve.owner_chat</code>"));
+        assert!(!off.contains("name=message"));
+        // The attached session keeps its own form, naming the session it was rendered for.
+        let attached_entries = [oxa_proto::Entry {
+            id: "a1b2c3d4".into(),
+            parent: None,
+            ts_ms: (now - 30) * 1000,
+            body: oxa_proto::EntryBody::Msg {
+                wire: oxa_proto::WireMsg::user("Hello from the attached fixture"),
+                parts: Vec::new(),
+                tool: None,
+            },
+        }];
+        let attached = read(&View {
+            attached: Some(super::AttachedView {
+                csrf: "attached-csrf",
+                entries: &attached_entries,
+                truncated: false,
+                live: true,
+                short_id: "a1b2c3d4".into(),
+                id: "a1b2c3d4-full".into(),
+                sent: true,
+                activity: Some("working"),
+                context_tokens: Some(900),
+            }),
+            ..Default::default()
+        });
+        assert!(attached.contains("Hello from the attached fixture"), "{attached}");
+        assert!(
+            attached.contains("name=session value=\"a1b2c3d4-full\""),
+            "{attached}"
+        );
+        assert!(
+            attached.contains("name=csrf value=\"attached-csrf\""),
+            "{attached}"
+        );
+        assert!(
+            attached.contains("Sent. The session reads it at its next turn."),
+            "{attached}"
+        );
+        // An empty session opens with the snapshot digest; none of it is a model call.
+        let empty: Vec<oxa_proto::Entry> = Vec::new();
+        let digest = read(&View {
+            owner_chat: Some(OwnerChatView {
+                csrf: "csrf-example",
+                reply: None,
+                proposal: None,
+                confirmed: false,
+                entries: Some(&empty),
+                short_id: Some("a1b2c3d4"),
+            }),
+            ..Default::default()
+        });
+        // With no observation at all, the snapshot bubble says which source is missing
+        // instead of an empty conversation.
+        assert!(
+            digest.contains("This question needs a board observation"),
+            "{digest}"
+        );
+        let board = Board::default();
+        let digest = read(&View {
+            owner_chat: Some(OwnerChatView {
+                csrf: "csrf-example",
+                reply: None,
+                proposal: None,
+                confirmed: false,
+                entries: Some(&empty),
+                short_id: Some("a1b2c3d4"),
+            }),
+            board: Some(&board),
+            ..Default::default()
+        });
+        assert!(digest.contains("Since you last looked") && digest.contains("from the snapshot"));
+        // A session that could not be read says so inside its popover.
+        let unread = read(&View {
+            owner_chat: Some(OwnerChatView {
+                csrf: "csrf-example",
+                reply: None,
+                proposal: None,
+                confirmed: false,
+                entries: None,
+                short_id: Some("a1b2c3d4"),
+            }),
+            ..Default::default()
+        });
+        assert!(unread.contains("entries could not be read"), "{unread}");
+    }
+
+    #[test]
+    fn chat_query_takes_one_fixed_question_and_one_older_page_and_nothing_else() {
+        for (path, expected) in [
+            ("/chat", Some(Page::Chat(Prompt::Status, None))),
+            ("/chat?prompt=workers", Some(Page::Chat(Prompt::Workers, None))),
+            ("/chat?attention", None),
+            (
+                "/chat?prompt=attention&before=a1b2c3d4",
+                Some(Page::Chat(Prompt::Attention, Some(*b"a1b2c3d4"))),
+            ),
+            (
+                "/chat?before=a1b2c3d4",
+                Some(Page::Chat(Prompt::Status, Some(*b"a1b2c3d4"))),
+            ),
+            ("/chat?before=", None),
+            ("/chat?before=../private", None),
+            ("/chat?before=ABCDEF12", None),
+            ("/chat?before=a1b2c3d", None),
+            ("/chat?before=x&before=y", None),
+            ("/chat?prompt=status&extra=1", None),
+        ] {
+            assert_eq!(Page::request(path), expected.map(|page| (page, false)), "{path}");
+        }
+        // A trailing fragment is the page's own marker, peeled before the fields parse.
+        assert_eq!(
+            Page::request("/chat?prompt=status&fragment=1"),
+            Some((Page::Chat(Prompt::Status, None), true))
+        );
+    }
+
+    #[test]
     fn stale_board_observations_offer_an_ssr_retry_without_inventing_an_interval() {
         for page in [
             Page::Home,
@@ -1901,7 +2048,6 @@ return true;
             Page::Asks,
             Page::Workers,
             Page::Usage,
-            Page::Chat(Prompt::Workers),
         ] {
             let render = |observed_at, now| {
                 document_for(
@@ -1922,7 +2068,7 @@ return true;
                 assert!(html.contains("<a href=\"\">Retry</a>"));
                 assert_eq!(html.matches("id=refresh-error").count(), 1);
                 assert!(html.contains("id=refresh-error class=stale-notice role=status hidden"));
-                assert!(!html.contains("onclick=") && !html.contains("<form"));
+                assert!(!html.contains("onclick="));
                 assert!(!html.contains("sweep every") && !html.contains("Can't reach lead"));
             }
             for (observed_at, now) in [(100, 1000), (160, 100)] {
