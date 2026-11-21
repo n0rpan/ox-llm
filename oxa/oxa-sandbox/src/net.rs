@@ -97,6 +97,16 @@ impl StreamRedactor {
         sr
     }
 
+    /// [`Self::many`] for a set already held as bytes, the shape the masking works on.
+    fn from_bytes<S: AsRef<[u8]>>(tokens: &[S]) -> Self {
+        let mut sr = StreamRedactor {
+            tokens: Vec::new(),
+            pending: Vec::new(),
+        };
+        sr.refresh_bytes(tokens);
+        sr
+    }
+
     /// Take the token set as it is now. The set only grows (a replaced token stays), so the
     /// hold-back only widens and the bytes already emitted stay decided on full data.
     fn refresh<S: AsRef<str>>(&mut self, tokens: &[S]) {
