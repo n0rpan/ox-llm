@@ -1073,7 +1073,13 @@ fn publish_locked(
         )?;
         // Read the destination back into the saved receipt: a push that reports
         // success must show the pushed commit at the branch tip.
-        receipt_slot.replace(Some(receipt::read_back(policy, repo, &remote, &task.branch, &head)));
+        receipt_slot.replace(Some(receipt::read_back(
+            policy,
+            repo,
+            &remote,
+            &task.branch,
+            &head,
+        )));
         let draft = false;
         let body = policy.storage.join(format!("{}.pr-body.md", task.id));
         crate::checkpoint::write_atomic(&body, text.as_bytes(), body.exists())?;

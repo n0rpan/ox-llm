@@ -132,7 +132,7 @@ impl StreamRedactor {
         // Any secret that starts before `emit` ends inside `pending` (start + len <=
         // emit - 1 + hold + 1 = pending.len()), so every position decided here is decided on
         // full data.
-let (out, consumed) = self.mask(&self.pending, emit);
+        let (out, consumed) = self.mask(&self.pending, emit);
         self.pending.drain(..consumed);
         out
     }
@@ -386,10 +386,7 @@ impl NetSandbox {
     /// The secrets a host-rights command's output must mask, as two views: the live session
     /// view (`controls`, re-read while a command runs so a refreshed token is masked) and the
     /// env-carried host secrets in `env`, which never change.
-    fn host_secret_views(
-        controls: Option<&Self>,
-        env: &[(String, String)],
-    ) -> (Vec<String>, Vec<String>) {
+    fn host_secret_views(controls: Option<&Self>, env: &[(String, String)]) -> (Vec<String>, Vec<String>) {
         let live = controls.map(Self::host_redaction_secrets).unwrap_or_default();
         let statics: Vec<String> = env
             .iter()
@@ -1122,17 +1119,22 @@ mod tests {
             NetSandbox::new(inner, true, false).with_gh_token_refreshing(src, std::time::Duration::ZERO);
         assert_eq!(sandbox.token().as_deref(), Some("ghs_TOKEN_0"));
         let mut live = Vec::new();
-        let result = NetSandbox::redact_host_output(Some(&sandbox), &[], &mut |chunk| live.extend_from_slice(chunk), |output| {
-            assert_eq!(sandbox.token().as_deref(), Some("ghs_TOKEN_2"));
-            output(b"ghs_TOKEN_0 ghs_TO");
-            output(b"KEN_2");
-            ExecResult {
-                output: b"ghs_TOKEN_0 ghs_TOKEN_2".to_vec(),
-                exit: Some(0),
-                timed_out: false,
-                unsandboxed: true,
-            }
-        });
+        let result = NetSandbox::redact_host_output(
+            Some(&sandbox),
+            &[],
+            &mut |chunk| live.extend_from_slice(chunk),
+            |output| {
+                assert_eq!(sandbox.token().as_deref(), Some("ghs_TOKEN_2"));
+                output(b"ghs_TOKEN_0 ghs_TO");
+                output(b"KEN_2");
+                ExecResult {
+                    output: b"ghs_TOKEN_0 ghs_TOKEN_2".to_vec(),
+                    exit: Some(0),
+                    timed_out: false,
+                    unsandboxed: true,
+                }
+            },
+        );
         assert_eq!(live, b"[redacted] [redacted]");
         assert_eq!(result.output, live);
     }
