@@ -231,7 +231,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.sandbox.sockets` | list | `[]` | host runtime sockets (for example `/run/docker.sock`, `/run/podman/podman.sock`) that stay reachable in network-enabled sandboxed bash with Bubblewrap FD binds; absolute paths of existing sockets; user settings only, a project file cannot list them. The start notice names each one. The start notice warns about the Docker socket’s root access. An online command fails closed if a configured socket cannot be pinned or Bubblewrap cannot mount the descriptor. Offline, a listed socket is masked at its path instead, and a socket below a writable mount (the workspace, a write bind, `$HOME` or `/tmp`) is refused: its mask could be moved away by renaming the parent, so relocate the socket or drop the setting. Yolo bash has no sandbox and needs no entry |
 <!-- /generated:permissions -->
 
-The publish check pins the remote default branch before commands run; rewriting local remote metadata cannot make that default safe to push. Opaque wrappers that can change publication semantics require approval.
+The publish check pins the remote default branch at the first classified command; later rewrites of local remote metadata cannot make that default safe to push. Opaque wrappers that can change publication semantics require approval.
 
 ### Native cloud gateway
 

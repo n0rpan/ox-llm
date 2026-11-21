@@ -1015,6 +1015,12 @@ const ROWS: &[Row] = &[
         expect: RM,
     },
     Row {
+        name: "env_attached_chdir_composes_with_another_wrapper",
+        cmd: "env -Csub env --chdir=.. rm -rf build",
+        cwd: ".",
+        expect: NONE,
+    },
+    Row {
         name: "env_computed_directory_makes_targets_unknown",
         cmd: "env -C \"$X\" rm -rf victim",
         cwd: ".",

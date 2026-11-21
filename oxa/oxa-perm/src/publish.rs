@@ -778,8 +778,8 @@ fn baseline_key(cwd: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(common).ok()
 }
 
-/// Record the session repository's origin URLs once, before any command of the session can
-/// change them. Called for every classified command line, not only pushes.
+/// Record the session repository's origin URLs and default branch at the first classified
+/// command. Called for every classified command line, not only pushes.
 pub(crate) fn record_baseline(cwd: &Path) {
     let Some(key) = baseline_key(cwd) else { return };
     let map = BASELINE.get_or_init(Default::default);
@@ -804,8 +804,13 @@ fn urls_unchanged(session: &Path, target: &Path) -> bool {
     }
 }
 
-/// The branch is non-default according to the identity pinned before commands ran, and the
-/// repository still has the metadata that was pinned. Never decide this from the writable live
+/// A `core.*` key (lower case, without the section) whose value is a program git runs.
+pub(crate) fn program_running_core_key(key: &str) -> bool {
+    matches!(key, "sshcommand" | "gitproxy" | "hookspath")
+}
+
+/// The branch is non-default according to the identity pinned at the first classified command,
+/// and the repository still has that metadata. Never decide this from the writable live
 /// `origin/HEAD`: otherwise a concurrent rewrite can make the two separate reads disagree.
 fn pinned_non_default(session: &Path, target: &Path, branch: &str) -> bool {
     record_baseline(session);
@@ -883,7 +888,7 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Option<Vec<St
             ("remote", None) => key == "pushdefault",
             ("remote", Some("origin")) => matches!(key.as_str(), "push" | "pushurl" | "mirror"),
             ("url", _) => key == "pushinsteadof",
-            ("core", _) => matches!(key.as_str(), "sshcommand" | "gitproxy" | "hookspath"),
+            ("core", _) => program_running_core_key(&key),
             ("branch", Some(b)) if b == branch && implicit => match key.as_str() {
                 "remote" | "pushremote" => val != "origin",
                 "merge" => val != format!("refs/heads/{branch}"),

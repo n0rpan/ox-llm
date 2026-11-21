@@ -6,6 +6,7 @@
 //! rule looks at a word, so `r\m`, `'r'm` and `"rm"` are all `rm`. Command substitutions and
 //! `sh -c` strings are parsed again and checked too. A line the tokenizer cannot read is one
 //! `unparsed` hit (fail closed).
+use crate::effects::{self, Effects};
 use crate::paths::{is_inside, normalize, resolve_real};
 use crate::policy::PathGuard;
 use std::path::{Path, PathBuf};
@@ -55,6 +56,14 @@ pub const BUILTIN_RULES: &[(&str, &str)] = &[
     (
         "eval-dynamic",
         "eval or source of a command the shell builds at run time",
+    ),
+    (
+        "credential-read",
+        "reads a credential store, prints a login token, or reads another process's environment",
+    ),
+    (
+        "git-hook-write",
+        "writes a git hook, git config or gitdir pointer: code git runs later, outside this session",
     ),
     ("unparsed", "the command line cannot be parsed (fail closed)"),
 ];
@@ -255,6 +264,7 @@ impl DangerRules {
                 let found = self.check_words(
                     &stage.words,
                     &stage.redirects,
+                    &stage.bodies,
                     stage.pipe_in,
                     &pipeline,
                     unknown || untracked,
@@ -347,6 +357,7 @@ impl DangerRules {
         &self,
         words: &[String],
         redirects: &[(String, String)],
+        bodies: &[String],
         pipe_in: bool,
         prior: &[String],
         unknown_in: bool,
@@ -359,8 +370,8 @@ impl DangerRules {
             self.push(hits, "unparsed", &seg);
             return None;
         }
-        let peeled = peel(words, unknown_in);
-        let unknown = peeled.unknown;
+        let fx = effects::of(words, redirects, unknown_in);
+        let mut unknown = fx.unknown_targets;
         // A redirection belongs to the simple command, whatever wraps it, and the shell opens
         // it in the current directory before `env` moves: `env -C / true > .npmrc` writes here.
         for (op, target) in redirects {
@@ -368,8 +379,20 @@ impl DangerRules {
                 self.write_hit(target, &seg, ctx, hits);
             }
         }
-        // `env -C <dir> cmd`: the wrapped command runs in <dir>.
-        let moved = peeled.dir.as_deref().and_then(|dir| ctx.resolve(dir));
+        // `env -C <dir> cmd`: the wrapped command runs in <dir>; a chain of them composes, and a
+        // directory the shell computes makes the targets unknown.
+        let mut moved: Option<PathBuf> = None;
+        for dir in &fx.dirs {
+            let base = Ctx {
+                cwd: moved.as_deref().unwrap_or(ctx.cwd),
+                root: ctx.root,
+                guard: ctx.guard,
+            };
+            match base.resolve(dir) {
+                Some(next) => moved = Some(next),
+                None => unknown = true,
+            }
+        }
         let scoped = moved.as_ref().map(|dir| Ctx {
             cwd: dir.as_path(),
             root: ctx.root,
@@ -379,15 +402,20 @@ impl DangerRules {
         let heredoc = redirects
             .iter()
             .any(|(op, _)| matches!(op.as_str(), "<<" | "<<-" | "<<<"));
-        let mut inline = peeled.inline;
-        let argv: &[String] = if peeled.start < words.len() {
-            &words[peeled.start..]
-        } else {
-            &[]
-        };
+        let mut inline = fx.inline.clone();
+        let argv: &[String] = &fx.argv;
+        // The words SQL can hide in: the command's own, here-strings and heredoc bodies.
+        let mut sql_words: Vec<String> = words.to_vec();
+        sql_words.extend(
+            redirects
+                .iter()
+                .filter(|(op, _)| op == "<<<")
+                .map(|(_, target)| target.clone()),
+        );
+        sql_words.extend(bodies.iter().cloned());
         // Privilege escalation is reported before the peeled argv is inspected: `su` and
         // `su -c ...` run as root even though nothing is left to peel after them.
-        if peeled.privileged {
+        if fx.privileged {
             self.push(hits, "sudo", &seg);
         }
         if !argv.is_empty() {
@@ -395,7 +423,9 @@ impl DangerRules {
             let name = base_name(name_raw);
             // The command name itself is computed at run time: `$x -rf /`, `$(which rm)`.
             // A brace expansion builds the words at run time too: `{rm,-rf,/}` runs `rm -rf /`.
-            if has_dynamic(name_raw) || brace_expansion_at(name_raw).is_some() {
+            // An unquoted glob in the name picks the program at run time too (`/bin/r?`).
+            let glob_name = name_raw.contains(['*', '?', '[']) && !matches!(name_raw, "[" | "[[");
+            if has_dynamic(name_raw) || brace_expansion_at(name_raw).is_some() || glob_name {
                 self.push(hits, "eval-dynamic", &seg);
             }
             // A process substitution read as a script or as stdin: `bash <(curl ..)`,
@@ -469,11 +499,39 @@ impl DangerRules {
             }
         }
         if argv.is_empty() {
+            self.credential_read(&fx, &seg, ctx, hits);
             return None;
         }
         self.custom_hits(argv, &seg, hits);
-        self.command_hits(argv, unknown, depth, ctx, &seg, hits, words);
+        self.command_hits(argv, unknown, depth, ctx, &seg, hits, &sql_words);
+        self.credential_read(&fx, &seg, ctx, hits);
         Some(base_name(&argv[0]).to_string())
+    }
+
+    /// The `credential-read` rule: the command prints a login token, names a path on the guard's
+    /// deny-list, or names another process's environment. It applies to every command name
+    /// (`cat`, `cp`, `base64`, `curl -d @file`, `tar`), not a per-command list. A command that
+    /// already asks to write a credential path is not asked twice.
+    fn credential_read(&self, fx: &Effects, seg: &str, ctx: &Ctx<'_>, hits: &mut Vec<DangerHit>) {
+        if !self.builtin.contains(&"credential-read") {
+            return;
+        }
+        if hits
+            .iter()
+            .any(|h| h.segment == seg && matches!(h.rule.as_str(), "credential-write" | "oxa-self-approve"))
+        {
+            return;
+        }
+        let hit = fx.credential_source
+            || fx.reads.iter().any(|raw| {
+                effects::is_proc_environ(raw)
+                    || ctx
+                        .resolve(raw)
+                        .is_some_and(|p| ctx.guard.denies(&p) && ctx.guard.denies_read(&p))
+            });
+        if hit {
+            self.push(hits, "credential-read", seg);
+        }
     }
 
     /// The `cmd:<words>` rules: the leading words of `argv` (basename on the first) equal them.
@@ -515,14 +573,22 @@ impl DangerRules {
         }
         match name {
             "rm" => {
-                if is_recursive(args) && (unknown || ops.iter().any(|t| target_outside(t, ctx))) {
-                    self.push(hits, "rm-recursive-outside", seg);
+                if is_recursive(args) {
+                    if unknown || ops.iter().any(|t| target_outside(t, ctx)) {
+                        self.push(hits, "rm-recursive-outside", seg);
+                    } else if ops
+                        .iter()
+                        .any(|t| ctx.resolve(t).is_some_and(|p| ctx.guard.denies_within(&p)))
+                    {
+                        // A directory that holds a credential or agent path takes it along.
+                        self.push(hits, "credential-write", seg);
+                    }
                 }
                 for t in &ops {
                     self.write_hit(t, seg, ctx, hits);
                 }
             }
-            "tee" | "touch" | "truncate" | "mv" | "unlink" | "rmdir" => {
+            "tee" | "touch" | "truncate" | "unlink" | "rmdir" => {
                 for t in &ops {
                     self.write_hit(t, seg, ctx, hits);
                 }
@@ -551,7 +617,7 @@ impl DangerRules {
                     self.write_hit(t, seg, ctx, hits);
                 }
             }
-            "cp" | "ln" | "install" => {
+            "cp" | "ln" | "install" | "mv" => {
                 // `-t DIR` / `--target-directory[=]DIR` names the destination; the operands are
                 // then the sources, so every one of them is written into that directory.
                 match target_directory(args) {
@@ -584,6 +650,12 @@ impl DangerRules {
                                 }
                             }
                         }
+                    }
+                }
+                // `mv` also removes its sources.
+                if name == "mv" {
+                    for t in &ops {
+                        self.write_hit(t, seg, ctx, hits);
                     }
                 }
             }
@@ -634,6 +706,15 @@ impl DangerRules {
                         .or_else(|| a.strip_prefix("--output-document="))
                     {
                         outputs.push(target);
+                        k += 1;
+                    } else if name == "wget" && a.starts_with("-P") && a.len() > 2 && !a.starts_with("--") {
+                        output_dir = Some(&a[2..]);
+                        k += 1;
+                    } else if a.starts_with("-o") && a.len() > 2 && !a.starts_with("--") {
+                        outputs.push(&a[2..]);
+                        k += 1;
+                    } else if name == "wget" && a.starts_with("-O") && a.len() > 2 && !a.starts_with("--") {
+                        outputs.push(&a[2..]);
                         k += 1;
                     } else if matches!(a, "--output-dir" | "-P") {
                         if let Some(target) = args.get(k + 1) {
@@ -723,6 +804,23 @@ impl DangerRules {
                 break;
             }
         }
+        // `git -c core.hooksPath=/tmp/h commit` runs that hook for this one command.
+        let mut c = 1usize;
+        while c < k {
+            if argv[c] == "-c" {
+                if let Some(setting) = argv.get(c + 1) {
+                    if program_git_key(setting.split('=').next().unwrap_or("")) {
+                        self.push(hits, "git-hook-write", seg);
+                    }
+                }
+                c += 2;
+            } else {
+                c += 1;
+            }
+        }
+        if argv.get(k).map(String::as_str) == Some("config") && git_config_sets_program(&argv[k + 1..]) {
+            self.push(hits, "git-hook-write", seg);
+        }
         if argv.get(k).map(String::as_str) != Some("push") {
             return;
         }
@@ -779,8 +877,22 @@ impl DangerRules {
             roots.iter().any(|r| target_outside(r, ctx))
         };
         let outside = unknown || roots_outside;
-        if outside && args.iter().any(|a| a == "-delete") {
-            self.push(hits, "rm-recursive-outside", seg);
+        if args.iter().any(|a| a == "-delete") {
+            if outside {
+                self.push(hits, "rm-recursive-outside", seg);
+            } else {
+                let held = if roots.is_empty() {
+                    vec!["."]
+                } else {
+                    roots.clone()
+                };
+                if held
+                    .iter()
+                    .any(|r| ctx.resolve(r).is_some_and(|p| ctx.guard.denies_within(&p)))
+                {
+                    self.push(hits, "credential-write", seg);
+                }
+            }
         }
         let mut k = 0usize;
         while k < args.len() {
@@ -824,11 +936,21 @@ impl DangerRules {
                                     root: ctx.root,
                                     guard: ctx.guard,
                                 };
-                                self.check_words(cmd, &[], false, &[], outside, &nested, depth + 1, hits);
+                                self.check_words(
+                                    cmd,
+                                    &[],
+                                    &[],
+                                    false,
+                                    &[],
+                                    outside,
+                                    &nested,
+                                    depth + 1,
+                                    hits,
+                                );
                             }
                         }
                     } else {
-                        self.check_words(cmd, &[], false, &[], outside, ctx, depth + 1, hits);
+                        self.check_words(cmd, &[], &[], false, &[], outside, ctx, depth + 1, hits);
                     }
                 }
                 k = end + 1;
@@ -849,21 +971,83 @@ impl DangerRules {
         if is_inside(&path, &ctx.guard.agent_dir) {
             self.push(hits, "oxa-self-approve", seg);
         }
-        let p = path.to_string_lossy();
-        if [
-            "/dev/sd",
-            "/dev/nvme",
-            "/dev/mmcblk",
-            "/dev/vd",
-            "/dev/xvd",
-            "/dev/hd",
-        ]
-        .iter()
-        .any(|prefix| p.starts_with(prefix))
-        {
+        if is_git_hook_target(&path, ctx.root) {
+            self.push(hits, "git-hook-write", seg);
+        }
+        // The path as written and where the file system resolves it: `/dev/disk/by-id/...` and
+        // other symlinks name a disk device too.
+        let real = resolve_real(&path);
+        let on_disk = |p: &Path| {
+            let p = p.to_string_lossy();
+            [
+                "/dev/sd",
+                "/dev/nvme",
+                "/dev/mmcblk",
+                "/dev/vd",
+                "/dev/xvd",
+                "/dev/hd",
+            ]
+            .iter()
+            .any(|prefix| p.starts_with(prefix))
+        };
+        if on_disk(&path) || real.as_deref().is_some_and(on_disk) {
             self.push(hits, "disk-destroy", seg);
         }
     }
+}
+
+/// A write target git runs later: the worktree's `.git` file, a hooks directory, `config`,
+/// `config.worktree`, `commondir` or `gitdir` of any `.git` directory (any depth), or the same
+/// files of a linked worktree's git directory.
+fn is_git_hook_target(path: &Path, root: &Path) -> bool {
+    if crate::policy::protected_write(path, root) == Some(true) {
+        return true;
+    }
+    let parts: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
+    parts.windows(2).any(|w| {
+        w[0] == ".git"
+            && oxa_proto::guard::GIT_PROTECTED_IN_CWD
+                .iter()
+                .filter_map(|rel| rel.strip_prefix(".git/"))
+                .any(|name| name == w[1])
+    })
+}
+
+/// A git config key (`core.hooksPath`) whose value is a program git runs.
+fn program_git_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.strip_prefix("core.")
+        .is_some_and(crate::publish::program_running_core_key)
+}
+
+/// `git config` arguments that set a program-running key (any scope flag, `--file` included).
+fn git_config_sets_program(args: &[String]) -> bool {
+    let reads = |a: &str| {
+        matches!(
+            a,
+            "--get"
+                | "--get-all"
+                | "--get-regexp"
+                | "--list"
+                | "-l"
+                | "--unset"
+                | "--unset-all"
+                | "--remove-section"
+                | "--get-urlmatch"
+        )
+    };
+    if args.iter().any(|a| reads(a)) {
+        return false;
+    }
+    let positional: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    positional.len() >= 2
+        && positional[..positional.len() - 1]
+            .iter()
+            .any(|key| program_git_key(key))
 }
 
 /// The workspace boundary, the directory the current command runs in, and the guard.
@@ -994,6 +1178,8 @@ pub(crate) struct Stage {
     pub(crate) background: bool,
     /// A subshell or command-substitution boundary rather than a command.
     pub(crate) mark: Option<Mark>,
+    /// The bodies of the heredocs this command reads.
+    pub(crate) bodies: Vec<String>,
 }
 
 /// The kind of a boundary stage: `(`/`$(`/backtick opens a subshell, `)` closes it.
@@ -1044,6 +1230,14 @@ fn parse_depth(src: &str, depth: usize) -> Option<Vec<Stage>> {
                 p += 1;
                 for heredoc in std::mem::take(&mut heredocs) {
                     let end = skip_heredoc(&chars, p, &heredoc.delim, heredoc.strip);
+                    let body: String = chars[p..end.min(n)].iter().collect();
+                    if let Some(stage) = out.iter_mut().rev().find(|s| {
+                        s.redirects
+                            .iter()
+                            .any(|(op, _)| matches!(op.as_str(), "<<" | "<<-"))
+                    }) {
+                        stage.bodies.push(body);
+                    }
                     // An unquoted delimiter expands the body: its command substitutions run in
                     // the invoking shell before the command sees the text.
                     if heredoc.expands {
@@ -1424,16 +1618,18 @@ fn skip_heredoc(chars: &[char], start: usize, delim: &str, strip: bool) -> usize
 pub(crate) struct Peeled {
     /// Index of the command name in the words.
     pub(crate) start: usize,
-    privileged: bool,
-    /// The targets are not known (`xargs`).
+    pub(crate) privileged: bool,
+    /// The wrapper changes arguments or execution in a way we cannot prove.
     pub(crate) unknown: bool,
     /// Scripts run by the wrapper (`su -c`, `flock -c`, `env -S`).
     pub(crate) inline: Vec<String>,
-    /// The directory the wrapper runs the command in (`env -C`, `env --chdir`).
+    /// Every directory the wrappers run the command in (`env -C`, `env --chdir`), in order:
+    /// `env -C a env -C b cmd` runs in `a` then `b`.
+    pub(crate) dirs: Vec<String>,
+    /// The last directory option, if any. Publish only checks for its presence; Effects
+    /// consumers resolve `dirs` in order.
     pub(crate) dir: Option<String>,
-    /// Every wrapper word was the exact trusted name (`env`, not `./env`). A path-qualified
-    /// spelling is an executable of the caller's choice that only shares the basename, so
-    /// callers that classify the peeled words cannot treat the result as proved.
+    /// Every wrapper word was the exact trusted name (`env`, not `./env`).
     pub(crate) exact: bool,
 }
 
@@ -1444,6 +1640,7 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
         privileged: false,
         unknown: unknown_in,
         inline: Vec::new(),
+        dirs: Vec::new(),
         dir: None,
         exact: true,
     };
@@ -1478,7 +1675,7 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
                     .extend(script_after(words, i + 1, &["-c", "--command"]));
                 i = words.len();
             }
-            "env" => i = skip_env(words, i + 1, &mut out.inline, &mut out.dir, &mut out.unknown),
+            "env" => i = skip_env(words, i + 1, &mut out.inline, &mut out.dirs, &mut out.unknown),
             "xargs" => {
                 out.unknown = true;
                 i = skip_flags(words, i + 1, XARGS_WITH_ARG);
@@ -1524,14 +1721,13 @@ pub(crate) fn peel(words: &[String], unknown_in: bool) -> Peeled {
             },
             _ => break,
         }
-        // The word at `at` was consumed as a wrapper. A path-qualified spelling (`./command`,
-        // `/tmp/env`) is an executable of the caller's choice, not the trusted wrapper, so the
-        // peeled words are not a proved classification of what will run.
+        // A path-qualified wrapper is not necessarily the program its basename suggests.
         if words[at].contains('/') {
             out.exact = false;
         }
     }
     out.start = i.min(words.len());
+    out.dir = out.dirs.last().cloned();
     out
 }
 
@@ -1618,7 +1814,7 @@ fn skip_env(
     words: &[String],
     from: usize,
     inline: &mut Vec<String>,
-    dir: &mut Option<String>,
+    dirs: &mut Vec<String>,
     unknown: &mut bool,
 ) -> usize {
     let mut i = from;
@@ -1628,13 +1824,13 @@ fn skip_env(
             .strip_prefix("--chdir=")
             .or_else(|| w.strip_prefix("-C").filter(|v| !v.is_empty()))
         {
-            *dir = Some(value.to_string());
+            dirs.push(value.to_string());
             i += 1;
             continue;
         }
         if matches!(w, "-C" | "--chdir") && i + 1 < words.len() {
             // The wrapped command runs in this directory, not in the current one.
-            *dir = Some(words[i + 1].clone());
+            dirs.push(words[i + 1].clone());
             i += 2;
             continue;
         }
@@ -1820,7 +2016,7 @@ fn symbolic_grants_other_write(mode: &str) -> bool {
 }
 
 /// `true` when `value` is a short-option cluster (`-abc`, not `--long`) with `letter`.
-fn short_has(value: &str, letter: char) -> bool {
+pub(crate) fn short_has(value: &str, letter: char) -> bool {
     value.starts_with('-') && !value.starts_with("--") && value[1..].contains(letter)
 }
 
@@ -1926,8 +2122,9 @@ pub(crate) fn has_mutable_input(text: &str) -> bool {
             // `x'a'rgs`, `"xargs"` and `xa\rgs` are all `xargs`.
             .map(|w| w.replace(['\'', '"', '\\'], ""))
             .any(|w| is_reader(&w))
-        || parse_line(&joined)
-            .is_some_and(|stages| stages.iter().any(|st| st.words.iter().any(|w| is_reader(w))))
+        || parse_line(&joined).is_some_and(|stages| {
+            stages.iter().any(|st| st.words.iter().any(|w| is_reader(w))) || effects::mutable_input(&stages)
+        })
 }
 
 /// Where a brace expansion (`{a,b}`, `{1..3}`) starts in `w`, if it has one. `{}` (the
@@ -1960,7 +2157,7 @@ fn is_assignment(w: &str) -> bool {
 }
 
 /// The last component of a command word (`/bin/rm`, `./rm` -> `rm`).
-fn base_name(w: &str) -> &str {
+pub(crate) fn base_name(w: &str) -> &str {
     w.rsplit('/').next().unwrap_or(w)
 }
 
