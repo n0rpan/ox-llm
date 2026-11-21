@@ -109,7 +109,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
-| `oxa work <taskfile> \| --issue N \| --pr N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
+| `oxa work <taskfile> \| --issue N \| --pr N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` shows saved heads awaiting publication, their age and next step, without querying GitHub ([work.md](../work.md)) |
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
@@ -168,6 +168,14 @@ There is one row per **saved usage record**, in file order. Retries, failures, d
 When two successive saved chats have known frozen system text and tool lists, the report compares those saved anchors. A system difference is a zero-based UTF-8 byte offset within the saved system text, not an offset in the full outbound request, a provider's rendered prompt, or the engine's tokens. A recorded boundary such as an epoch or compaction is an observation, not a miss cause. The runtime expectation, source request, full request divergence and miss cause remain unknown when the session did not retain that evidence. An equal anchor or equal token count does not establish an equal request. No text, hashes, tool data, or session, request or token IDs are printed.
 
 The scan reads at most 256 MiB or 200,000 entries from the file as it existed at open. Lines over 2 MiB are skipped; an unreadable line or torn tail also makes the report partial (`scan_complete: false`). A complete scan still only describes saved records. If id lookup reaches its limit, give the file path instead.
+
+### Foreground wire evidence
+
+Run `oxa --wire-evidence` in an owner terminal, then exit normally to see a small JSON report on stderr. It is off by default, cannot be turned on in settings, and does not follow `/new`, `/resume`, or a model switch. Print, JSON, RPC and delegated agent runs cannot arm it.
+
+The report compares ordered messages **at oxa's transport handoff**, after hooks and image shaping, with separate system-text and tool-list equality flags. `common_leading_messages` counts consecutive matching items from the beginning. Request and attempt numbers start at one and are local to this run; an oxa retry within the same request is another attempt. A failed or cancelled attempt, an intervening non-chat handoff, or an incomplete snapshot leaves a gap. A missing match or usage field is `null`, not zero. A rebase marker reports an observed transcript rebase, not its cause or its effect on caching.
+
+The capture keeps one prior fingerprint snapshot, allows up to 4,096 messages and 4 MiB of fingerprint input per snapshot, and stops collecting after 64 rows. It never limits chat. The report contains no message text, tool data, token IDs, fingerprints or session, model or request identifiers. It is not added to saved sessions, hook events, or `oxa cache` output. Provider serialization, engine tokens, provider or engine retries, and cache ownership are outside this observation. Neither a matching wire prefix nor a cached-token count proves which request was reused or why a cache missed.
 
 ### Local models
 
@@ -257,6 +265,7 @@ $ oxa memory rm <name>
 | `--max-time <seconds>` | softly limit a run, then allow one final wrap-up turn |
 | `--max-tokens <N>` | softly limit new prompt + output tokens; cached tokens are free |
 | `--usage-log <file>` | write one JSONL record per model call (tokens, duration, model, turn); owner-only file, no message text |
+| `--wire-evidence` | show [adjacent wire observations](#foreground-wire-evidence) on exit; owner terminal only |
 | `--allowed-changed-files <list>` | comma-separated allowed changed-file set; the result reports tool-observed extra files against it (acceptance evidence, never a refusal) |
 | `--stall-timeout <seconds>` | flag a session as stalled after this long without progress; a signal that never cancels the run |
 | `--export <input> [output]` | export a session file to HTML and exit |

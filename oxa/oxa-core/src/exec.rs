@@ -159,6 +159,10 @@ pub fn request(
     }
     let mut prefilled = 0;
     let mut generated = false;
+    let evidence = st.shared.gate.wire_evidence.get().cloned();
+    let pending = evidence
+        .as_ref()
+        .and_then(|capture| capture.before(&req, st.transcript.rebases().len()));
     let mut on = |ev: StreamEvent| {
         generated |= match &ev {
             StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
@@ -186,6 +190,9 @@ pub fn request(
     };
     let pre_cancelled = cancel.is_cancelled();
     let turn = engine.chat(&req, &cancel, &mut on);
+    if let (Some(capture), Some(pending)) = (evidence, pending) {
+        capture.after(pending, &turn);
+    }
     if let Some(progress) = &progress {
         progress.notify(
             &session,
@@ -1018,6 +1025,9 @@ fn start_tool_prefill(
                     );
                 }
                 let mut prefilled = 0;
+                if let Some(capture) = budget.shared.gate.wire_evidence.get() {
+                    capture.gap();
+                }
                 let pre_cancelled = cancel.is_cancelled();
                 let mut res = engine.chat(&req, &cancel, &mut |event| {
                     if let (Some(progress), StreamEvent::Prefill { done, .. }) = (&progress, event) {

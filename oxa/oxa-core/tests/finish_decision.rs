@@ -1,5 +1,7 @@
-//! The finish decision: before a run or goal ends, oxa asks once for proof of an edit and once
-//! about background jobs, then lets the run end with a warning and a record (never a block).
+//! The finish decision: before a run or goal ends, oxa asks once for proof of an edit, once
+//! about background jobs, once about an image read without an independent check and once about a
+//! tool the task names for its acceptance that never ran, then lets the run end with a warning
+//! and a record (never a block).
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
@@ -403,4 +405,157 @@ fn a_project_file_cannot_turn_the_cross_check_off() {
         ),
         1
     );
+}
+
+/// A session that starts its run with `task` and follows `turns` (T6 tests below).
+fn toolchain_run(task: &str, turns: Vec<ScriptTurn>) -> Run {
+    toolchain_run_with(json!({"envNote": false}), task, turns)
+}
+
+fn toolchain_run_with(oxa: serde_json::Value, task: &str, turns: Vec<ScriptTurn>) -> Run {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(turns));
+    let mut session = Session::open(
+        deps(&env, engine.clone(), oxa, Arc::new(JobRegistry::new())),
+        Open::New,
+    )
+    .unwrap();
+    let mut sink = VecSink::default();
+    session
+        .prompt(task.into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    std::mem::forget(env);
+    Run {
+        session,
+        engine,
+        sink,
+    }
+}
+
+fn last_user(request: &oxa_fake::Recorded) -> String {
+    request
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::User)
+        .and_then(|m| m.content.clone())
+        .unwrap_or_default()
+}
+
+/// The turns that asked about the task's own acceptance tool.
+fn toolchain_questions(requests: &[oxa_fake::Recorded]) -> Vec<String> {
+    requests
+        .iter()
+        .map(last_user)
+        .filter(|text| text.starts_with("This task's acceptance names"))
+        .collect()
+}
+
+/// The task names the tool its acceptance runs through, and the run checks with a stand-in
+/// instead. One question shows the failed call, and the record keeps the tool.
+#[test]
+fn a_task_tool_that_never_ran_is_asked_once_and_recorded() {
+    let r = toolchain_run(
+        "Make check.py pass. The grader applies the pattern with Python 3.12.",
+        vec![
+            write("w1", "check.py"),
+            ScriptTurn::tool(
+                "b1",
+                "bash",
+                &json!({"command": "command -v python3.12"}).to_string(),
+            ),
+            check("c1"),
+            ScriptTurn::text("done"),
+            ScriptTurn::text("done, the substitute equivalent passed"),
+        ],
+    );
+    let questions = toolchain_questions(&r.engine.requests());
+    assert_eq!(questions.len(), 1, "{questions:?}");
+    assert!(questions[0].contains("names python3.12"), "{}", questions[0]);
+    assert!(
+        questions[0].contains("command -v python3.12"),
+        "the attempt is shown: {}",
+        questions[0]
+    );
+    assert_eq!(r.session.stats().verifier.as_deref(), Some("python3.12"));
+    assert_eq!(
+        notices(&r.sink, "Run ended without running the tool this task names"),
+        1
+    );
+}
+
+/// The task's tool runs as the check itself: the run has its evidence, so nothing is asked.
+#[test]
+fn running_the_task_tool_as_the_check_ends_the_run_without_a_question() {
+    let r = toolchain_run(
+        "Make check.py pass. The grader applies the pattern with Python 3.12.",
+        vec![
+            write("w1", "check.py"),
+            ScriptTurn::tool(
+                "b1",
+                "bash",
+                &json!({"command": "python3() { echo 'test result: ok. 1 passed; 0 failed'; }; python3 -m pytest"})
+                    .to_string(),
+            ),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert!(toolchain_questions(&r.engine.requests()).is_empty());
+    assert_eq!(r.session.stats().verifier, None);
+    assert_eq!(notices(&r.sink, "Run ended without running the tool"), 0);
+}
+
+#[test]
+fn a_task_that_names_no_tool_is_never_asked() {
+    let r = toolchain_run(
+        "Explain how the cache works and fix the typo. Then run the project's own tests.",
+        vec![write("w1", "a.txt"), ScriptTurn::text("done")],
+    );
+    assert_eq!(r.engine.requests().len(), 2);
+    assert_eq!(r.session.stats().verifier, None);
+    assert_eq!(notices(&r.sink, "Run ended without running the tool"), 0);
+}
+
+#[test]
+fn a_goal_pursuit_is_no_task_text_for_the_tool_check() {
+    // The goal text names python3 and sits in the conversation; what opens a pursuit is the
+    // model's own work, so no finish question comes from it.
+    let (r, jobs) = goal_run(
+        vec![
+            write("w1", "a.txt"),
+            ScriptTurn::text("one"),
+            ScriptTurn::text("two"),
+        ],
+        30,
+    );
+    assert_eq!(r.session.stats().verifier, None);
+    assert_eq!(notices(&r.sink, "Run ended without running the tool"), 0);
+    jobs.kill_all();
+}
+
+/// `oxa.done.proveIt` on: the task's own tool never ran, so its question stands in for the edit
+/// proof and is asked once (T6).
+#[test]
+fn with_prove_it_the_unrun_task_tool_is_asked_once() {
+    let r = toolchain_run_with(
+        json!({"envNote": false, "done": {"proveIt": true}}),
+        "Make check.py pass. The grader applies the pattern with Python 3.12.",
+        vec![
+            write("w1", "check.py"),
+            ScriptTurn::tool(
+                "b1",
+                "bash",
+                &json!({"command": "command -v python3.12"}).to_string(),
+            ),
+            check("c1"),
+            ScriptTurn::text("done"),
+            ScriptTurn::text("done, the substitute equivalent passed"),
+        ],
+    );
+    let questions = toolchain_questions(&r.engine.requests());
+    assert_eq!(questions.len(), 1, "{questions:?}");
+    assert!(questions[0].contains("names python3.12"), "{}", questions[0]);
+    // The passing check proves the edit; the question stands in for the proof, so 2 turns.
+    assert_eq!(r.session.stats().proved, Some(true));
+    assert_eq!(r.session.stats().verifier.as_deref(), Some("python3.12"));
 }

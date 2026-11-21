@@ -21,6 +21,8 @@ Work inside the project runs without a routine question: reading, editing, and b
 
 Choose it when you want to see each step that leaves the project.
 
+When you explicitly ask to keep work ("keep commit abc123 exactly as it is", "preserve the data file"), oxa remembers that requirement for the session, and a resumed session restores it. If a dangerous command that destroys state then needs approval — a recursive delete outside the project, a force push, a disk write, a SQL DROP, or one of your own `oxa.approval.dangerous` command rules — the existing question gains one sentence: it quotes your requirement and recommends a reversible checkpoint first (a backup branch or ref, a copy, or a dry run) and a check that the kept objects survive. The note is advice only. It adds no question, refusal or limit, and your answer decides exactly as before; the same sentence appears in an unattended run's refusal or approval request.
+
 ## auto
 
 `auto` is the default of a fresh install. It removes routine permission questions, but does not bypass dangerous-command approval in an interactive CLI session:

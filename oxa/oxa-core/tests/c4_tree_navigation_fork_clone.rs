@@ -457,7 +457,7 @@ fn fork_invalidates_context_usage_but_clone_preserves_it() {
     run(&mut st);
     let second = say(&mut st, "three");
     run(&mut st);
-    let before = st.stats;
+    let before = st.stats.clone();
     assert!(before.context_tokens > 0);
     assert!(st.last_usage.is_some());
     let mut ui = HeadlessUi::default();

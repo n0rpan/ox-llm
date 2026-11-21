@@ -239,7 +239,10 @@ code, tests, CI and docs; the owner validates on hardware.
   owner-scoped (`once` is consumed by the retrying run; `session` expires when that run ends;
   `always` persists through user settings) and a project file
   or model output cannot grant one. Shell parameter or command substitution markers anywhere in
-  the command prevent reuse of a saved grant. A finding that asks for a default-off switch or for
+  the command prevent reuse of a saved grant. An explicit user requirement to preserve work adds
+  one reversible-checkpoint sentence to a destructive rule's existing question (#2292): additive
+  text on the same prompt, refusal and request, never a new prompt, refusal or cap, and approval
+  authority is unchanged. A finding that asks for a default-off switch or for
   an unattended run to wait is answered here.
 
   The board degrades per item, not per snapshot: a PR whose GitHub evidence exceeds a read page
