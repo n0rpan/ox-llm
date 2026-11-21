@@ -78,7 +78,8 @@ code, tests, CI and docs; the owner validates on hardware.
   never dismisses another dialog; a yes with no shown dialog, or for another request id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
   trusts only the sandbox's pinned socket or a listener verified as the session's own oxa process
   (peer credentials: an ancestor, same executable, same user), whatever `OXA_CONFIRM_SOCK` and
-  `OXA_CODING_AGENT` say; a fake socket is no answer. Yolo is unchanged (the model already has the
+  `OXA_CODING_AGENT` say. This also applies to structured report publication: authenticate the
+  connection before sending any publication fields. Yolo is unchanged (the model already has the
   owner's rights). The question is shown to the owner as the process's text, marked as such. Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - **Lead web attach (#2075):** attached mode takes the session id from the user-only

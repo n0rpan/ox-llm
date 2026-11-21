@@ -1054,9 +1054,9 @@ text and posts it itself.",
             let mut publish_runner = submit_runner(dirs, cwd, env, &settings);
             let draft = cwd.join(draft);
             let storage = report_ledger(dirs);
-            // A tool child hands the fields to the session's broker, which prepares, shows,
-            // holds and posts: a fake listener cannot post, so nothing needs verifying. A tool
-            // child without a broker can ask nobody. A manual terminal asks through /dev/tty.
+            // A tool child verifies the broker before sending the fields to it. The broker
+            // prepares, shows, holds and posts. A tool child without a broker can ask nobody.
+            // A manual terminal asks through /dev/tty.
             let submission = if let Some(sock) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
                 let mut gate = BrokerGate::new(Path::new(sock));
                 submit_record(

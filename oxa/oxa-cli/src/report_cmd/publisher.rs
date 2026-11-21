@@ -214,8 +214,8 @@ impl PublishGate for LocalGate<'_> {
     }
 }
 
-/// A tool child's side: hand the fields to the session's broker, which prepares, shows, holds
-/// and posts. No listener verification is needed, because a fake listener cannot post.
+/// A tool child's side: verify the session broker before handing it the publication fields.
+/// The broker prepares, shows, holds and posts the report.
 pub(crate) struct BrokerGate {
     sock: PathBuf,
     approved: Option<UnixStream>,
@@ -236,9 +236,7 @@ impl PublishGate for BrokerGate {
     fn approve(&mut self, publication: &Publication) -> Option<bool> {
         self.approved = None;
         self.reason = None;
-        let Ok(stream) = UnixStream::connect(&self.sock) else {
-            return None;
-        };
+        let stream = super::connect_verified(&self.sock)?;
         let reply = owner_confirm::exchange(&stream, &Request::Publish(publication.clone()));
         self.reason = reply.reason.clone();
         if reply.approved {
@@ -286,7 +284,7 @@ mod tests {
     use oxa_core::owner_confirm::OwnerConfirm;
     use oxa_fake::TestEnv;
     use oxa_proto::{Autonomy, YoloSwitch};
-    use std::io::{Read, Write};
+    use std::io::Read;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
     use std::sync::Arc;
@@ -355,9 +353,21 @@ mod tests {
 
     /// #1925: a tool child posts through the session's broker with the agent marker set and no
     /// sandbox. The parent posts the approved bytes; the child never runs `gh`.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_tool_child_posts_through_the_broker_with_the_agent_marker_and_no_sandbox() {
+        const TEST_SOCKET: &str = "OXA_TEST_REPORT_BROKER_SOCKET";
         let f = fixture("It stalls.");
+        if let Some(sock) = std::env::var_os(TEST_SOCKET) {
+            let (code, out) = submit_as_child(&f, &child_env(&f, Path::new(&sock)));
+            assert_eq!(code, 0, "{out}");
+            assert!(
+                out.contains("Posted: https://github.com/oxstack/ox-llm/issues/7"),
+                "{out}"
+            );
+            assert!(!f.log.exists(), "the child never runs gh");
+            return;
+        }
         let dirs = Dirs::under(f.env.root());
         let broker =
             OwnerConfirm::start(&f.env.root().join("broker"), YoloSwitch::new(Autonomy::Yolo)).unwrap();
@@ -368,11 +378,21 @@ mod tests {
             &Settings::default(),
             &f.env.work(),
         )));
-        let (code, out) = submit_as_child(&f, &child_env(&f, broker.sock_path()));
-        assert_eq!(code, 0, "{out}");
+        // The verifying child must see this broker as its same-executable ancestor.
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "report_cmd::publisher::tests::a_tool_child_posts_through_the_broker_with_the_agent_marker_and_no_sandbox",
+            ])
+            .env_clear()
+            .envs(f.env.envs(""))
+            .env(TEST_SOCKET, broker.sock_path())
+            .output()
+            .unwrap();
         assert!(
-            out.contains("Posted: https://github.com/oxstack/ox-llm/issues/7"),
-            "{out}"
+            child.status.success(),
+            "{}",
+            String::from_utf8_lossy(&child.stdout)
         );
         let calls = std::fs::read_to_string(&f.log).unwrap();
         assert!(
@@ -420,21 +440,24 @@ mod tests {
         assert!(!f.log.exists(), "no gh while offline");
     }
 
-    /// A listener the model started can answer yes, but it cannot post: the child runs no `gh`.
     #[test]
-    fn a_fake_listener_answering_yes_makes_the_child_post_nothing() {
+    fn an_unverified_listener_receives_no_publication_bytes() {
         let f = fixture("It stalls.");
-        let sock = f.env.root().join("fake.sock");
+        let sock = f.env.root().join("unverified.sock");
         let listener = UnixListener::bind(&sock).unwrap();
-        let fake = std::thread::spawn(move || {
+        let peer = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 8192];
-            let _ = stream.read(&mut buf);
-            let _ = writeln!(stream, r#"{{"answer":"yes","source":"yolo","approved":true}}"#);
-            let _ = stream.read(&mut buf);
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            stream.read(&mut [0u8; 1]).unwrap()
         });
         let (code, out) = submit_as_child(&f, &child_env(&f, &sock));
-        fake.join().unwrap();
+        assert_eq!(
+            peer.join().unwrap(),
+            0,
+            "verification must precede the request frame"
+        );
         assert_eq!(code, 1, "{out}");
         assert!(!f.log.exists(), "the child never runs gh");
     }
