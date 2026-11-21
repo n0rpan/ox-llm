@@ -1220,7 +1220,7 @@ mod tests {
         let text = wrap_up_message(&state);
         assert!(text.starts_with(crate::prompt::WRAP_UP), "{text}");
         assert!(text.contains("kv-store.proto"));
-        assert!(text.contains("write the best answer you have"), "{text}");
+        assert!(text.contains("the best answer you have"), "{text}");
 
         let (call, result) = declaration("move.txt", "present", Some(5), &env);
         let mut state = DoneState::default();

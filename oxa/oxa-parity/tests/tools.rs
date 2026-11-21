@@ -115,6 +115,9 @@ fn offered(env: &TestEnv, extra: &[&str]) -> Vec<String> {
 /// this row pins that the tool is offered with its schema like any other declared tool.
 #[test]
 fn tools_025() {
+    // INVARIANT: one more declared read-class tool (no gate, no prompt change on a run that
+    // does not declare a file); its end record is evidence, covered end to end in
+    // `oxa-cli/tests/deliverable_evidence.rs`.
     let env = TestEnv::new();
     let ran = drive(&env, vec![ScriptTurn::text("ok")], &[]);
     assert!(

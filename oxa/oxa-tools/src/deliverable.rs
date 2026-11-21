@@ -104,6 +104,11 @@ impl Tool for DeliverableTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
+    /// A member of the default selection: a `+name` / `-name` patch keeps it (`-deliverable`
+    /// removes it), as it keeps the built-ins. A plain `defaultTools` list still replaces it.
+    fn default_selected(&self) -> bool {
+        true
+    }
     /// `[Access::Read(path)]`: the deny-list, the private-path floor and the pinned location of
     /// `read`, so a check never shows what the model may not read.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
