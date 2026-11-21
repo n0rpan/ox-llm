@@ -4,11 +4,6 @@ const digest=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
 let runningSha=document.querySelector('meta[name=oxa-running-sha256]')?.content;
 if(!digest(runningSha))runningSha=null;
 let timer,pending,stream,reconnectTimer,streamOk=false,reloadNeeded=false;
-// Every open chat fold keeps its state across a refresh, keyed by what it holds.
-for(const box of document.querySelectorAll('details.tools,details.sessions')){
-  const first=box.querySelector('b,summary span,summary');
-  box.dataset.key=(box.className+(first?first.textContent:'')).slice(0,120);
-}
 function unavailable(){
   badge.textContent='Refresh unavailable';
   const notice=document.getElementById('refresh-error');if(notice)notice.hidden=false;
@@ -44,7 +39,7 @@ async function refresh(){
         if(!nextDraft)return;
         nextDraft.value=draft.value;
       }
-      const currentThread=current.querySelector('.thread'),nextThread=next.querySelector('.thread');
+      const currentThread=current.querySelector('.thread');
       const scroll=currentThread?currentThread.scrollTop:0;
       for(const box of current.querySelectorAll('details.tools[open],details.sessions[open]')){
         const key=box.dataset.key;
@@ -94,43 +89,6 @@ document.addEventListener('visibilitychange',()=>{
 });
 if(live&&typeof EventSource==='function')connect();else timer=setTimeout(refresh,15000);
 
-// Chat (#2341): the composer grows with its text, the thread stays pinned to the newest
-// message unless the reader scrolled up, and a pill says when new messages can be seen
-// below. None of this changes a request: the composer still posts the same form.
-const composer=document.getElementById('lead-message'),thread=document.querySelector('.thread');
-const pill=document.createElement('a');pill.className='pill new';pill.href='#thread-end';
-pill.textContent='New messages ↓';pill.hidden=true;if(thread)thread.parentNode.appendChild(pill);
-let pinned=true;
-function grow(box){
-  if(!box||box.tagName!=='TEXTAREA')return;
-  box.style.height='auto';box.style.height=Math.min(Math.max(box.scrollHeight,46),120)+'px';
-}
-function near(){return !thread||thread.scrollHeight-thread.scrollTop-thread.clientHeight<80;}
-if(thread){
-  thread.addEventListener('scroll',()=>{const at=near();pinned=at;if(at)pill.hidden=true;},{passive:true});
-  if(pinned)thread.scrollTop=thread.scrollHeight;
-}
-if(composer){
-  grow(composer);
-  composer.addEventListener('input',()=>grow(composer));
-  composer.addEventListener('keydown',event=>{
-    // Enter sends in the form where Shift+Enter is not needed: desktop keyboards only.
-    if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&window.matchMedia('(pointer:fine)').matches){
-      event.preventDefault();
-      if(composer.value.trim())composer.form?.requestSubmit();
-    }
-  });
-  const viewport=window.visualViewport;
-  if(viewport)viewport.addEventListener('resize',()=>{
-    // Keep the composer above the on-screen keyboard instead of under it.
-    const inset=Math.max(0,window.innerHeight-viewport.height-viewport.offsetTop);
-    document.documentElement.style.setProperty('--keyboard',inset+'px');
-  },{passive:true});
-}
-const end=document.createElement('div');end.id='thread-end';
-if(thread)thread.appendChild(end);
-pill.addEventListener('click',()=>{if(thread)thread.scrollTop=thread.scrollHeight;pill.hidden=true;pinned=true;});
-
 // Copy: a code block or a step's output copies its own rendered text. Nothing is read
 // from the network and nothing is stored; the button only fills the clipboard.
 document.addEventListener('click',event=>{
@@ -144,3 +102,46 @@ document.addEventListener('click',event=>{
   };
   if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(text.replace(/Copy$/,'').trim()).then(done,()=>{});
 });
+
+// Chat (#2341): the composer grows with its text, the thread stays pinned to the newest
+// message unless the reader scrolled up, and a pill says when new messages wait below. The
+// composer still posts the same form; nothing here changes a request.
+const composer=document.getElementById('lead-message'),thread=document.querySelector('.thread');
+const pill=document.createElement('a');pill.className='pill new';pill.href='#thread-end';
+pill.textContent='New messages ↓';pill.hidden=true;
+let pinned=true;
+function grow(box){
+  if(!box||box.tagName!=='TEXTAREA')return;
+  box.style.height='auto';box.style.height=Math.min(Math.max(box.scrollHeight,46),120)+'px';
+}
+function near(){return !thread||thread.scrollHeight-thread.scrollTop-thread.clientHeight<80;}
+if(thread&&thread.parentNode){
+  thread.parentNode.appendChild(pill);
+  const end=document.createElement('div');end.id='thread-end';thread.appendChild(end);
+  thread.addEventListener('scroll',()=>{const at=near();pinned=at;if(at)pill.hidden=true;},{passive:true});
+  // Start at the newest message, after the first layout has given the thread a height.
+  if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>{thread.scrollTop=thread.scrollHeight;});
+  else thread.scrollTop=thread.scrollHeight;
+  pill.addEventListener('click',()=>{thread.scrollTop=thread.scrollHeight;pill.hidden=true;pinned=true;});
+  // Every open chat fold keeps its state across a refresh, keyed by what it holds.
+  for(const box of document.querySelectorAll('details.tools,details.sessions')){
+    const first=box.querySelector('b,summary span,summary');
+    box.dataset.key=(box.className+(first?first.textContent:'')).slice(0,120);
+  }
+}
+if(composer){
+  grow(composer);
+  composer.addEventListener('input',()=>grow(composer));
+  composer.addEventListener('keydown',event=>{
+    // Enter sends on a desktop keyboard, where Shift+Enter still adds a line.
+    if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&window.matchMedia('(pointer:fine)').matches){
+      event.preventDefault();
+      if(composer.value.trim())composer.form.requestSubmit();
+    }
+  });
+  if(window.visualViewport)window.visualViewport.addEventListener('resize',()=>{
+    // Keep the composer above the on-screen keyboard instead of under it.
+    const inset=Math.max(0,window.innerHeight-window.visualViewport.height-window.visualViewport.offsetTop);
+    document.documentElement.style.setProperty('--keyboard',inset+'px');
+  },{passive:true});
+}

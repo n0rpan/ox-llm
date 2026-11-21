@@ -292,8 +292,16 @@ mod tests {
         let out = html("Use <b>bold</b> & <script>alert(1)</script>.\n\n- one\n- two\n\n- first\n\n1. step");
         assert!(out.contains("&lt;b&gt;bold&lt;/b&gt;"));
         assert!(out.contains("&lt;script&gt;alert(1)&lt;/script&gt;") && !out.contains("<script>"));
-        assert!(out.contains("<ul><li>one</li><li>two</li></ul>"));
-        assert!(out.contains("<ol start=1><li>step</li></ol>"));
+        // The list item text is its own paragraph, so `<p>` wraps each item's text.
+        for item in [
+            "<li><p>one</p></li>",
+            "<li><p>two</p></li>",
+            "<li><p>step</p></li>",
+        ] {
+            assert!(out.contains(item), "{item}: {out}");
+        }
+        assert!(out.contains("<ul>") && out.contains("</ul>"), "{out}");
+        assert!(out.contains("<ol start=1>") && out.contains("</ol>"), "{out}");
         for hostile in [
             "[x](javascript:alert(1))",
             "[x](data:text/html,1)",

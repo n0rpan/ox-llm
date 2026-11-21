@@ -1355,6 +1355,9 @@ const document={hidden:false, activeElement:{matches:selectors=>selectors.split(
   querySelector:selector=>selector==='meta[name=oxa-live-events]'?(liveEnabled?{}:null):selector.startsWith('meta')?(initialDigest?{content:initialDigest}:null):selector==='#lead-message'?current?.draft:current,
   addEventListener:(name,fn)=>{if(name==='visibilitychange')visibilityListener=fn;}};
 const setTimeout=(fn,ms)=>{const id=++serial;timers.set(id,{fn:()=>{timers.delete(id);return fn();},ms});return id;}, clearTimeout=id=>timers.delete(id);
+// The chat script starts at the newest message on the next frame and follows the
+// on-screen keyboard; the measured page has no frame scheduler and no keyboard.
+const requestAnimationFrame=()=>{};
 class AbortController { constructor(){this.signal={aborted:false};} abort(){this.signal.aborted=true;} }
 class URL { constructor(href){this.href=href;this.searchParams={set:(key,value)=>{this.href+=(href.includes('?')?'&':'?')+key+'='+value;}};} }
 const location={href:'http://example.invalid/board?f=fix&p=2',reload:()=>{reloads++;}};

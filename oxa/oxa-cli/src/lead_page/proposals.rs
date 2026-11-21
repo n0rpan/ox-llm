@@ -144,12 +144,24 @@ mod tests {
                 serde_json::to_value(action).unwrap(),
             )
         });
+        // The process's reply lands under the thread bubble whose text it repeats, so the
+        // session holds that same message, as a real reply does.
+        let entries = [oxa_proto::Entry {
+            id: "a1b2c3d4".into(),
+            parent: None,
+            ts_ms: 0,
+            body: oxa_proto::EntryBody::Msg {
+                wire: oxa_proto::WireMsg::assistant("Fixture reply"),
+                parts: Vec::new(),
+                tool: None,
+            },
+        }];
         let owner = OwnerChatView {
             csrf: "csrf-example",
             reply: Some(&reply),
             proposal: proposal.as_ref(),
             confirmed,
-            entries: None,
+            entries: Some(&entries),
         };
         document_for(
             Page::Chat(Prompt::Status, None),

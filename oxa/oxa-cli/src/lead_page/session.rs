@@ -658,7 +658,7 @@ mod tests {
         assert!(html.contains("class=\"msg lead\""), "{html}");
         assert!(html.contains("<strong>item</strong>"), "{html}");
         assert!(
-            html.contains("<ul><li>the first one</li><li>the second one</li></ul>"),
+            html.contains("<li><p>the first one</p></li>") && html.contains("<li><p>the second one</p></li>"),
             "{html}"
         );
         assert!(
