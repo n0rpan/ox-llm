@@ -307,7 +307,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::MemoryRm
                     | CommandId::Models
                     | CommandId::Local
-                    | CommandId::LocalAdd => Err(OxaError::new(
+                    | CommandId::LocalAdd
+                    | CommandId::Desk => Err(OxaError::new(
                         codes::USAGE,
                         "registered command handler or arguments are unavailable",
                     )),
