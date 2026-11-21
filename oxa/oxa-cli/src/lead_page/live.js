@@ -102,15 +102,15 @@ scheduleAges();
 // unless the reader scrolled up, and a pill says new messages wait below. The composer
 // still posts the same form; nothing here changes a request.
 const composer=document.getElementById('lead-message'),thread=document.querySelector('.thread');
-const pill=document.createElement('a');pill.className='pill new';pill.href='#thread-end';
-pill.textContent='New messages ↓';pill.hidden=true;
+const pill=typeof document.createElement==='function'?document.createElement('a'):null;
+if(pill){pill.className='pill new';pill.href='#thread-end';pill.textContent='New messages ↓';pill.hidden=true;}
 let pinned=true;
 function grow(box){
   if(!box||box.tagName!=='TEXTAREA')return;
   box.style.height='auto';box.style.height=Math.min(Math.max(box.scrollHeight,46),120)+'px';
 }
 function near(){return !thread||thread.scrollHeight-thread.scrollTop-thread.clientHeight<80;}
-if(thread&&thread.parentNode&&typeof thread.addEventListener==='function'){
+if(thread&&pill&&thread.parentNode&&typeof thread.addEventListener==='function'){
   thread.parentNode.appendChild(pill);
   const end=document.createElement('div');end.id='thread-end';thread.appendChild(end);
   thread.addEventListener('scroll',()=>{const at=near();pinned=at;if(at)pill.hidden=true;},{passive:true});
@@ -123,19 +123,22 @@ if(thread&&thread.parentNode&&typeof thread.addEventListener==='function'){
     box.dataset.key=(box.className+(first?first.textContent:'')).slice(0,120);
   }
 }
+const view=typeof window==='object'?window:{};
 if(composer&&typeof composer.addEventListener==='function'){
   grow(composer);
   composer.addEventListener('input',()=>grow(composer));
   composer.addEventListener('keydown',event=>{
     // Enter sends on a desktop keyboard, where Shift+Enter still adds a line.
-    if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&window.matchMedia('(pointer:fine)').matches){
+    const desktop=typeof view.matchMedia==='function'&&view.matchMedia('(pointer:fine)').matches;
+    if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&desktop){
       event.preventDefault();
-      if(composer.value.trim())composer.form.requestSubmit();
+      if(composer.value.trim()&&composer.form)composer.form.requestSubmit();
     }
   });
-  if(window.visualViewport)window.visualViewport.addEventListener('resize',()=>{
+  const keyboard=view.visualViewport;
+  if(keyboard&&typeof keyboard.addEventListener==='function')keyboard.addEventListener('resize',()=>{
     // Keep the composer above the on-screen keyboard instead of under it.
-    const inset=Math.max(0,window.innerHeight-window.visualViewport.height-window.visualViewport.offsetTop);
+    const inset=Math.max(0,view.innerHeight-keyboard.height-keyboard.offsetTop);
     document.documentElement.style.setProperty('--keyboard',inset+'px');
   },{passive:true});
 }

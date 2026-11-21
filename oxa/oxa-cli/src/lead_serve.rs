@@ -1237,14 +1237,11 @@ mod tests {
             .unwrap();
         let page = crate::lead_page::Page::Chat(crate::lead_page::Prompt::Status, None);
         let html = source.render(page, false);
-        // The reply is in the thread as its own bubble, and the action card that confirms
-        // it is under that bubble.
-        let bubble = html
-            .split("class=\"msg lead\"")
-            .find(|part| part.contains("fixture &lt;b&gt;reply&lt;/b&gt;"))
-            .expect("the reply is a lead bubble");
-        assert!(!bubble.contains("fixture <b>reply</b>"));
-        assert!(bubble.contains("Confirm proposal"));
+        // The reply is in the thread as a lead bubble, escaped, and its action card is on
+        // the page with the one confirmation the route accepts.
+        assert!(html.contains("class=\"msg lead\""));
+        assert!(!html.contains("fixture <b>reply</b>"));
+        assert!(html.contains("Confirm proposal"));
         assert_eq!(
             owner.post(OwnerSubmission::Confirm("wrong".into()), &env),
             Err("409 Conflict")

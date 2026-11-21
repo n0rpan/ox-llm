@@ -20,8 +20,8 @@ pub(super) fn blocks(text: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut current = String::new();
     let mut depth = 0usize;
-    // Within one top-level block: a list or a table has no paragraph wrapper.
-    let mut block_paragraphs = 0usize;
+    // Whether a paragraph is open, so its close is written exactly once.
+    let mut in_paragraph = false;
     let mut links = 0usize;
     let mut in_link = false;
     let mut lists: Vec<&'static str> = Vec::new();
@@ -34,10 +34,11 @@ pub(super) fn blocks(text: &str) -> Vec<String> {
                 if let Tag::Paragraph = tag {
                     if depth == 0 {
                         current.clear();
-                        block_paragraphs = 0;
                     }
-                    block_paragraphs += 1;
-                    current.push_str(if block_paragraphs > 1 { "</p><p>" } else { "<p>" });
+                    if !in_paragraph {
+                        current.push_str("<p>");
+                        in_paragraph = true;
+                    }
                     depth += 1;
                     continue;
                 }
@@ -118,12 +119,9 @@ pub(super) fn blocks(text: &str) -> Vec<String> {
                 depth = depth.saturating_sub(1);
                 match tag {
                     TagEnd::Paragraph => {
-                        // A tight list item's text may not be its own paragraph: close one
-                        // only where one was opened.
-                        if current.ends_with("<p>") {
-                            current.truncate(current.len() - 3);
-                        } else {
+                        if in_paragraph {
                             current.push_str("</p>");
+                            in_paragraph = false;
                         }
                         if depth == 0 {
                             blocks.push(std::mem::take(&mut current));

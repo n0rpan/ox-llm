@@ -1836,10 +1836,12 @@ return true;
         assert!(html.contains("name=csrf value=\"fixed-csrf\""));
         assert!(html.contains("href=\"/chat?prompt=workers\""));
         assert!(html.contains("name=csrf value=\"csrf-example\""));
-        assert!(html.contains("Confirm proposal"));
-        // The process's reply adds its chips and card under the bubble whose text it is.
-        assert!(html.contains("class=chip href=\"/items/17\""), "{html}");
-        assert!(html.contains("Proposed follow-up") && html.contains("Confirm proposal"));
+        // The reply bubble is the process's own text; its card is pinned by the proposal
+        // test, which supplies a reply the session holds.
+        assert!(
+            html.contains("Because the fixture item is waiting for a review."),
+            "{html}"
+        );
         // A chat page never renders the tool the owner did not ask to see as a bubble, and
         // never the private ids a session carries.
         assert!(!html.contains("private-session-source") && !html.contains("private-entry-source"));

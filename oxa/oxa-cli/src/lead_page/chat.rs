@@ -33,6 +33,9 @@ fn header(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<div class=chat-head>");
     if let Some(list) = &view.sessions {
         session::render_list(html, list, now);
+        if let Some(attached) = &view.attached {
+            session::render_attached_status(html, attached);
+        }
     } else if let Some(attached) = &view.attached {
         session::render_attached_status(html, attached);
     } else {
@@ -212,6 +215,11 @@ fn thread(html: &mut String, view: &View<'_>, prompt: Prompt, before: Option<[u8
         }
     }
     if page.is_empty() {
+        if view.sessions.is_some() && view.attached.is_none() && view.owner_chat.is_none() {
+            html.push_str(
+                "<p class=muted>No session is attached. Choose a running session above to view it and send messages.</p>",
+            );
+        }
         digest(html, view, now);
     } else {
         let owner = view.owner_chat.as_ref();
@@ -231,10 +239,5 @@ pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt, before:
     fixed_form(html, view);
     thread(html, view, prompt, before, now);
     composer(html, view);
-    if view.sessions.is_some() && view.attached.is_none() && view.owner_chat.is_none() {
-        html.push_str(
-            "<p class=muted>No session is attached. Choose a running session above to view it and send messages.</p>",
-        );
-    }
     html.push_str("</div>");
 }

@@ -93,22 +93,27 @@ pub(super) fn render_list(html: &mut String, list: &SessionListView<'_>, now: u6
 
 /// The attached session's status line, above its thread.
 pub(super) fn render_attached_status(html: &mut String, view: &AttachedView<'_>) {
-    html.push_str("<p class=\"chat-status muted\">");
-    let _ = write!(html, "Lead session {}", escape(&view.short_id));
+    let _ = write!(
+        html,
+        "<p class=\"chat-status muted\">Lead session {}</p>",
+        escape(&view.short_id)
+    );
     if view.live {
         let _ = write!(
             html,
-            " · running{}",
+            "<p class=\"chat-status muted\">Status: running{}</p>",
             view.activity
                 .map_or(String::new(), |activity| format!(" · {activity}"))
         );
     } else {
-        html.push_str(" · not running (messages wait in its inbox)");
+        html.push_str("<p class=\"chat-status muted\">Status: not running (messages wait in its inbox)</p>");
     }
     if let Some(tokens) = view.context_tokens {
-        let _ = write!(html, " · {tokens} tokens");
+        let _ = write!(
+            html,
+            "<p class=\"chat-status muted\">Context: {tokens} tokens in the newest request (the session does not record the model window)</p>"
+        );
     }
-    html.push_str("</p>");
 }
 
 /// The last entry time of this page, so "working" is read without inventing activity.
@@ -650,7 +655,7 @@ mod tests {
         assert!(html.contains("<a href=\"/items/17\">#17</a>"), "{html}");
         // Every step of the run folds into one details labelled by their own names.
         assert_eq!(html.matches("<details class=tools").count(), 1, "{html}");
-        assert!(html.contains("bash +1, result, read, bash, edit"), "{html}");
+        assert!(html.contains("bash ×2, result, read, edit"), "{html}");
         assert!(html.contains("data-failed=1"), "{html}");
         // A step that carries its own text shows the masked text and a Copy button.
         assert!(html.contains("oxa/src/fixture.rs</span>"), "{html}");
