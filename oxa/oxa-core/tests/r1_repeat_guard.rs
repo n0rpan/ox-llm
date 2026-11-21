@@ -245,6 +245,51 @@ fn identical_read_loop_warns_once_and_continues() {
     assert!(oxa_fake::check_w1(&eng.requests(), &[]).is_empty());
 }
 
+/// #2298: the change-of-approach suggestion is written once, on the first notice of a loop, and
+/// carries the attempt count. Every later notice stays short, counts up and points back to that
+/// suggestion, so a loop is not fed the same paragraph again and a healthy turn gains nothing.
+#[test]
+fn later_repeat_notices_stay_short_and_count_the_attempt() {
+    let env = TestEnv::new();
+    let mut turns: Vec<ScriptTurn> = (0..LIMIT + 5).map(|i| read(&format!("c{i}"), RANGE)).collect();
+    turns.push(ScriptTurn::text("done"));
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    assert_eq!(run(&mut st, "find the bug in a.txt").0, RunEnd::Stopped);
+    let res = results(&st);
+    assert_eq!(res.len(), (LIMIT + 5) as usize, "{res:#?}");
+    let notes = &res[LIMIT as usize..];
+    assert_eq!(notes.len(), 5, "{notes:#?}");
+    // The first notice: the full suggestion, written once, with the attempt that reached the limit.
+    assert!(is_notice(&notes[0]), "{}", notes[0]);
+    assert!(
+        notes[0].contains("Change your approach and continue the task"),
+        "{}",
+        notes[0]
+    );
+    assert!(notes[0].contains(&format!("(Attempt {LIMIT}.)")), "{}", notes[0]);
+    // Later notices: the same unchanged result, the next attempt number, no second suggestion.
+    for (i, note) in notes[1..].iter().enumerate() {
+        assert!(is_notice(note), "{note}");
+        assert!(
+            note.contains(&format!("attempt {} of this call", LIMIT + 1 + i as u32)),
+            "{note}"
+        );
+        assert!(!note.contains("Change your approach"), "{note}");
+        assert!(!note.contains("read a different range or file"), "{note}");
+    }
+    // A repeated notice never costs more bytes than the first one, so a loop adds less context
+    // than before; the calls themselves still ran and one warning is still shown.
+    assert!(
+        notes[1..].iter().all(|note| note.len() < notes[0].len()),
+        "{notes:#?}"
+    );
+    assert_eq!(shown_entries(&st).len(), 1, "{:#?}", shown_entries(&st));
+    // Healthy turns are untouched: the calls before the limit carry the tool result only.
+    for r in &res[..LIMIT as usize] {
+        assert!(!is_notice(r) && r.contains("line 5"), "{r}");
+    }
+}
+
 #[test]
 fn the_model_can_recover_after_one_notice() {
     let env = TestEnv::new();
