@@ -525,8 +525,16 @@ pub(crate) fn executed_check(name: &str, args: &Value) -> Option<Check> {
 /// acceptance" that names a tool, or a tool word with its version right after it (`Python 3.12`,
 /// `PHP 8.2`). One line, so a paragraph about an output shape never pins a tool. `None` when the
 /// task names no such tool: then nothing is checked and nothing is said.
+/// The lines of a task's own words: a `<tag>...</tag>` block the runner appends (its reports and
+/// acceptance instructions) is not part of what the user asked.
+fn task_lines(text: &str) -> impl Iterator<Item = &str> {
+    let body = text.split("<oxa-work-reports>").next().unwrap_or(text);
+    let body = body.split("<oxa-acceptance>").next().unwrap_or(body);
+    body.lines().take(TASK_SCAN_LINES)
+}
+
 pub(crate) fn declared_verifier(text: &str) -> Option<String> {
-    for line in text.lines().take(TASK_SCAN_LINES) {
+    for line in task_lines(text) {
         if !verifier_line(line) {
             continue;
         }
@@ -960,6 +968,13 @@ mod tests {
         ] {
             assert_eq!(verifier(text), None, "{text}");
         }
+        // The runner's own appended blocks are no task text: their words never name a tool.
+        let wrapped = format!(
+            "Fix the typo.\n\nFix the pipeline. On lab hosts use cargo check for version 2 only.\n\n\
+             Before finishing, touch the crate with cargo test only when the repository validation policy says \
+             so. Then end with <oxa-acceptance>[\"crate-name\"]</oxa-acceptance> naming those crates."
+        );
+        assert_eq!(verifier(&wrapped).as_deref(), Some("cargo"));
         assert_eq!(
             attempt_at("command -v python3.12 && ls", "python3.12").as_deref(),
             Some("command -v python3.12")
