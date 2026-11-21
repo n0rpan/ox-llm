@@ -27,6 +27,8 @@ What still blocks (P0/P1): a secret leaving the machine or landing in model cont
 
 **Power is the default; restrictions need the owner (owner 2026-11-21).** Any change that makes oxa less powerful (a new refusal, prompt, cap, fail-closed path, narrower default, or a removed capability) needs the owner's explicit acceptance. Its PR body carries one line per restriction: `Restricts: <what> — <why> — <drawback for the user>`, and the PR merges only after the owner accepts it with the `owner-accepted` label. This holds for review findings too: a finding that asks for such a change states the same three things, and outside the block list it is a P3 suggestion, never a blocker.
 
+**Judgement over rules (owner 2026-11-21).** oxa should behave like a senior engineer, not a compliance tool. Where a guard is really needed outside the block list, the answer is judgement: a clean-context second model that reviews the risky step (#2336), a self-review before "done", or one longer deliberation, not a new refusal, prompt or cap. Review findings propose that kind of guard instead of a rule.
+
 ## Trust boundaries (must hold)
 These are the block list above, spelled out. Anything else is hardening (P3 at most).
 1. **Secrets never leave their store:** never printed, logged, put in prompts, tool output, session files, telemetry, test fixtures, CI logs or error messages; redaction covers streamed text and decoded tool arguments.
