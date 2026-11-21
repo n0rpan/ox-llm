@@ -496,12 +496,16 @@ fn stream_live(stream: &mut TcpStream, live: &Live, has_form: bool) -> std::io::
             .as_deref()
             .map_or_else(|| "null".to_owned(), |digest| format!("\"{digest}\""))
     );
+    // Sample the baseline before the first event goes out: a change that lands
+    // while that event is in flight must still produce an update, not disappear
+    // into the baseline.
+    let mut last = (live.fingerprint)();
     write_response(
         stream,
         &[headers.as_bytes(), b"retry: 5000\n", update.as_bytes()],
         LIVE_WRITE,
     )?;
-    let (began, mut quiet, mut last) = (Instant::now(), Instant::now(), (live.fingerprint)());
+    let (began, mut quiet) = (Instant::now(), Instant::now());
     while began.elapsed() < LIVE_LIFETIME {
         std::thread::sleep(live.poll);
         let now = (live.fingerprint)();
