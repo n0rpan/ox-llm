@@ -109,6 +109,25 @@ fn offered(env: &TestEnv, extra: &[&str]) -> Vec<String> {
     declared_names(&ran)
 }
 
+/// TOOLS-025 (A): (oxa only) `deliverable` records the output file a request names; the run
+/// ends with a typed record for it. The end-to-end behaviour (written and verified, gone and
+/// reported missing, a private path refused) is covered by `oxa-cli/tests/deliverable_evidence.rs`;
+/// this row pins that the tool is offered with its schema like any other declared tool.
+#[test]
+fn tools_025() {
+    let env = TestEnv::new();
+    let ran = drive(&env, vec![ScriptTurn::text("ok")], &[]);
+    assert!(
+        declared_names(&ran).contains(&"deliverable".to_string()),
+        "deliverable is declared: {:?}",
+        declared_names(&ran)
+    );
+    let schema = schema_of(&ran, "deliverable");
+    assert_eq!(schema["required"], serde_json::json!(["path"]));
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["properties"]["path"]["type"], "string");
+}
+
 // ---------------------------------------------------------------- meta-checks
 
 /// each PARITY.md id of this area maps to a test fn or an O-row assertion
@@ -142,7 +161,7 @@ fn every_row_has_test_or_recorded_omission() {
         );
         checked += 1;
     }
-    assert_eq!(checked, 24, "TOOLS rows of PARITY.md");
+    assert_eq!(checked, 25, "TOOLS rows of PARITY.md");
 }
 
 /// documented output or recorded fixture
@@ -847,6 +866,8 @@ fn tools_019() {
     let env = TestEnv::new();
     let mut lead: Vec<String> = ALL_SEVEN.iter().map(|s| s.to_string()).collect();
     lead.push("ask".to_string());
+    // #2293 A: the session's file-deliverable check, offered like `ask`.
+    lead.push("deliverable".to_string());
     // K5a: the worker tool is on by default (`oxa.workers.enabled` true) in a parent session.
     lead.push("worker".to_string());
     lead.sort();

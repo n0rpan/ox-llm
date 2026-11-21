@@ -115,6 +115,28 @@ Only lead sessions declare `ask`; subagent workers keep their existing tool pref
 An answer or automatic recommendation never grants file, shell or network permissions:
 normal permission checks remain in force.
 
+## deliverable
+
+`deliverable` records and checks the file a request asks for: `{path}`. The model calls it
+with the output path the request names, again after writing the file, and once before it
+finishes. The check reads the same guarded file view as `read` and `write`: the private-path
+deny-list and the permission floor apply, and a symlink swapped after the permission check is
+refused.
+
+- The result is a fact, not a refusal: `present` with the size, `empty`, `missing`,
+  `not a regular file`, or `could not be checked`. A check that ran is never a tool error.
+- Only existence and size are checked. The result does not claim the content answers the
+  task: the model has to read the file for that.
+- At the end of the run (also after a wrap-up, an abort or a failure) the declared files are
+  checked once more and the run ends with a compact record: `verified-now`, `missing`, or
+  `unverified` with the reason, the time of the check and the view it used. A later write or a
+  restart makes the earlier record stale; the next run checks again.
+- At the run's limit the wrap-up message names a declared file that is not on disk, so the
+  last turn can still write it. The record is evidence only: it changes no exit code and does
+  not block a stop, and an unrelated run that declares nothing is unaffected.
+- Subagent workers do not declare it; a refused (private-path) call records nothing.
+  `--exclude-tools deliverable`, an explicit tool allowlist and `--no-tools` can disable it.
+
 ## subagent
 
 `subagent` lets the model hand a task to a child oxa that works in its own context and returns only its final answer. It keeps long searches out of the main conversation.

@@ -799,6 +799,9 @@ impl Built {
                 oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
                     .with_owner_present(self.ask_owner_present),
             ));
+            // #2293 A: the model records the file a request asks it to produce, and the run's
+            // end record checks it once more. Evidence only: no gate, no exit code.
+            tools.push(Arc::new(oxa_tools::DeliverableTool::new()));
         }
         if !self.supervised_child && !self.lead {
             if let Some(env) = &self.report_dialog {
