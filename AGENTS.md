@@ -506,7 +506,9 @@ read its result; they never launch builds or tests.
   (`Hooks::poll_access`): plan denies it, ask asks once per host.
 - **Approval views (#1772, #1942):** every view of a dangerous command masks through the one
   `oxa_perm::mask_command` (named assignments, flag operands, URL credentials, literals in `${...}`) and never
-  masks executable text; do not add a per-shape masker. The dialog shows shell lines as dialog lines. An approval
+  masks executable text; do not add a per-shape masker. The dialog shows shell lines as dialog lines. Long command
+  and publication previews are paged; an allow choice stays disabled until every preview row has been displayed
+  (deny and cancel always answer). An approval
   is saved for the session (ends with the run) or always (the exact `<rule> <command>` key in user settings,
   merged under the settings lock). A typed publication `yes` is withdrawn on a session switch.
 - **Sandbox standard (owner decision, #1512 and 2026-11-19). Do not add an OS sandbox outside these rules:**

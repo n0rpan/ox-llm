@@ -768,6 +768,107 @@ fn dangerous_dialog_keeps_shell_line_boundaries() {
     assert!(!text.contains('\u{1b}'), "{text:?}");
 }
 
+/// #2165: a dangerous command long enough to page. Its head is dangerous, its tail benign:
+/// 24 shell lines (a dangerous head, whitespace-only padding, a benign tail) plus one reason.
+fn long_danger_request(reply: std::sync::mpsc::Sender<DangerAnswer>) -> UiRequest {
+    let mut command = "rm -rf /srv/data".to_string();
+    for _ in 0..22 {
+        command.push_str("\n   ");
+    }
+    command.push_str("\necho tail-visible");
+    UiRequest::AskDangerous {
+        access: Access::Exec { command, net: false },
+        reasons: vec!["rm-recursive-outside: recursive delete outside the project".into()],
+        keys: vec!["rm-recursive-outside rm -rf /srv/data".into()],
+        reply,
+    }
+}
+
+/// #2165: Deny and Escape answer a long dangerous command immediately, before any page review.
+#[test]
+fn dangerous_dialog_deny_and_escape_answer_before_review() {
+    let keymap = Keymap::defaults();
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let (tx, rx) = channel();
+    host.handle(long_danger_request(tx), &mut vm, 0);
+    host.render(100, &Theme::plain());
+    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Deny);
+
+    let (tx, rx) = channel();
+    host.handle(long_danger_request(tx), &mut vm, 0);
+    host.render(100, &Theme::plain());
+    assert_eq!(press(&mut host, &keymap, "escape"), DialogKey::Closed);
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Deny);
+}
+
+/// #2165: a long dangerous command is paged like a publication preview. The first page shows
+/// the command's head, not its tail, and an allow choice stays disabled until every row has
+/// been displayed; after the full review it answers.
+#[test]
+fn dangerous_dialog_pages_every_row_before_allow() {
+    let keymap = Keymap::defaults();
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let theme = Theme::plain();
+    let (tx, rx) = channel();
+    host.handle(long_danger_request(tx), &mut vm, 0);
+    let first = host.render(100, &theme).join("\n");
+    assert!(first.contains("rm -rf /srv/data"), "{first}");
+    assert!(!first.contains("tail-visible"), "{first}");
+    assert!(first.contains("pageup/pagedown review"), "{first}");
+
+    // "Always allow" is one up from Deny; before the review it does not answer.
+    press(&mut host, &keymap, "up");
+    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Consumed);
+    assert!(rx.try_recv().is_err(), "allow stayed disabled");
+
+    // Page through every row, as the TUI redraws after each key; the last page shows the tail.
+    for _ in 0..3 {
+        press(&mut host, &keymap, "pagedown");
+        host.render(100, &theme);
+    }
+    let last = host.render(100, &theme).join("\n");
+    assert!(last.contains("echo tail-visible"), "{last}");
+    // Focus is still "Always allow"; two more ups reach "Allow once".
+    press(&mut host, &keymap, "up");
+    press(&mut host, &keymap, "up");
+    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Once);
+}
+
+/// #2165: jumping straight to the last page shows only the benign tail; the unseen rows keep
+/// allow disabled until the remaining pages have been displayed too.
+#[test]
+fn dangerous_dialog_skipping_to_the_end_keeps_allow_disabled() {
+    let keymap = Keymap::defaults();
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let theme = Theme::plain();
+    let (tx, rx) = channel();
+    host.handle(long_danger_request(tx), &mut vm, 0);
+    for _ in 0..3 {
+        press(&mut host, &keymap, "pagedown");
+    }
+    let last = host.render(100, &theme).join("\n");
+    assert!(last.contains("echo tail-visible"), "{last}");
+    assert!(!last.contains("rm -rf /srv/data"), "{last}");
+    // Deny is focused; three ups reach "Allow once". It must not answer yet.
+    press(&mut host, &keymap, "up");
+    press(&mut host, &keymap, "up");
+    press(&mut host, &keymap, "up");
+    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Consumed);
+    assert!(rx.try_recv().is_err(), "the unseen rows keep allow disabled");
+    // Review the remaining pages back to the top; then allow answers.
+    for _ in 0..3 {
+        press(&mut host, &keymap, "pageup");
+        host.render(100, &theme);
+    }
+    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Once);
+}
+
 /// #1772: two sessions that loaded their settings before either saved each add a different
 /// always key, and both keys are in the user file afterwards.
 #[test]

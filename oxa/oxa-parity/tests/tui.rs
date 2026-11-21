@@ -1588,6 +1588,77 @@ fn dangerous_command_asks_in_the_real_tui() {
     rig.pty.wait_for_text("refused as expected").unwrap();
 }
 
+/// #2165: a long dangerous command is paged in the real fullscreen TUI. The first page shows
+/// the command's head, an allow choice stays disabled until every page has been viewed, and
+/// Deny still answers immediately. Synthetic command: nothing dangerous is ever allowed to run.
+#[test]
+fn long_dangerous_command_pages_before_allow_in_the_real_tui() {
+    // The dialog's own framed rows: the transcript's tool header also shows the command.
+    fn dialog_rows(s: &Screen) -> Vec<String> {
+        let rows = s.rows();
+        let start = rows
+            .iter()
+            .position(|r| r.contains("Dangerous command"))
+            .expect("the dialog title");
+        let end = rows
+            .iter()
+            .position(|r| r.contains("up/down move"))
+            .expect("the dialog hint");
+        rows[start..=end].to_vec()
+    }
+    let env = TestEnv::new();
+    let mut command = "rm -rf /srv/data".to_string();
+    for _ in 0..22 {
+        command.push_str("\n   ");
+    }
+    command.push_str("\necho tail-visible");
+    let script = vec![
+        ScriptTurn::tool("c1", "bash", &json!({ "command": command }).to_string()),
+        ScriptTurn::text("refused as expected"),
+    ];
+    let rig = Rig::start_in(env, script, RigOpts::default());
+    rig.pty.wait_for_text("ctrl+d exit").unwrap();
+    rig.type_text("push the branch");
+    rig.pty.send_key("enter");
+    let s = rig.pty.wait_for_text("Dangerous command").unwrap();
+    let requests_at_ask = rig.generating().len();
+    let shown = dialog_rows(&s).join("\n");
+    assert!(shown.contains("rm -rf /srv/data"), "{shown}");
+    assert!(!shown.contains("tail-visible"), "{shown}");
+    assert!(shown.contains("pageup/pagedown review"), "{shown}");
+
+    // One up from Deny is "Always allow". Enter before the review must not answer: the next
+    // up still moves the dialog focus, so the dialog stayed open and nothing ran.
+    rig.pty.send_key("up");
+    rig.pty.send_key("enter");
+    rig.pty.send_key("up");
+    let s = rig.pty.wait_for_text("→ Allow for this session").unwrap();
+    assert!(s.contains("Dangerous command"), "the dialog stayed open\n{s:?}");
+    assert!(!s.contains("refused as expected"), "{s:?}");
+    assert_eq!(
+        rig.generating().len(),
+        requests_at_ask,
+        "no new request: nothing ran"
+    );
+
+    // Page to the end: the benign tail becomes visible in the dialog itself.
+    for _ in 0..3 {
+        rig.pty.send_key("pagedown");
+    }
+    rig.pty
+        .wait_for_named(
+            "the last preview page",
+            |s| dialog_rows(s).iter().any(|r| r.contains("echo tail-visible")),
+            WAIT,
+        )
+        .unwrap();
+
+    // Deny still answers immediately; the model hears the refusal.
+    rig.pty.send_key("escape");
+    rig.pty.wait_for_text("the user declined this action").unwrap();
+    rig.pty.wait_for_text("refused as expected").unwrap();
+}
+
 /// Permission prompt Once / Session / Deny; mode cycle; timed dialogs
 #[test]
 fn tui_027() {

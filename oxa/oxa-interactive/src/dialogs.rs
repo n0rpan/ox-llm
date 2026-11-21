@@ -15,9 +15,10 @@ use std::sync::mpsc::{channel, Sender};
 
 /// Rows a choice list shows before it scrolls.
 const MAX_VISIBLE: usize = 10;
-/// Publication previews are deliberately bounded independently of terminal height. Page keys
-/// expose every row, and approval remains disabled until the final page has been viewed.
-const PUBLICATION_ROWS: usize = 10;
+/// Publication and dangerous-command previews are deliberately bounded independently of
+/// terminal height. Page keys expose every row, and approval remains disabled until every
+/// row has been viewed.
+const PREVIEW_ROWS: usize = 10;
 /// The permission prompt's choices, in display order. Deny is the default focus so that a
 /// stray Enter never grants access.
 const ACCESS_LABELS: [&str; 3] = ["Allow once", "Allow for this session", "Deny"];
@@ -552,6 +553,8 @@ impl DialogHost {
                 list,
                 kind,
                 scroll,
+                seen,
+                seen_width,
                 reviewed,
             } => {
                 match kind {
@@ -560,18 +563,28 @@ impl DialogHost {
                         header = None;
                         body.extend(wrap(&title, inner as usize));
                     }
-                    // Publication text is shown as it will be published: no word re-flow.
-                    ChoiceKind::Approve => {
+                    // Publication and command text is shown exactly as it will be published
+                    // or run: no word re-flow. Every row must be displayed before approval.
+                    ChoiceKind::Approve | ChoiceKind::Danger => {
                         let mut preview = Vec::new();
                         for line in lines.iter() {
                             preview.extend(hard_wrap(line, inner as usize));
                         }
-                        let max_scroll = preview.len().saturating_sub(PUBLICATION_ROWS);
+                        let max_scroll = preview.len().saturating_sub(PREVIEW_ROWS);
                         *scroll = (*scroll).min(max_scroll);
-                        let end = (*scroll + PUBLICATION_ROWS).min(preview.len());
+                        let end = (*scroll + PREVIEW_ROWS).min(preview.len());
                         body.extend(preview[*scroll..end].iter().cloned());
-                        *reviewed |= end == preview.len();
-                        if preview.len() > PUBLICATION_ROWS {
+                        // A resize re-wraps the text: review starts over at the new width.
+                        if seen.len() != preview.len() || *seen_width != inner as usize {
+                            seen.clear();
+                            seen.resize(preview.len(), false);
+                            *seen_width = inner as usize;
+                        }
+                        for row in &mut seen[*scroll..end] {
+                            *row = true;
+                        }
+                        *reviewed = seen.iter().all(|&row| row);
+                        if preview.len() > PREVIEW_ROWS {
                             body.push(theme.fg(
                                 "muted",
                                 &format!(
@@ -936,6 +949,8 @@ enum ChoiceKind {
     /// Publication approval: Approve is index 0, the exact text is shown unwrapped-by-words.
     Approve,
     Access,
+    /// Dangerous-command approval: Deny is the last choice; the command is paged for review
+    /// like a publication preview.
     Danger,
 }
 
@@ -958,9 +973,13 @@ enum Body {
         lines: Vec<String>,
         list: Box<SelectList>,
         kind: ChoiceKind,
-        /// Wrapped-row offset for publication review.
+        /// Wrapped-row offset of the paged preview.
         scroll: usize,
-        /// Approval is enabled only after the owner has displayed the final preview page.
+        /// Preview rows already displayed, at `seen_width`.
+        seen: Vec<bool>,
+        /// The inner width the `seen` rows were recorded at.
+        seen_width: usize,
+        /// Approval is enabled only after every preview row has been displayed for review.
         reviewed: bool,
     },
     Text {
@@ -1008,6 +1027,8 @@ impl Dialog {
                 list: Box::new(list),
                 kind,
                 scroll: 0,
+                seen: Vec::new(),
+                seen_width: 0,
                 reviewed: false,
             },
             reply,
@@ -1044,26 +1065,31 @@ impl Dialog {
                 reviewed,
                 ..
             } => {
-                if matches!(kind, ChoiceKind::Approve) && key.is("pagedown") {
-                    *scroll = scroll.saturating_add(PUBLICATION_ROWS);
+                if matches!(kind, ChoiceKind::Approve | ChoiceKind::Danger) && key.is("pagedown") {
+                    *scroll = scroll.saturating_add(PREVIEW_ROWS);
                     return KeyFlow::Pending;
                 }
-                if matches!(kind, ChoiceKind::Approve) && key.is("pageup") {
-                    *scroll = scroll.saturating_sub(PUBLICATION_ROWS);
+                if matches!(kind, ChoiceKind::Approve | ChoiceKind::Danger) && key.is("pageup") {
+                    *scroll = scroll.saturating_sub(PREVIEW_ROWS);
                     return KeyFlow::Pending;
                 }
                 match list.key(key, keymap) {
                     SelectAction::Selected(value) => {
                         let out = value.parse::<usize>().ok().and_then(|i| {
-                            // Denial is always available. Approval is not authority until the final
-                            // page has actually been rendered for review.
-                            if matches!(kind, ChoiceKind::Approve) && i == 0 && !*reviewed {
+                            // Denial is always available. Approval is not authority until every
+                            // preview row has actually been rendered for review.
+                            let approval = match kind {
+                                ChoiceKind::Approve => i == 0,
+                                ChoiceKind::Danger => i + 1 < DANGER_ANSWERS.len(),
+                                _ => false,
+                            };
+                            if approval && !*reviewed {
                                 None
                             } else {
                                 Some(kind.outcome(i))
                             }
                         });
-                        if out.is_none() && matches!(kind, ChoiceKind::Approve) {
+                        if out.is_none() && matches!(kind, ChoiceKind::Approve | ChoiceKind::Danger) {
                             return KeyFlow::Pending;
                         }
                         KeyFlow::Settle(out)
@@ -1229,6 +1255,7 @@ mod approval_tests {
         assert!(rx.try_recv().is_err(), "approval stayed disabled");
 
         host.key(&Key::press("pagedown"), &Keymap::defaults());
+        host.render(80, &Theme::plain());
         host.key(&Key::press("pagedown"), &Keymap::defaults());
         let last = host.render(80, &Theme::plain()).join("\n");
         assert!(last.contains("line 24") && !last.contains("│ line 1 "), "{last}");
