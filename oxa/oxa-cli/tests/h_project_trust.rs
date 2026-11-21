@@ -28,15 +28,15 @@ impl Write for Sink {
 
 /// Run `oxa -p hi` in-process; returns the exit code and stderr.
 fn go(env: &TestEnv) -> (i32, String) {
-    go_args(env, &["-p".to_string(), "hi".to_string()])
+    go_args(env, vec!["-p".to_string(), "hi".to_string()])
 }
 
 /// Run `oxa --help` in-process; the help path decides trust without a session.
 fn help(env: &TestEnv) -> (i32, String) {
-    go_args(env, &["--help".to_string()])
+    go_args(env, vec!["--help".to_string()])
 }
 
-fn go_args(env: &TestEnv, argv: &[String]) -> (i32, String) {
+fn go_args(env: &TestEnv, argv: Vec<String>) -> (i32, String) {
     let server = FakeServer::start(vec![ScriptTurn::text("ok")], FakeOpts::default()).expect("fake engine");
     let owned = env.envs(&server.url());
     let cwd = env.work();
