@@ -1,6 +1,6 @@
 //! The inbox is local IPC, not a socket, and must stay in private, no-follow directories.
 use oxa_fake::TestEnv;
-use oxa_session::{send_inbox, send_inbox_control, Inbox, InboxItem, SessionRef};
+use oxa_session::{send_inbox, send_inbox_control, send_inbox_steer, Inbox, InboxItem, SessionRef};
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::sync::mpsc;
@@ -315,4 +315,26 @@ fn inbox_bounded_scan_advances_past_invalid_batches() {
         70,
         "invalid files are retained, not repeatedly scanned"
     );
+}
+
+/// #2183: the sender chooses the delivery, and the owner's watcher keeps it: a steer for the next
+/// tool boundary, a follow-up for the end of the turn.
+#[test]
+fn a_steer_and_a_follow_up_keep_their_delivery_kind() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    send_inbox_steer(&agent, "steered", "act on this now").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch_messages(&agent, "steered", move |item| tx.send(item).is_ok()).unwrap();
+    let timeout = Duration::from_secs(3);
+    assert_eq!(
+        rx.recv_timeout(timeout).unwrap(),
+        InboxItem::Steer("act on this now".into())
+    );
+    send_inbox(&agent, "steered", "when you are done").unwrap();
+    assert_eq!(
+        rx.recv_timeout(timeout).unwrap(),
+        InboxItem::FollowUp("when you are done".into())
+    );
+    drop(watch);
 }

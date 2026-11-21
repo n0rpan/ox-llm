@@ -493,6 +493,12 @@ pub trait Hooks: Send + Sync {
     ) -> Option<Result<Option<String>, String>> {
         None
     }
+    /// The access a wait `until` condition makes when this set answers it (#1919): a probe that
+    /// runs `gh` declares `Access::Net`, so plan denies it and ask asks once per host. A probe
+    /// that answers from local state, or that is not this set's kind, declares nothing.
+    fn poll_access(&self, _until: &Value) -> Vec<crate::Access> {
+        Vec::new()
+    }
 }
 
 /// One failed handler of a hook set ([`Hooks::take_errors`]): pi's `extension_error` fields.

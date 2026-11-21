@@ -27,8 +27,8 @@ mod lock;
 
 pub use inbox::{
     await_delivery, inbox_pending, remove_inbox, send_inbox, send_inbox_control, send_inbox_receipt,
-    valid_inbox_id, withdraw_inbox, Inbox, InboxItem, InboxRetry, Outcome as DeliveryOutcome,
-    INBOX_MESSAGE_BYTES,
+    send_inbox_steer, send_inbox_steer_receipt, valid_inbox_id, withdraw_inbox, Inbox, InboxItem, InboxRetry,
+    Outcome as DeliveryOutcome, INBOX_MESSAGE_BYTES,
 };
 mod meta;
 mod ops;

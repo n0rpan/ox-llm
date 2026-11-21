@@ -658,7 +658,7 @@ pub fn repair_wrong_type(tool: &str, param: &str, expected: &str) -> String {
 pub const REPAIR_FORMAT: &str = "The call does not follow the format <tool_call><function=NAME><parameter=NAME>value</parameter></function></tool_call>.";
 
 /// Appended as a user message at the safe boundary of a soft termination request (W1/W3).
-pub(crate) const WRAP_UP: &str = "Wrap up now: this run is ending. Use this one short final turn to commit only changes made during this run if appropriate, or summarize the current state and remaining work. Leave pre-existing changes alone. Do not start new work.";
+pub(crate) const WRAP_UP: &str = "Wrap up now: this run is ending. Use this one final turn to commit what works from the changes made during this run if appropriate, and state what is unfinished. Leave pre-existing changes alone. Do not start new work.";
 
 pub(crate) const LENGTH_CONTINUE_LOCAL: &str = "The reply reached its output limit. Continue from the cutoff and finish the original task. Do not repeat completed work.";
 pub(crate) const LENGTH_RETRY_REMOTE: &str = "The previous reply reached its output limit and was discarded. Complete the original task with a shorter, complete answer.";
@@ -740,6 +740,13 @@ pub fn ends_unfinished(text: &str, edited: bool) -> bool {
 }
 
 /// Goal controls are declared only for an explicitly active stored goal.
+/// The continuation after a reply that matched the output schema while the goal is still pursued:
+/// the answer is recorded and does not end the goal.
+pub const GOAL_CONTINUE_AFTER_ANSWER: &str = "Your answer was recorded; it does not end the goal. Next, call wait (until something changes), do the next piece of work, or call goal_done with evidence if the goal is complete or blocked.";
+
+/// The one nudge after a second reply in a row without an action.
+pub const GOAL_IDLE_NUDGE: &str = "Two replies in a row had no action. Do one of these now: make a tool call for the next piece of work; call wait with seconds and a reason if you are waiting for something; or call goal_done with evidence if the goal is complete or blocked.";
+
 pub const GOAL_CONTINUE: &str = "Continue pursuing the stored goal. Use wait when no work is available. Call goal_done with evidence only when complete or blocked.";
 pub fn goal_start(objective: &str) -> String {
     format!("Pursue this stored goal until complete or blocked. Use wait when no work is available; call goal_done with evidence to finish.\n\n{objective}")

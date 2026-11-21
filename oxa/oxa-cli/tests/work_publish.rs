@@ -30,7 +30,14 @@ case "$1 $2" in
     fi
     printf '{"nameWithOwner":"example/project","url":"https://%s/example/project"}' "$host"
     if test -f "$HOME/oversized-repo-response"; then head -c 1048576 /dev/zero | tr '\000' ' '; fi ;;
-  'pr list') if test -f "$HOME/pr-state.json"; then printf '['; cat "$HOME/pr-state.json"; printf ']'; else printf '[]'; fi ;;
+  'pr list')
+    if test -f "$HOME/move-head-on-pr-list"; then
+      rm "$HOME/move-head-on-pr-list"
+      printf moved > later.txt
+      /usr/bin/git add later.txt
+      /usr/bin/git -c user.name=t -c user.email=t@example.invalid commit -m 'moved after preflight' >/dev/null
+    fi
+    if test -f "$HOME/pr-state.json"; then printf '['; cat "$HOME/pr-state.json"; printf ']'; else printf '[]'; fi ;;
   'api graphql') if test -f "$HOME/queued"; then printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"id":"queue"}}}}}'; else printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}'; fi ;;
   'pr create')
     draft=false
@@ -663,6 +670,7 @@ fn green_rerun_can_publish_after_red_remained_local() {
     );
     assert_eq!(red["draft"], false, "{red}");
     assert!(red["pull_request"].is_null());
+    assert!(red["detail"].as_str().unwrap().contains("not published"), "{red}");
     let green = run_args(
         &env,
         vec![
@@ -968,6 +976,24 @@ esac
         unauthorized.is_empty(),
         "public writes without confirmation: {unauthorized:?}"
     );
+}
+
+#[test]
+fn publish_refuses_head_changed_since_preflight() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let path = configure(&env);
+    let done = run(&env, edits());
+    assert_eq!(done["outcome"], "done", "{done}");
+    env.write("home/move-head-on-pr-list", "move once");
+
+    let record = run_args(&env, vec![], &["work", "../tasks.json", "--publish"], Some(path));
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["detail"]
+        .as_str()
+        .unwrap()
+        .contains("changed during confirmation"));
+    assert!(!env.home().join("push-calls").exists());
 }
 
 fn write_turns(path: &str, content: &str) -> Vec<ScriptTurn> {
@@ -1293,4 +1319,72 @@ fn publication_never_pushes_tags_implicitly() {
     assert!(env.home().join("push-calls").exists());
     let tags = git(&env, &env.work(), &["--git-dir", "remote.git", "tag", "--list"]);
     assert!(tags.is_empty(), "{tags}");
+}
+#[test]
+fn a_normal_publish_records_a_receipt_read_back_from_the_remote() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let path = configure(&env);
+    let record = run_args(&env, edits(), &["work", "../tasks.json", "--publish"], Some(path));
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(record["publish_receipt"]["class"], "published", "{record}");
+    assert_eq!(
+        record["publish_receipt"]["remote"], record["head_sha"],
+        "{record}"
+    );
+    assert_eq!(
+        record["publish_receipt"]["requested"], record["head_sha"],
+        "{record}"
+    );
+}
+#[test]
+fn an_operator_commit_on_the_target_branch_is_reported_with_its_exact_sha_and_never_forced() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let path = configure(&env);
+    // The operator lands a different commit on the target branch through another clone.
+    git(&env, &env.work(), &["clone", "remote.git", "operator"]);
+    let operator = env.work().join("operator");
+    git(&env, &operator, &["config", "user.name", "Operator"]);
+    git(
+        &env,
+        &operator,
+        &["config", "user.email", "operator@example.invalid"],
+    );
+    env.write("work/operator/operator.txt", "operator\n");
+    git(&env, &operator, &["add", "."]);
+    git(&env, &operator, &["commit", "-m", "operator commit"]);
+    git(&env, &operator, &["push", "origin", "HEAD:refs/heads/agent/test"]);
+    let remote_sha = git(&env, &operator, &["rev-parse", "HEAD"]);
+    // The operator's commit is known locally (fetched), so its relation can be classified; a
+    // commit that is not in the local repository is reported as `remote_unknown` with its SHA.
+    git(
+        &env,
+        &env.work().join("project"),
+        &["fetch", "origin", "agent/test"],
+    );
+    let record = run_args(&env, edits(), &["work", "../tasks.json", "--publish"], Some(path));
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert_eq!(record["publish_receipt"]["class"], "diverged", "{record}");
+    assert_eq!(
+        record["publish_receipt"]["remote"],
+        remote_sha.as_str(),
+        "{record}"
+    );
+    let detail = record["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains(&remote_sha)
+            && detail.contains("diverged")
+            && detail.contains("nothing was force-pushed"),
+        "{record}"
+    );
+    assert_eq!(
+        git(
+            &env,
+            &env.work(),
+            &["--git-dir", "remote.git", "rev-parse", "refs/heads/agent/test"]
+        ),
+        remote_sha,
+        "the remote branch must be unchanged"
+    );
 }

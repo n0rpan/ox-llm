@@ -1,0 +1,1 @@
+- The Lead web pages now read the same observation as the Lead loop, show the Lead session's live workers (lane, model, state, status age) on the Workers page, show GitHub reserve deferrals on Usage, and refresh from a real `/events/live` stream instead of 15-second polling. The Lead loop treats an assignee whose worker is dead or stopped as no worker.

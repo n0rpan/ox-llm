@@ -2,10 +2,13 @@
 use super::{checked, state, tree, CheckpointObserver, LockedTask, Outcome, Record, Result, RunPolicy, Task};
 use state::Step;
 mod landing;
+mod receipt;
 pub use landing::{
     Admission, AdmissionAcknowledgment, AdmissionReceipt, DeliveryReceipt, LandingPublisher, NoticeIntent,
     RejectedLanding, RetryIntent,
 };
+pub(crate) use receipt::push_with_receipt;
+pub use receipt::{Divergence, PublishReceipt};
 use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
     fs::File,
@@ -840,12 +843,25 @@ fn publish_locked(
     if !super::completed_execution(value.record.step)
         || !matches!(accepted, Outcome::Done | Outcome::NothingToDo)
     {
+        // Say why nothing was published; the unsaved copy carries the note, the checkpoint
+        // stays as it was.
+        let why = format!(
+            "not published: only a finished task accepted as done can be published (this one is {accepted:?} at {:?})",
+            value.record.step
+        )
+        .to_lowercase();
+        value.record.detail = if value.record.detail.is_empty() {
+            why
+        } else {
+            format!("{}; {why}", value.record.detail)
+        };
         return Ok(value.record);
     }
     value.record.acceptance_outcome = Some(accepted);
     writer.save(&mut value, Step::Publishing, observer)?;
     let git = |repo: &Path, args: &[&str]| super::git(policy, repo, args);
     let gh = |repo: &Path, lock: &File, args: &[&str]| gh(gh_binary, policy, repo, lock, args);
+    let receipt_slot: std::cell::RefCell<Option<PublishReceipt>> = std::cell::RefCell::new(None);
     let result = (|| -> Result<(String, bool)> {
         if policy.offline {
             return Err("publishing is unavailable in offline mode".into());
@@ -890,23 +906,26 @@ fn publish_locked(
         {
             return Err("nothing to publish".into());
         }
-        let existing_body = if let Some(pr) = prs.first() {
+        let (pr_action, existing_body) = if let Some(pr) = prs.first() {
             let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
             let value = json(&gh(
                 tree,
                 lock,
                 &["pr", "view", &number, "--repo", name, "--json", "body"],
             )?)?;
-            Some(value["body"].as_str().ok_or("PR body missing")?.to_owned())
+            (
+                format!("update PR #{number}"),
+                Some(value["body"].as_str().ok_or("PR body missing")?.to_owned()),
+            )
         } else {
-            None
+            ("create a PR".into(), None)
         };
         let text = body(task, &head, value.record.lane.as_ref(), existing_body.as_deref())?;
         if confirm(&format!(
-            "Push accepted commit {head} as {} to origin and create/update its PR in {name} (base {base})? Type yes to publish: ",
+            "Push accepted commit {head} as {} to origin and {pr_action} in {name} (base {base})? Type yes to publish: ",
             task.branch
         )) != Some(true) {
-            return Err("publication requires confirmation through the controlling terminal".into());
+            return Err("not published: the owner did not confirm (a session answers through its owner confirm broker, a terminal through /dev/tty)".into());
         }
         if remote != checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?
             || head != checked(git(tree, &["rev-parse", "HEAD"]))?
@@ -925,7 +944,14 @@ fn publish_locked(
                 "PR #{number} is in the merge queue; use a new task branch for follow-up work"
             ));
         }
-        push_head(policy, repo, &head, &task.branch, lock)?;
+        receipt::push_with_receipt(
+            policy,
+            repo,
+            &head,
+            &task.branch,
+            lock,
+            &mut receipt_slot.borrow_mut(),
+        )?;
         let draft = false;
         let body = policy.storage.join(format!("{}.pr-body.md", task.id));
         crate::checkpoint::write_atomic(&body, text.as_bytes(), body.exists())?;
@@ -980,6 +1006,7 @@ fn publish_locked(
         let _ = std::fs::remove_file(body);
         Ok((result.trim().to_string(), draft))
     })();
+    value.record.publish_receipt = receipt_slot.into_inner();
     match result {
         Ok((url, draft)) => {
             value.record.pull_request = Some(url);

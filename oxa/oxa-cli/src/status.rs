@@ -324,7 +324,7 @@ impl ProgressObserver for StatusWriter {
                 true
             }
             Progress::Advanced | Progress::Prefix { .. } => false,
-            Progress::GoalControlCommitted { .. } => return,
+            Progress::GoalControlCommitted { .. } | Progress::WrapUp { .. } => return,
             Progress::GoalStatus { status, reason } => {
                 snapshot.goal_status = (status != "none").then_some(status);
                 snapshot.goal_reason = reason.map(|text| text.chars().take(256).collect());
