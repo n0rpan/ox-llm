@@ -439,6 +439,9 @@ impl Ui for LockedUi<'_, '_> {
     fn secret(&mut self, title: &str, body: &str) -> Option<String> {
         self.with(|u| u.secret(title, body))
     }
+    fn secret_ask(&mut self, ask: &oxa_proto::SecretAsk<'_>) -> Option<oxa_proto::SecretValue> {
+        self.with(|u| u.secret_ask(ask))
+    }
 
     fn confirm_cancellable(
         &mut self,
