@@ -1384,7 +1384,7 @@ fn work_card_renders_twelve_bars_the_target_and_distinct_stuck_counts() {
         assert!(home.contains("href=\"/board?f=fix\""));
         // No runner situation: the No-PR count stays unknown and says so, never zero.
         assert!(home.contains("No PR yet</span><span class=\"v num\">–</span>"));
-        assert!(home.contains("Not in this sample:</b> No PR yet"));
+        assert!(home.contains("Unobserved counts:</b> No PR yet"));
         // The Board keeps its own single table; the card adds no duplicate kanban.
         let board = get(port, "/board", authority, "");
         assert!(board.contains("#201") && board.contains("Observed board items"));
@@ -1437,7 +1437,7 @@ fn unpublished_acceptances_count_as_no_pr_from_the_runner_situation() {
             "{home}"
         );
         assert!(home.contains("href=\"/workers\""));
-        assert!(!home.contains("Not in this sample:</b> No PR yet"));
+        assert!(!home.contains("Unobserved counts:</b> No PR yet"));
     });
 }
 

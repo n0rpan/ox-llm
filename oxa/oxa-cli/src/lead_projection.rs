@@ -299,7 +299,7 @@ pub fn render(html: &mut String, view: &View<'_>, now: u64) {
         throughput.observed
     );
     if throughput.main_samples == 0 {
-        html.push_str("<p class=\"muted say-why\"><b>Not in this sample:</b> the main merge history. These records carry no main head; sample with <code>--landing-shadow --lead-alarms</code> to fill the bars.</p>");
+        html.push_str("<p class=\"muted say-why\"><b>No merge history in this sample.</b> These records carry no main head; sample with <code>--landing-shadow --lead-alarms</code> to fill the bars.</p>");
     } else if let Some(from) = throughput.covered_from {
         if from > throughput.window_start {
             let _ = write!(
@@ -333,7 +333,7 @@ pub fn render(html: &mut String, view: &View<'_>, now: u64) {
         };
         let _ = write!(
             html,
-            "<p class=\"muted say-why\"><b>Not in this sample:</b> {}. {cause}</p>",
+            "<p class=\"muted say-why\"><b>Unobserved counts:</b> {}. {cause}</p>",
             lead_page::escape(&missing.join(", "))
         );
     }
@@ -511,7 +511,7 @@ mod tests {
         assert!(html.contains("target 10/h"));
         assert!(html.contains("href=\"/board?f=waiting\""));
         assert!(html.contains("href=\"/board?f=fix\""));
-        assert!(html.contains("Not in this sample:</b> Held Restricts:, No PR yet"));
+        assert!(html.contains("Unobserved counts:</b> Held Restricts:, No PR yet"));
         // Absent sources render as "–", while an observed empty source is a real zero.
         assert_eq!(html.matches("<span class=\"v num\">–</span>").count(), 2);
         assert!(html.contains("<span class=\"v num\">0</span>")); // red CI: observed, none
