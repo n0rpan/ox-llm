@@ -352,6 +352,9 @@ pub struct ModePolicy {
     unattended: UnattendedMode,
     /// #1512 S5: this run has the OS sandbox (`oxa.sandbox.unattended`, S3).
     os_sandbox: bool,
+    /// #2292: the user's explicit preservation requirement, a bounded quote of their own
+    /// message (see [`Policy::set_preservation`]). `None` = no requirement tracked.
+    preservation: Option<String>,
 }
 
 impl PartialEq for ModePolicy {
@@ -371,6 +374,7 @@ impl PartialEq for ModePolicy {
             && self.session_id == other.session_id
             && self.unattended == other.unattended
             && self.os_sandbox == other.os_sandbox
+            && self.preservation == other.preservation
     }
 }
 
@@ -433,10 +437,26 @@ impl ModePolicy {
     fn danger_hits(&self, a: &Access, cwd: &Path) -> Vec<DangerHit> {
         let open = self.danger_open(a, cwd);
         if self.desk_grant(a, cwd, &open).is_some() {
-            Vec::new()
-        } else {
-            open
+            return Vec::new();
         }
+        // #2292: an explicit preservation requirement adds one reversible-checkpoint
+        // sentence to the existing question of a destructive rule. Additive: the keys, the
+        // answers and every decision stay exactly as they were; no new prompt or refusal.
+        let Some(requirement) = self.preservation.as_deref() else {
+            return open;
+        };
+        open.into_iter()
+            .map(|mut hit| {
+                if crate::preserve::destructive(&hit.rule) {
+                    hit.reason = format!(
+                        "{}. {}",
+                        hit.reason,
+                        crate::preserve::checkpoint_note(requirement)
+                    );
+                }
+                hit
+            })
+            .collect()
     }
 
     /// The classified hits of `a` minus the keys a session or always grant covers. Inspect
@@ -728,6 +748,10 @@ impl Policy for ModePolicy {
 
     fn set_session_id(&mut self, id: &str) {
         self.session_id = id.to_string();
+    }
+
+    fn set_preservation(&mut self, requirement: Option<&str>) {
+        self.preservation = requirement.map(str::to_string);
     }
 
     /// #1512 S5: an exec that needs an answer in a run with no one to ask. With no desk, `None`
