@@ -767,7 +767,8 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
             // One batch: write the result, a command fails, a check passes over both.
             tools_turn(vec![
                 call("w", "write", json!({"path": "answer.json", "content": "decoded"})),
-                call("b", "bash", json!({"command": "false"})),
+                // A test run that reports a failure is a failure signal to adaptive thinking.
+                call("b", "bash", json!({"command": "cargo test -- --fail"})),
                 call("c", "bash", json!({"command": "true"})),
             ]),
             ScriptTurn::text("done"),
@@ -776,19 +777,6 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
     let checks = rec.checks();
     assert_eq!(checks.len(), 1, "{checks:?}");
     assert!(checks[0].contains("FAILED"), "{checks:?}");
-    // What the engine was asked: this test proves the line reaches the repair request.
-    for (i, r) in engine.requests().iter().enumerate() {
-        eprintln!(
-            "REQ {i}: {}",
-            r.messages
-                .iter()
-                .rev()
-                .find(|m| m.role == oxa_proto::Role::User)
-                .and_then(|m| m.content.clone())
-                .unwrap_or_default()
-        );
-    }
-    eprintln!("CHECKS {checks:?}");
     // The write, the failing command, the passing check, then the repair round's turn.
     assert_eq!(engine.requests().len(), 3);
     let repair = last_user(&engine, 2);
