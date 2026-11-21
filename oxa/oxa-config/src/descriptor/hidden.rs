@@ -38,6 +38,16 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::StringList, "[]")
     .hidden(),
+    // #784: owner-named root actions (`<name>: <command words>`); user settings only.
+    d(
+        "oxa.approval.rootActions",
+        Group::Advanced,
+        "",
+        "oxa.approval.rootActions",
+        "",
+    )
+    .key(Kind::StringList, "[]")
+    .hidden(),
     // #1512 S5: what an unattended run does with a dangerous command (no one to ask): refuse it,
     // file an approval request, or `auto` (refuse under the OS sandbox, request without it).
     // User settings only.

@@ -68,6 +68,14 @@ A shell alias makes yolo quick to start:
 $ alias yoxa='oxa --yolo'
 ```
 
+### Grants, named root actions and the sudo password
+
+An approval you answer for an unattended run (`oxa send --approve`, the lead page) is bound to what the command acts on. For a push that is the object id of each source ref and a digest of origin's URLs, read again immediately before the run; the same text after a new commit, a reset or `git remote set-url` asks again, and a push whose refspec the shell computes cannot be replayed unattended. An interactive session grant and your own `always` line stay exact-text keys, by your choice.
+
+`oxa.approval.rootActions` names root actions you accept without oxa's own question, for example `boot: /usr/bin/bootctl set-default *` (`*` matches exactly one argument). Use the canonical absolute path to the executable: it and its parent directories must be owned by root and not writable by group or others. A bare target name or a symlink is not accepted. If an update replaces the executable, start a new session to load its new identity. It applies only to one literal `/usr/bin/sudo` (optionally `-n`) command in your interactive session with the default shell and no command prefix. Pipes, redirects, substitutions, globs, braces and tildes keep the approval prompt. Workers, subagents and headless runs do not use the list. Sudo still decides whether a password is needed.
+
+On Linux 6.5 or later, oxa can show a masked password dialog for a direct foreground system sudo call with literal arguments in an attended session without an OS sandbox. The broker verifies that the helper is the running oxa executable and sends the password once, only to the helper of the exact sudo process oxa launched. Other processes and background jobs cannot use that prompt. The password goes straight to sudo, not to tool output, the transcript, the session file or the logs. Neither typed chat nor yolo can answer the dialog. If the dialog is unavailable and sudo needs a password, run the command yourself in a separate terminal.
+
 ### Dangerous-command rules
 
 Before a command runs in standard or auto mode, oxa reads what it does: the program after launchers (`command`, `env`, `exec`, `nice`), the directory chain of `env -C`, the files it writes and reads, and whether it prints a login token. The built-in rules are approval prompts, not a sandbox, and yolo never asks.

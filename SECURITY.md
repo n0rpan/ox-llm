@@ -23,6 +23,23 @@ prompts in standard mode, not a sandbox; yolo does not reach them. A saved unatt
 pipeline fed by anything but a literal `echo`/`printf`, or an input redirect. A `wait` probe that runs `gh`
 is network access (plan denies, ask asks once per session).
 
+A desk grant (once or session) of a pushing command in an unattended run is bound to resolved facts:
+the source ref object ids and a digest of origin's URLs (never the URLs), re-read at every decision
+immediately before the run, plus the run and session. After a commit, a reset or `git remote set-url`
+the same text asks again; facts that cannot be resolved (computed words, unreadable repository) are
+refused for unattended replay. An interactive session grant and the owner's `always` line stay
+exact-text keys by the owner's own choice. `oxa.approval.rootActions` (user settings only, never a
+project file, never given to a worker, subagent or headless run) names literal `/usr/bin/sudo` commands oxa does not ask about. The target must be a canonical
+absolute executable under a root-owned hierarchy with no group or other write access. Its device
+and inode are pinned when the action is loaded and checked before it can bypass the prompt. Bare
+names, shell expansion and a custom shell or prefix keep the approval prompt. Sudo
+still decides whether a password is needed. On Linux the masked dialog is available only for an
+attended, unsandboxed, direct foreground sudo launch. The broker pins the running oxa executable
+by device and inode and checks that the helper uses that inode and writes to sudo's pipe. It accepts
+one request bound to the exact sudo child started by that bash call, and revokes delivery when the
+call stops being foreground. The password travels owner -> broker -> helper -> sudo, never to the
+model, tool output, transcript or logs. Neither typed chat nor yolo can answer the dialog.
+
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.
 The native cloud gateway's default recommendations use only configured API-key providers
@@ -145,7 +162,7 @@ Each loopback listener that can start a model request or spend cloud budget need
 The following decisions set the policy for current review and planned changes; they do not claim that the open issues are implemented:
 
 - **Project trust (#1441):** Ask once per folder by default. Offer per-content re-approval as an opt-in; it is not required by default.
-- **Privileged actions (#784):** Only the owner can configure named root actions that may run without a password. For other sudo commands, the owner enters the password directly through a separate terminal or secure owner-only input that passes it straight to sudo. The password never reaches the model, prompt, transcript, tool output, or logs.
+- **Privileged actions (#784):** Only the owner can configure named root actions that skip oxa's approval prompt. The setting does not skip sudo's authentication. The owner enters the password in the masked dialog for an eligible direct foreground call, or in a separate terminal. The password never reaches the model, transcript, tool output or logs.
 - **Release payload (#1394):** Keep standalone `oxe` in the release allowlist for other inference clients and LAN sharing without an `oxa` agent.
 - **Scripts (#2020):** Running a script follows the normal permission mode. Do not add a special confirmation merely because a script might publish. Yolo does not ask, auto runs within its existing rights, and standard applies its usual prompts. The existing secret and publication rules for direct commands still apply.
 - **ChatGPT subscription limits (#1909):** Configured limits warn and record; they do not stop a request locally. The provider enforces its own limits.

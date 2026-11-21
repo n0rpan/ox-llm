@@ -1013,6 +1013,7 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
+
     if !crate::in_process::cloud_enabled(&user_settings, dirs) {
         notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
     }
@@ -1075,6 +1076,21 @@ fn prepare(
         // local done round just because trusted project resources were loaded.
         settings = settings.with_override("done", Value::Array(Vec::new()));
     }
+    // A custom shell or prefix can change the argv after classification. Named root actions
+    // are for the interactive owner with the default shell, never delegated runs.
+    let danger = if mode == RunMode::Interactive
+        && !child.nested()
+        && !a.lead
+        && settings.shell_path(&dirs.home).is_none()
+        && settings.shell_command_prefix().is_none()
+    {
+        let (rules, warnings) =
+            danger.with_root_actions(&user_settings.user_list(oxa_perm::SETTING_ROOT_ACTIONS));
+        notices.extend(warnings.into_iter().map(|w| (Level::Warning, w)));
+        rules
+    } else {
+        danger
+    };
     // CLI-045 (pi cli.md): `--verbose` overrides `quietStartup` for this run (in memory only).
     if a.verbose {
         settings = settings.with_override("quietStartup", Value::Bool(false));

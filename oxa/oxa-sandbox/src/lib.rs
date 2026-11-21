@@ -22,6 +22,7 @@ mod net;
 mod offline;
 mod run;
 mod scratch;
+mod sudo;
 mod unsandboxed;
 
 pub use bwrap::{account_home, bwrap_args, bwrap_args_with, without_account_home};
@@ -41,6 +42,9 @@ pub use run::{
     run_unsandboxed_stdin,
 };
 pub use scratch::{parse_scratch_warn, scratch_root, user_cache_home, Scratch, DEFAULT_SCRATCH_WARN};
+#[cfg(target_os = "linux")]
+pub use sudo::PeerLifetime;
+pub use sudo::{SudoLaunch, SUDO_LAUNCH_ENV};
 pub use unsandboxed::Unsandboxed;
 
 /// The plain statement shown wherever commands run without an OS sandbox (platforms without
@@ -702,4 +706,38 @@ impl Sandbox for NoSandbox {
             unsandboxed: false,
         }
     }
+}
+
+/// The pid and uid of the process on the other end of a unix socket (`SO_PEERCRED`), and this
+/// process's effective uid. `None` when the kernel gives no credentials.
+#[cfg(target_os = "linux")]
+pub fn peer_pid_uid(stream: &std::os::unix::net::UnixStream) -> Option<(u32, u32, u32)> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: getsockopt on a socket the caller borrows, into a ucred of the stated length.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(cred).cast(),
+            &mut len,
+        )
+    };
+    if rc != 0 || cred.pid <= 0 {
+        return None;
+    }
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    Some((cred.pid as u32, cred.uid, me))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn peer_pid_uid(_: &std::os::unix::net::UnixStream) -> Option<(u32, u32, u32)> {
+    None
 }

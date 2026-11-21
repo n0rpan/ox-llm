@@ -591,6 +591,9 @@ impl Ui for PromptTap<'_> {
     fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
         self.span("confirm", Some(title), |u| u.approve_publication(title, body))
     }
+    fn secret(&mut self, title: &str, body: &str) -> Option<String> {
+        self.inner.secret(title, body)
+    }
 
     fn confirm_cancellable(
         &mut self,
