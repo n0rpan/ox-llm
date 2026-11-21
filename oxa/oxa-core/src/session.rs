@@ -83,7 +83,7 @@ pub struct State {
 }
 
 /// The RPC `get_session_stats` data plus cache accounting.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Stats {
     pub user_messages: u32,
     pub assistant_messages: u32,
@@ -120,6 +120,9 @@ pub struct Stats {
     pub proved: Option<bool>,
     /// Background jobs still running when the last run ended (after the finish nudge).
     pub jobs_left: u32,
+    /// T6: the tool the task's acceptance names when no command of the last run ran it (what the
+    /// run checked is a substitute); `None` when it ran or the task names no tool.
+    pub verifier: Option<String>,
     /// `bash` results of the current operation that carried the CI polling note (`ui.ciPoll`).
     pub ci_polls: u32,
     /// Whether the current agent operation's last reply stopped at its output token limit.
@@ -912,7 +915,7 @@ impl Session {
     }
 
     pub fn stats(&self) -> Stats {
-        self.st.stats
+        self.st.stats.clone()
     }
 
     /// Set an opt-in, process-local final answer contract without changing the prefix.
@@ -1175,6 +1178,7 @@ impl Session {
         self.st.stats.done_failed = false;
         self.st.stats.proved = None;
         self.st.stats.jobs_left = 0;
+        self.st.stats.verifier = None;
         self.st.stats.ci_polls = 0;
         self.st.stats.output_truncated = false;
         crate::goal::begin(&self.st);

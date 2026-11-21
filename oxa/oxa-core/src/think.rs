@@ -520,9 +520,150 @@ pub(crate) fn executed_check(name: &str, args: &Value) -> Option<Check> {
     found
 }
 
+/// The one line of a task text that says which tool the acceptance runs through, when the task
+/// names it plainly (T6): a line about "the grader", "the harness", "the verifier" or "the
+/// acceptance" that names a tool, or a tool word with its version right after it (`Python 3.12`,
+/// `PHP 8.2`). One line, so a paragraph about an output shape never pins a tool. `None` when the
+/// task names no such tool: then nothing is checked and nothing is said.
+pub(crate) fn declared_verifier(text: &str) -> Option<String> {
+    for line in text.lines().take(TASK_SCAN_LINES) {
+        if !verifier_line(line) {
+            continue;
+        }
+        let words = tool_words(line);
+        for (i, word) in words.iter().enumerate() {
+            let Some(tool) = named_tool(word) else { continue };
+            // `Python 3.12`: the version the task pins is part of the name it must run.
+            let version = words.get(i + 1).filter(|w| is_version(w));
+            return Some(match version {
+                Some(version) => format!("{tool}{version}"),
+                None => tool,
+            });
+        }
+    }
+    None
+}
+
+/// Lines of the task text [`declared_verifier`] reads (the ask comes first; a transcript pasted
+/// below it costs no scan).
+const TASK_SCAN_LINES: usize = 200;
+
+/// A character that may be part of a tool word or its version.
+fn tool_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')
+}
+
+/// The words of `line` that may hold a tool name or a version.
+fn tool_words(line: &str) -> Vec<&str> {
+    line.split(|c: char| !tool_word_char(c))
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// `3`, `3.12`, `8.2`: a version a task pins beside a tool word.
+fn is_version(word: &str) -> bool {
+    word.starts_with(|c: char| c.is_ascii_digit())
+        && word.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// Words this file accepts as a tool name on the task's verifier line. A fixed list keeps
+/// ordinary prose ("5 task") and a trailing stop from naming a tool.
+const TOOL_WORDS: [&str; 23] = [
+    "python", "bash", "sh", "perl", "ruby", "node", "php", "java", "go", "rustc", "cargo",
+    "dotnet", "swift", "lua", "julia", "gcc", "g++", "clang", "clang++", "tsc", "mypy", "pytest",
+    "rscript",
+];
+
+/// Whether `line` is about how the task is judged: it carries one of the words that name the
+/// acceptance's tool, or a tool word with its version right after it (`Python 3.12`).
+fn verifier_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    const MARKS: [&str; 12] = [
+        "grader",
+        "harness",
+        "verifier",
+        "acceptance",
+        "version",
+        " v0",
+        " v1",
+        " v2",
+        " v3",
+        " v4",
+        "run with",
+        "tested with",
+    ];
+    if MARKS.iter().any(|m| lower.contains(m)) {
+        return true;
+    }
+    let words = tool_words(line);
+    words
+        .windows(2)
+        .any(|pair| named_tool(pair[0]).is_some() && is_version(pair[1]))
+}
+
+/// `word` as the tool name [`declared_verifier`] reports: it must start with a known tool word
+/// (`python3` -> `python3`, `g++` -> `g++`, `pytest` -> `None`), or carry a version right after
+/// it (`python3.12` -> `python3.12`). Lowercase: a program name, and `Python` names `python`.
+fn named_tool(word: &str) -> Option<String> {
+    let lower = word.to_ascii_lowercase();
+    if lower.is_empty()
+        || lower.len() > 32
+        || !lower.starts_with(|c: char| c.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    let known = TOOL_WORDS.iter().find(|t| lower.starts_with(*t))?;
+    let rest = &lower[known.len()..];
+    if rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        Some(lower)
+    } else {
+        None
+    }
+}
+
+/// Whether `cmd` runs `tool` as a program, at a program position or as an interpreter the system
+/// will pick up: `python3`, `python3.12`, `/usr/bin/python3`, `#!/usr/bin/env python3`, or an
+/// explicit `python3 path`. A mention in a quoted argument (`echo python3`) is not a run. A
+/// versioned name also counts its bare form (`python3.12` runs when `python3` does); a bare name
+/// never counts another version (`python3` does not stand in for `python3.12`).
+pub(crate) fn executes_tool(cmd: &str, tool: &str) -> bool {
+    let bare = tool
+        .split_once('.')
+        .filter(|(_, version)| version.chars().all(|c| c.is_ascii_digit()))
+        .map_or(tool, |(name, _)| name);
+    // `#!/usr/bin/env python3` and `#!/usr/bin/python3`: the system runs it by interpreter.
+    let shebang = cmd.lines().next().and_then(|l| l.strip_prefix("#!")).is_some_and(|line| {
+        let words: Vec<&str> = line.split_ascii_whitespace().collect();
+        words.get(1) == Some(&"env") && words.get(2) == Some(&tool)
+            || words.get(1).is_some_and(|path| path.ends_with(&format!("/{tool}")))
+    });
+    shebang
+        || simple_commands(cmd).iter().any(|words| {
+            let Some(program) = program_words(words).first() else {
+                return false;
+            };
+            let program = program.split('/').next_back().unwrap_or(program);
+            program == tool || program == bare
+        })
+}
+
+/// Whether `cmd` names `tool` anywhere (`echo python3`, `grep python3 README`): a command that
+/// tried to use the tool, for the finish nudge to show.
+pub(crate) fn mentions_tool(cmd: &str, tool: &str) -> bool {
+    let bare = tool
+        .split_once('.')
+        .filter(|(_, version)| version.chars().all(|c| c.is_ascii_digit()))
+        .map_or(tool, |(name, _)| name);
+    cmd.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/')))
+        .any(|word| {
+            let word = word.split('/').next_back().unwrap_or(word);
+            word == tool || word == bare
+        })
+}
+
 /// The words of `cmd` split into simple commands at unquoted `;`, `&`, `|` and newlines, with
 /// quotes removed (a small shell tokenizer: enough to find program positions).
-fn simple_commands(cmd: &str) -> Vec<Vec<String>> {
+pub(crate) fn simple_commands(cmd: &str) -> Vec<Vec<String>> {
     let mut out = vec![Vec::new()];
     let mut word = String::new();
     let mut in_word = false;
@@ -579,7 +720,7 @@ fn simple_commands(cmd: &str) -> Vec<Vec<String>> {
 
 /// The words from the program on: leading `VAR=x` assignments, redirections and wrappers
 /// (`time`, `env`, `nice`, `command`, `exec`, `sudo`, `timeout <d>`) are skipped.
-fn program_words(words: &[String]) -> &[String] {
+pub(crate) fn program_words(words: &[String]) -> &[String] {
     let mut i = 0;
     while i < words.len() {
         let w = words[i].as_str();
@@ -797,6 +938,61 @@ mod tests {
         assert!(!reports_pass("(no output)"));
         assert!(reports_failure("test result: FAILED. 1 passed; 1 failed"));
         assert!(!reports_failure("test result: ok. 11 passed; 0 failed"));
+        // T6: the tool a task names for its acceptance, and whether a command runs it.
+        let verifier = |text: &str| declared_verifier(text);
+        assert_eq!(
+            verifier("Write a regex; the grader applies it with Python 3.12 and re.S.").as_deref(),
+            Some("python3.12")
+        );
+        assert_eq!(
+            verifier("The acceptance harness runs `python3 -m pytest tests/`.").as_deref(),
+            Some("python3")
+        );
+        assert_eq!(
+            verifier("The harness reads the file with perl.").as_deref(),
+            Some("perl")
+        );
+        assert_eq!(
+            verifier("Return code PHP 8.2 must accept the old call shape.").as_deref(),
+            Some("php8.2")
+        );
+        assert_eq!(
+            verifier("Check.py must pass under Python 3.").as_deref(),
+            Some("python3")
+        );
+        // No line names the acceptance tool: nothing is asked.
+        for text in [
+            "Explain how the cache works.",
+            "Implement the change, then run the project's own tests.",
+            "The task has 5 items and 2 parts.",
+            "Write a summary of 200 words about the build.",
+            "The output has 3 fields and 12 values.",
+        ] {
+            assert_eq!(verifier(text), None, "{text}");
+        }
+        let runs = |cmd: &str, tool: &str| executes_tool(cmd, tool);
+        for cmd in [
+            "python3.12 check.py",
+            "python3 -c 'print(1)'",
+            "/usr/bin/python3 check.py",
+            "cd src && PYTHONPATH=. python3 check.py",
+            "#!/usr/bin/env python3\nprint(1)",
+            "timeout 60 python3 check.py",
+        ] {
+            assert!(runs(cmd, "python3"), "{cmd}");
+        }
+        for cmd in [
+            "echo python3",
+            "grep -n python3 README.md",
+            "perl -e 'print 1'",
+            "pip3 install python3",
+        ] {
+            assert!(!runs(cmd, "python3"), "{cmd}");
+        }
+        // A versioned name also runs when its bare form does; a bare name never stands in.
+        assert!(runs("python3 check.py", "python3.12"));
+        assert!(!runs("python3.12 check.py", "python3"));
+        assert!(mentions_tool("echo python3", "python3"));
     }
 
     #[test]

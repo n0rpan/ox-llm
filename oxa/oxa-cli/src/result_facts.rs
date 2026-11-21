@@ -21,9 +21,10 @@ struct Call {
 struct State {
     opened: bool,
     goal: Option<Value>,
-    /// The finish decision's facts: whether the last edit was proved (`None`: no edit) and how
-    /// many background jobs were still running at the end.
-    finish: Option<(Option<bool>, u32)>,
+    /// The finish decision's facts: whether the last edit was proved (`None`: no edit), how
+    /// many background jobs were still running at the end, and the acceptance tool the task names
+    /// that never ran (T6).
+    finish: Option<(Option<bool>, u32, Option<String>)>,
     finished: bool,
     session_id: Option<String>,
     requests: Option<u64>,
@@ -113,7 +114,8 @@ impl ResultFacts {
         });
     }
     pub(crate) fn finish(&self, stats: oxa_core::Stats) {
-        self.state.lock().unwrap_or_else(|p| p.into_inner()).finish = Some((stats.proved, stats.jobs_left));
+        let finish = (stats.proved, stats.jobs_left, stats.verifier);
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).finish = Some(finish);
     }
     pub(crate) fn ci_polls(&self, polls: u32) {
         self.state.lock().unwrap_or_else(|p| p.into_inner()).ci_polls = Some(polls);
@@ -217,9 +219,12 @@ impl ResultFacts {
         if let Some(limit) = state.as_ref().and_then(|state| state.limit) {
             record["limit"] = json!(limit);
         }
-        if let Some((proved, jobs)) = state.as_ref().and_then(|state| state.finish) {
+        if let Some((proved, jobs, verifier)) = state.as_ref().and_then(|state| state.finish.clone()) {
             record["proved"] = json!(proved);
             record["jobs_running"] = json!(jobs);
+            // T6: the tool the task's acceptance names that no command of this run ran. `null`
+            // when it ran or the task names none; absent when the run never reached the finish.
+            record["verifier_unused"] = json!(verifier);
         }
         record["usage_scope"] = json!("process");
         // Web searches this invocation made (FH-N5 integrity report); null when unobserved.

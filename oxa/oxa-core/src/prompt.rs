@@ -678,6 +678,22 @@ pub const HEADLESS_NUDGE: &str = "Nobody can answer you and the task is not fini
 /// (`oxa.done.proveIt`). One per run.
 pub const PROVE_IT_NUDGE: &str = "You changed files and no check has passed since your last change. Run the project's check for what you changed (tests, build or lint) and fix what fails, or say in one line why no check exists. Then finish.";
 
+/// The finish decision's nudge for a run whose task names the tool its acceptance runs through
+/// (T6) and that never ran it. One per run; never a refusal, and nothing is installed for it.
+pub fn toolchain_nudge(tool: &str, tries: &[String]) -> String {
+    let tried = if tries.is_empty() {
+        String::new()
+    } else {
+        format!(" The run named {tool} in: {}.", tries.join(" · "))
+    };
+    format!(
+        "This task's acceptance names {tool}, and no command in this run ran it.{tried} \
+         Say which check did not run with {tool} and what that leaves unverified. If you can \
+         obtain it here (its package manager or a container), do that and run the acceptance \
+         with it; use a substitute only when it cannot be run. Then finish."
+    )
+}
+
 /// The finish decision's nudge for background jobs still running when a goal completes or a
 /// headless run ends (`oxa.done.waitForJobs`). One per run.
 pub fn jobs_nudge(ids: &[String], headless: bool) -> String {

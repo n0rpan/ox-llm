@@ -68,6 +68,16 @@ One decision runs before a run or goal ends. Each open fact gets at most one ext
 
 - A run that changed files (a file tool, or a `bash` call that changed the work folder) and ran no passing check afterwards is asked to run the project's check, or to say in one line why none exists (`oxa.done.proveIt`, off by default). A read-only run is never asked. The `oxa_result` record carries `proved` (`true`, `false`, or `null` for a read-only run). The work-folder fingerprint that sees `bash` edits is now also taken when only this setting is on.
 - A goal that completes, or a headless run that ends, while background jobs still run is asked to wait for them or stop them (`oxa.done.waitForJobs`); a headless run's jobs stop when it ends. An interactive chat is never asked, so a dev server costs no turn. The record carries `jobs_running`.
+- When the task names the tool its own acceptance runs through (a line that calls it the grader, the
+  harness, the verifier or the acceptance, or puts a version beside the tool word, as in `Python 3.12`
+  or `PHP 8.2`), and no `bash` call of the run ran it, the run is asked once to run that tool or say
+  which check did not run and what stays unverified. The question shows the first commands that named
+  the tool, so a fallback is visible. With `oxa.done.proveIt` on, this question stands in for the edit
+  proof. With `bash` not declared, or while a goal is pursued, nothing is read and nothing is asked. It
+  never refuses, never installs anything and makes no network call, and the run still ends after its one
+  turn. Nothing is said about a tool that merely is missing from `PATH`: only a task that names its own
+  acceptance tool is checked. The record carries `verifier_unused`, the tool name when it never ran
+  (`null` when it ran, or when the task names none).
 
 ## Repair turn
 
