@@ -775,11 +775,32 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
             ScriptTurn::text("fixed"),
         ],
     );
+    // What the engine was asked, when the assertions below do not hold.
+    let dump = |engine: &ScriptedEngine| -> String {
+        engine
+            .requests()
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let users: Vec<&str> = r
+                    .messages
+                    .iter()
+                    .filter(|m| m.role == oxa_proto::Role::User)
+                    .map(|m| m.content.as_deref().unwrap_or(""))
+                    .collect();
+                format!(
+                    "{i}: {:?}",
+                    users.iter().map(|u| &u[..u.len().min(120)]).collect::<Vec<_>>()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
     let checks = rec.checks();
-    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks.len(), 1, "{checks:?} {}", dump(&engine));
     assert!(checks[0].contains("FAILED"), "{checks:?}");
     // The write batch, the reply after it, the repair request, the reply after the repair.
-    assert_eq!(engine.requests().len(), 4);
+    assert_eq!(engine.requests().len(), 4, "{}", dump(&engine));
     let repair = last_user(&engine, 2);
     assert!(repair.contains("done checks failed"), "{repair}");
     assert!(

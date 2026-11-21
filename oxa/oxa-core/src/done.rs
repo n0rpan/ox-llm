@@ -1590,9 +1590,9 @@ mod tests {
     fn a_failure_with_a_passing_check_names_the_files_this_batch_wrote() {
         let env = oxa_fake::TestEnv::new();
         let work = env.work();
-        let mut state = DoneState::default();
-        failed_batch(&mut state, &work, &["decode.json"]);
         std::fs::create_dir(work.join("out")).unwrap();
+        let mut state = DoneState::default();
+        failed_batch(&mut state, &work, &["decode.json", "out/"]);
         let line = state
             .verified_artifacts(&work)
             .expect("a verified result is named");
