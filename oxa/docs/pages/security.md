@@ -80,7 +80,7 @@ On Linux 6.5 or later, oxa can show a masked password dialog for a direct foregr
 
 ### Dangerous-command rules
 
-Before a command runs in standard or auto mode, oxa reads what it does: the program after launchers (`command`, `env`, `exec`, `nice`), the directory chain of `env -C`, the files it writes and reads, and whether it prints a login token. The built-in rules are approval prompts, not a sandbox, and yolo never asks.
+Before a command runs in standard or auto mode, oxa reads what it does: the program after launchers (`command`, `env`, `exec`, `nice`), the directory chain of `env -C`, the files it writes and reads, and whether it prints a login token. The built-in rules are approval prompts, not a sandbox, and yolo never asks. They catch mistakes and ordinary model misbehaviour (hardening, not a security boundary): a command built to hide what it does can get past them.
 
 Two of them cover what a plain write rule missed (#1680):
 
