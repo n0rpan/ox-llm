@@ -1,9 +1,26 @@
 //! The director in the loop (animations design 3.2 and 3.3, slice 4): zero work when idle, one
 //! still frame while waiting for the user, slow and settled scenes step once a second, and a
 //! pinned scene bypasses the picks. Public API only; the clock is passed in.
+//!
+//! Desk Z06, at the end of the file: the session worker without its periodic wake
+//! (`WorkerStop::without_idle_tick`). These tests run a real worker thread on a real clock.
+use oxa_config::{Dirs, Settings};
+use oxa_core::{Deps, Open, Session, ToolSelection};
+use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_interactive::skin::stage::director::{Director, Pending};
 use oxa_interactive::skin::stage::load_pack;
+use oxa_interactive::{
+    worker_loop_with, ReopenFn, SessionCmd, SessionInfo, UiRequest, WorkerMsg, WorkerStop,
+};
+use oxa_proto::{
+    AgentEvent, CommandSpec, Delivery, HookPoint, HookReply, Hooks, Host, HostAction, OxaError, Tool, Ui,
+};
+use oxa_resources::Resources;
+use oxa_session::MemStore;
 use serde_json::{json, Value};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 fn frame(text: &str, inks: &str) -> Value {
     json!([text, inks])
@@ -136,4 +153,205 @@ fn a_pinned_scene_bypasses_the_director() {
         Some(("think.duck", 0)),
         "releasing the pin returns to the picks"
     );
+}
+
+// ---- Desk Z06: the session worker without a periodic wake ----
+
+struct AllowAll;
+
+impl oxa_proto::Policy for AllowAll {
+    fn decide(
+        &self,
+        _mode: oxa_proto::Mode,
+        _a: &oxa_proto::Access,
+        _cwd: &std::path::Path,
+    ) -> oxa_proto::Decision {
+        oxa_proto::Decision::Allow
+    }
+    fn remember(&mut self, _a: &oxa_proto::Access) {}
+}
+
+struct NoBash;
+
+impl oxa_proto::Sandbox for NoBash {
+    fn check(&self) -> Result<(), OxaError> {
+        Ok(())
+    }
+    fn bwrap_args(&self, _s: &oxa_proto::ExecSpec) -> Vec<String> {
+        Vec::new()
+    }
+    fn run(
+        &self,
+        _s: &oxa_proto::ExecSpec,
+        _c: &oxa_proto::CancelToken,
+        _live: &mut dyn FnMut(&[u8]),
+    ) -> oxa_proto::ExecResult {
+        oxa_proto::ExecResult::default()
+    }
+}
+
+/// A hook set that only keeps its host, so the test can post a host request like an extension.
+#[derive(Default)]
+struct HostKeeper {
+    host: Mutex<Option<Arc<dyn Host>>>,
+}
+
+impl Hooks for HostKeeper {
+    fn fire(&self, _p: HookPoint, _payload: &Value, _ui: &mut dyn Ui) -> HookReply {
+        HookReply::Continue
+    }
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        Vec::new()
+    }
+    fn commands(&self) -> Vec<CommandSpec> {
+        Vec::new()
+    }
+    fn run_command(&self, name: &str, _args: &str, _ui: &mut dyn Ui) -> Result<(), OxaError> {
+        Err(OxaError::new(oxa_proto::codes::NOT_FOUND, name))
+    }
+    fn prompt_sections(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn attach(&self, host: Arc<dyn Host>) {
+        *self.host.lock().unwrap() = Some(host);
+    }
+}
+
+struct Worker {
+    cmds: Arc<Sender<SessionCmd>>,
+    msgs: Receiver<WorkerMsg>,
+    _ui: Receiver<UiRequest>,
+    done: Receiver<Option<SessionInfo>>,
+    stop: WorkerStop,
+    host: Arc<dyn Host>,
+    _env: TestEnv,
+}
+
+/// A worker thread over a fresh session with one scripted reply, announced and ready.
+fn idle_worker(stop: WorkerStop) -> Worker {
+    let env = TestEnv::new();
+    let hooks = Arc::new(HostKeeper::default());
+    let session = Session::open(
+        Deps {
+            engine: Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("pong")])),
+            store: Arc::new(MemStore::new()),
+            tools: Vec::new(),
+            hooks: vec![hooks.clone()],
+            policy: Box::new(AllowAll),
+            sandbox: Arc::new(NoBash),
+            settings: Settings::default(),
+            dirs: Dirs::under(env.root()),
+            cwd: env.work(),
+            selection: ToolSelection::default(),
+            resources: Resources::default(),
+            model: None,
+            thinking: None,
+            mode: None,
+            session_id: None,
+            jobs: oxa_core::fresh_jobs(),
+        },
+        Open::New,
+    )
+    .expect("open");
+    let host = hooks.host.lock().unwrap().clone().expect("attached");
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    let (msg_tx, msg_rx) = mpsc::channel();
+    let (ui_tx, ui_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let cmd_tx = Arc::new(cmd_tx);
+    let wake = Arc::downgrade(&cmd_tx);
+    let worker_stop = stop.clone();
+    let reopen: ReopenFn = Box::new(|_, _| Err(OxaError::new("invalid", "no reopen in this test")));
+    std::thread::spawn(move || {
+        let last = worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop, wake);
+        let _ = done_tx.send(last);
+    });
+    assert!(
+        matches!(
+            msg_rx.recv_timeout(Duration::from_secs(10)),
+            Ok(WorkerMsg::Session(_))
+        ),
+        "the worker announces its session before it waits"
+    );
+    Worker {
+        cmds: cmd_tx,
+        msgs: msg_rx,
+        _ui: ui_rx,
+        done: done_rx,
+        stop,
+        host,
+        _env: env,
+    }
+}
+
+/// What an extension does from a background thread: a message that starts a turn.
+fn trigger(text: &str) -> HostAction {
+    HostAction::SendMessage {
+        custom_type: "test".into(),
+        content: text.into(),
+        display: true,
+        details: Value::Null,
+        deliver: Delivery::FollowUp,
+        trigger_turn: true,
+    }
+}
+
+/// Whether a triggered turn started and settled within ten seconds.
+fn turn_ran(w: &Worker) -> bool {
+    let end = Instant::now() + Duration::from_secs(10);
+    let mut started = false;
+    while Instant::now() < end {
+        match w.msgs.recv_timeout(Duration::from_millis(50)) {
+            Ok(WorkerMsg::Event(AgentEvent::AgentStart)) => started = true,
+            Ok(WorkerMsg::Event(AgentEvent::AgentSettled { .. })) => return started,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The desktop's stop condition "no steady wakeups": a worker asked to block never leaves its
+/// wait while nothing happens. A host request posted while it blocks is still served, through
+/// the session's waker, and the stop signal reaches it too.
+#[test]
+fn a_worker_without_the_idle_tick_makes_no_wakeups_and_still_serves_the_host() {
+    let w = idle_worker(WorkerStop::without_idle_tick());
+    assert!(w.stop.blocks_when_idle());
+    std::thread::sleep(Duration::from_secs(10));
+    assert_eq!(w.stop.idle_wakes(), 0, "an idle session thread makes no wakeups");
+
+    w.host.call(trigger("ping")).expect("accepted");
+    assert!(turn_ran(&w), "the host request is served with no tick");
+    assert!(w.stop.idle_wakes() >= 1, "it was served through the waker");
+
+    w.stop.stop();
+    w.done
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the stop signal ends a worker that blocks");
+}
+
+/// The terminal's worker is unchanged: it keeps its tick.
+#[test]
+fn the_default_worker_keeps_its_idle_tick() {
+    let w = idle_worker(WorkerStop::new());
+    assert!(!w.stop.blocks_when_idle());
+    let end = Instant::now() + Duration::from_secs(10);
+    while w.stop.idle_wakes() < 2 && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(w.stop.idle_wakes() >= 2, "the default worker ticks while idle");
+    let _ = w.cmds.send(SessionCmd::Shutdown);
+    w.done
+        .recv_timeout(Duration::from_secs(10))
+        .expect("worker ended");
+}
+
+/// A worker that blocks holds no sender of its own: dropping the front end's ends it.
+#[test]
+fn dropping_the_senders_ends_a_worker_that_blocks() {
+    let w = idle_worker(WorkerStop::without_idle_tick());
+    drop(w.cmds);
+    w.done
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the worker ended when its command channel closed");
 }

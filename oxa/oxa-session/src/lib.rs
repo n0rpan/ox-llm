@@ -16,12 +16,15 @@
 //!   line (no trailing `\n` or invalid JSON) is dropped on load, never repaired in place.
 //! * **Layout.** `<sessions_dir>/--<cwd with '/' -> '-'>--/<timestamp>_<id>.jsonl` (pi's scheme),
 //!   first line = the session header.
+//! * **Thread index.** [`FsStore::thread_index`] reads a bounded head and tail of each file for a
+//!   thread list; [`thread_order`] is the one threaded order (the picker's `Threaded` sort uses it).
 
 pub mod advice;
 mod clock;
 mod durable;
 mod goal;
 mod inbox;
+mod index;
 mod lifecycle;
 mod lock;
 
@@ -43,6 +46,7 @@ pub use goal::{
     CheckResult, Goal, GoalBudget, GoalCheck, GoalPlan, GoalStatus, HeldGoalLease, LeadGoalState,
     OpenGoalAsk, PendingGoalSteer, SteeringLease, Subgoal, GOAL_ENTRY,
 };
+pub use index::{thread_order, Relation, ThreadMeta, THREAD_HEAD_BYTES, THREAD_TAIL_BYTES};
 pub use lifecycle::SpillLifecycleLock;
 pub use lock::{lock_holder, lock_path_of, SessionLock, LOCKED};
 pub use meta::{search_sessions, sort_sessions, SessionSort};

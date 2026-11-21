@@ -321,7 +321,7 @@ Shared-crate additions the contract uses (wave 0):
 ```rust
 // oxa-cli/src/frontend.rs (Z05)
 pub trait Frontend {
-    fn ask_trust(&mut self, cwd: &str, gated: &[String]) -> Option<oxa_interactive::TrustChoice>;
+    fn ask_trust(&mut self, cwd: &str, gated: &[String]) -> Result<Option<oxa_interactive::TrustChoice>, oxa_proto::OxaError>;
     fn interactive(&mut self, session: oxa_core::Session, opts: oxa_interactive::InteractiveOpts,
                    pinned: Option<&str>) -> Result<i32, oxa_proto::OxaError>;
 }
@@ -343,9 +343,17 @@ pub fn thread_order(metas: &[ThreadMeta]) -> Vec<(usize, u16)>;       // (index,
 // oxa-rpc/src/events_decode.rs (Z10)
 pub fn event_from_json(v: &serde_json::Value) -> Option<oxa_proto::AgentEvent>;
 
-// oxa-interactive/src/effects.rs (Z07): exact list is fixed in that PR
-pub fn save_setting(dirs: &Dirs, cwd: &Path, key: &str, value: &Value, project: bool) -> Result<Notice, OxaError>;
-// + save_permission_mode, persist_theme, rename_session, delete_session, export_html, bug_report, save_trust
+// oxa-interactive/src/effects.rs (Z07, as merged). `Notice { level, text }`; `Notice::of(result)`
+// turns an error into an error notice. The caller owns the `Settings` it reads from.
+pub fn save_setting(settings: &mut Settings, dirs: &Dirs, cwd: &Path, key: &str, value: Value, project: bool) -> Result<Notice, OxaError>;
+pub fn save_permission_mode(settings: &mut Settings, dirs: &Dirs, cwd: &Path, mode: PermissionMode) -> Result<Notice, OxaError>;
+pub fn persist_theme(settings: &mut Settings, dirs: &Dirs, cwd: &Path, name: &str) -> Result<Notice, OxaError>;
+pub fn append_always(settings: &mut Settings, dirs: &Dirs, cwd: &Path, keys: &[String]) -> Result<(), OxaError>;
+pub fn rename_session(store: &dyn SessionStore, session: &SessionRef, name: &str) -> Result<Notice, OxaError>; // not the open session: that is SessionCmd::SetName
+pub fn delete_session(store: &dyn SessionStore, tmp_dir: &Path, open_id: &str, session: &SessionRef) -> Notice;
+pub fn export(source: Option<&Path>, session_id: &str, cwd: &Path, path: Option<PathBuf>) -> Export; // Done(Notice) | Html(path) -> SessionCmd::Export
+pub fn bug_report(dirs: &Dirs, description: &str, facts: &[String]) -> Result<Notice, OxaError>;
+pub fn save_trust(save: &mut TrustSaver, choice: TrustChoice) -> Result<Option<Notice>, OxaError>;
 ```
 
 ### 1.5 The `oxa-desk` binary
@@ -657,7 +665,7 @@ Calendar: wave 0 is the long pole and is architect work; the gate needs the owne
 ## 9. Risks and what was not verified
 
 - **GPUI written blind.** The pool cannot compile, and GPUI is pre-1.0 with thin documentation. The kit, the cheat sheet and the row-only views are the mitigation. If more than a third of the wave-1 view slices need the architect, treat that as a gate signal of its own.
-- **Two sessions in one process.** `run_with` may meet process-global state (the YOLO switch, SIGTERM ownership, the share listener, environment edits). Z05 proves it or falls back to one in-process session plus `--mode rpc` children; the store API is the same either way.
+- **Two sessions in one process.** Z05 runs two sessions at the same time in one process (`oxa-cli/tests/frontend_seam.rs`); the YOLO switch, the hook sets and the confirmation broker are per call. What stays process-wide is listed in `oxa-cli/src/frontend.rs`: the network policy (every session of a process starts with the same offline choice), SIGTERM ownership under `--max-time` / `--max-tokens` (the desktop does not pass these flags), one share listener per call, and the dedicated Lead session, which keeps the terminal trust question.
 - **In-process `oxa_cli::run` for JSON commands** on a background thread is assumed safe because the function takes its streams and working directory as arguments. C09 proves it with two calls at once; the fallback is to run the `oxa` shim as a child process.
 - **Where subagent and worker sessions record their parent** was not traced to the end. Z09 states it and adds the relation if it is missing.
 - **Headless compositor with software Vulkan on a hosted arm64 runner** is assumed to work. If it does not, the live check uses the headless test platform and the CI perf budget (F05) measures only binary size and start-up to first layout.
