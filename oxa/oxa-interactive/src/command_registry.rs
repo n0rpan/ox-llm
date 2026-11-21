@@ -235,7 +235,7 @@ commands! {
     Send {
         path: &["send"],
         aliases: &[],
-        summary: "Send a session a follow-up, or answer its approval request (send <session-id> --approve <request-id> once|session|always|deny)",
+        summary: "Steer a session (send [--follow-up] <session-id> <text>; --follow-up queues for the end of its turn), or answer its approval request (send <session-id> --approve <request-id> once|session|always|deny)",
         arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
         surfaces: Surfaces {
             cli: Availability::Supported,

@@ -25,10 +25,13 @@ pub mod helper_queue;
 #[cfg(target_os = "linux")]
 pub mod managed_steering;
 mod notes;
+mod packet;
+pub use packet::{delta as packet_delta, PacketFeed, PacketState};
 mod publish;
 mod queue;
 pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{inherit_report_lease, publish, report_notes, ContentFinding, ContentScan, PushedContent};
+pub use publish::{Divergence, PublishReceipt};
 pub use queue::{
     native_task, run_queue, NativeQueueOwner, NativeQueueTarget, QueueEvent, QueueOptions, QueueRun,
     QueueStatus, DEFAULT_MAX_INPUT_TASKS, MAX_RETAINED_TASKS,
@@ -157,6 +160,12 @@ pub struct Record {
     /// what a `done` verdict rests on. Empty until checks run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<CheckRun>,
+    /// What the destination held after the last push, read back from it (#1584).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_receipt: Option<PublishReceipt>,
+    /// The GitHub packet the worker last saw and how many follow-ups it got (#1446).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet: Option<PacketState>,
 }
 impl Record {
     pub fn failed(&self) -> bool {
@@ -190,6 +199,7 @@ pub struct PlannedTask {
     native: bool,
     native_binding: Option<board::NativeBinding>,
     owner_selected_model: bool,
+    packet: Option<std::sync::Arc<dyn PacketFeed>>,
 }
 impl PlannedTask {
     /// A launcher can deny argument-based provider opt-in, never grant it through this variable.
@@ -198,6 +208,12 @@ impl PlannedTask {
     /// Only the trusted frontend can attach provenance for an explicit owner model argument.
     pub fn with_owner_model_selection(mut self) -> Self {
         self.owner_selected_model = true;
+        self
+    }
+
+    /// Attach the feed that keeps this task's GitHub packet current (#1446).
+    pub fn with_packet_feed(mut self, feed: std::sync::Arc<dyn PacketFeed>) -> Self {
+        self.packet = Some(feed);
         self
     }
 
@@ -245,6 +261,7 @@ fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> R
         native,
         native_binding: None,
         owner_selected_model: false,
+        packet: None,
     })
 }
 
@@ -301,6 +318,7 @@ fn plan_task_mode(
             native,
             native_binding: None,
             owner_selected_model: false,
+            packet: None,
         });
     }
     plan_new_task(repo, task, policy, native)
@@ -1195,6 +1213,8 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         lane: None,
         lane_repairs: 0,
         checks: vec![],
+        publish_receipt: None,
+        packet: None,
     }
 }
 
@@ -1551,6 +1571,7 @@ fn run_locked(
                 base_alias: planned.base_alias.as_ref(),
                 native: planned.native,
                 owner_selected_model: planned.owner_selected_model,
+                packet: planned.packet.as_deref(),
                 #[cfg(target_os = "linux")]
                 managed_steering: locked.managed_steering.as_ref(),
             })
@@ -2055,4 +2076,19 @@ mod comment_packet_tests {
         assert!(thread.len() < MAX_COMMENT_BYTES + 256, "{}", thread.len());
         assert!(thread.starts_with("--- comment by a ---\nx"));
     }
+}
+
+/// The one `OWNER/NAME` shape check for a repository named on a command line or in a
+/// call: two non-empty parts of ASCII letters, digits, `-`, `_` and `.`, neither part
+/// `.` or `..` and neither starting with `-` (so it can never read as a flag). It validates a shape only; it grants no access.
+pub fn valid_repository(repo: &str) -> bool {
+    repo.split('/').count() == 2
+        && repo.split('/').all(|part| {
+            !part.is_empty()
+                && !matches!(part, "." | "..")
+                && !part.starts_with('-')
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        })
 }

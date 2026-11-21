@@ -586,6 +586,7 @@ fn review_reservations_survive_reopening_and_head_changes() {
             owner_approval_predecessors: &[],
             requested: &[],
             approvals: &[],
+            requester_rejected: false,
         };
         let mut pr = FakeGitHub(0).open_pull_requests().unwrap().remove(0);
         pr.head = head.into();

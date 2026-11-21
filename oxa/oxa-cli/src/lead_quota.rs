@@ -49,6 +49,28 @@ impl GitHubQuotas {
         slot.is_some()
     }
 
+    /// Fill core and graphql from one `rate_limit` response (a read GitHub does not
+    /// charge), each from its own entry: a resource the response lacks stays unobserved.
+    pub fn observe_rate_limit(&mut self, identity: GitHubIdentity, response: &serde_json::Value) {
+        for (resource, key) in [
+            (GitHubResource::Core, "core"),
+            (GitHubResource::Graphql, "graphql"),
+        ] {
+            let entry = &response["resources"][key];
+            let window = (|| {
+                let limit = entry["limit"].as_u64()?;
+                let remaining = entry["remaining"].as_u64()?;
+                let resets_at = entry["reset"].as_u64()?;
+                (limit > 0 && remaining <= limit && resets_at > 0).then_some(GitHubWindow {
+                    limit,
+                    remaining,
+                    resets_at,
+                })
+            })();
+            self.windows[identity as usize][resource as usize] = window;
+        }
+    }
+
     pub fn window(
         &self,
         identity: GitHubIdentity,

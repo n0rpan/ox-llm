@@ -20,6 +20,7 @@
 mod ask;
 mod bash;
 mod checked;
+mod ci_poll;
 pub mod descriptions;
 mod diff;
 mod edit;

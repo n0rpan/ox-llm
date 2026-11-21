@@ -12,8 +12,9 @@
 //! SECURITY. This runs `gh` with the owner's login, outside the sandbox, on arguments a model
 //! chose. So: `gh` is started with an argument vector (never a shell), in fixed shapes; `sha`
 //! is 40 hex characters, `workflow` is `[A-Za-z0-9._ -]{1,100}` starting with an alphanumeric,
-//! `pr` is a positive integer; the repository is read from the `origin` remote of the session
-//! cwd (github.com only) and never from the call; every call has a deadline and an output cap;
+//! `pr` is a positive integer; the repository is the call's optional `"repo":"OWNER/NAME"`
+//! (validated shape, github.com only, read-only probes) and otherwise the `origin` remote of the
+//! session cwd; every call has a deadline and an output cap;
 //! stderr is discarded and no token or environment value is printed; `gh` is found with
 //! `netguard::trusted_executable_for` like every other host tool, so a project shim is never run.
 //! The read probes `pr_view`, `pr_checks`, `run_log_failed` and `issue_view` live in `gh_probe.rs`
@@ -164,6 +165,19 @@ impl ProbeHooks {
         Ok(repo)
     }
 
+    /// The repository of one probe: the call's own `repo` when it has the `OWNER/NAME` shape
+    /// (the probes are read-only and `GH_HOST` stays github.com), else the cached origin of the
+    /// cwd. Only the origin-derived value is cached.
+    pub(crate) fn repo_for(&self, args: &Value, budget: Duration) -> Result<String, String> {
+        match args.get("repo") {
+            None | Some(Value::Null) => self
+                .repo(budget)
+                .map_err(|error| format!("{error}; pass \"repo\":\"OWNER/NAME\" to name the repository")),
+            Some(Value::String(repo)) if oxa_work::valid_repository(repo) => Ok(repo.clone()),
+            Some(_) => Err("repo must be OWNER/NAME".into()),
+        }
+    }
+
     pub(crate) fn gh(&self, args: &[&str], budget: Duration) -> Result<Value, String> {
         let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         let out = self.run("gh", &args, budget)?;
@@ -180,7 +194,7 @@ impl ProbeHooks {
     fn ci(&self, args: &Value, deadline: Instant) -> Result<Option<String>, String> {
         let sha = valid_sha(args["sha"].as_str())?;
         let workflow = valid_workflow(args["workflow"].as_str())?;
-        let repo = self.repo(Self::remaining(deadline)?)?;
+        let repo = self.repo_for(args, Self::remaining(deadline)?)?;
         let runs = self.gh(
             &[
                 "run",
@@ -252,7 +266,7 @@ impl ProbeHooks {
             .as_u64()
             .filter(|n| *n > 0)
             .ok_or("pr must be a positive integer")?;
-        let repo = self.repo(Self::remaining(deadline)?)?;
+        let repo = self.repo_for(args, Self::remaining(deadline)?)?;
         let pr_arg = pr.to_string();
         let view = self.gh(
             &[
@@ -603,6 +617,38 @@ mod tests {
             &format!(r#"{{"state":"CLOSED","mergedAt":null,"headRefOid":"{SHA}"}}"#),
         );
         assert!(f.poll(pr).unwrap_err().contains("closed without being merged"));
+    }
+
+    #[test]
+    fn an_explicit_repo_needs_no_origin_and_a_malformed_one_starts_nothing() {
+        let f = Fake::new("explicit");
+        f.answer(
+            "pr_view",
+            &format!(r#"{{"state":"MERGED","mergedAt":"2026-11-18T10:00:00Z","headRefOid":"{SHA}"}}"#),
+        );
+        let hooks = ProbeHooks::for_test_paths(
+            &f.hooks.cwd,
+            &f.hooks.home,
+            Path::new(f.hooks.path.as_deref().unwrap()),
+            "unused/origin",
+        );
+        *hooks.repo.lock().unwrap() = None;
+        let wait = Duration::from_secs(30);
+        let pr = |repo: Value| json!({"kind": "pr_merged", "pr": 42, "repo": repo});
+        let done = hooks.poll_event("pr_merged", &pr(json!("acme/widgets")), wait);
+        assert!(done.unwrap().unwrap().is_some());
+        assert!(f.calls().unwrap().contains("pr view 42 -R acme/widgets"));
+        // Neither a repo nor an origin: the error says how to name one.
+        let error = hooks
+            .poll_event("pr_merged", &json!({"kind": "pr_merged", "pr": 42}), wait)
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("repo"), "{error}");
+        let before = f.calls();
+        for bad in [json!("bad repo"), json!("a/b/c"), json!(7)] {
+            assert!(hooks.poll_event("pr_merged", &pr(bad), wait).unwrap().is_err());
+        }
+        assert_eq!(f.calls(), before, "a malformed repo starts no process");
     }
 
     #[test]

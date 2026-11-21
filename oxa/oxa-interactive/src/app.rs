@@ -1841,9 +1841,12 @@ fn execute(
         SessionCmd::QueuedInput(handle) => {
             handle.clear_queued_wake();
             let (steering, follow_up) = handle.queued();
-            // A failed/blocked/interrupted run retains queued input for explicit recovery.
-            // A wake may bridge successful completion, never override that stop boundary.
-            let can_continue = may_continue(s.outcome());
+            // #2183: the owner's own queued message is sent once the session is idle, also after
+            // a failed request: left queued behind the error it looked sent and never was. One
+            // wake runs it once, so a request that fails again is not repeated. A blocked run
+            // (budget, offline, quota) and an interrupted one keep it for explicit recovery.
+            let can_continue =
+                may_continue(s.outcome()) || matches!(s.outcome(), oxa_core::RunOutcome::Failed(_));
             let result = if handle.same_instance(&s.handle())
                 && can_continue
                 && (!steering.is_empty() || !follow_up.is_empty())

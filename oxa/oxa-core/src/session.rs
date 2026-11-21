@@ -115,6 +115,13 @@ pub struct Stats {
     /// The current prompt/triggered operation exhausted its `done` repair rounds. Reset
     /// when new agent work is claimed; process-wide aggregation lives in the drivers.
     pub done_failed: bool,
+    /// The last run's finish decision: `Some(true)` an edit was followed by a passing check,
+    /// `Some(false)` it was not, `None` the run changed no file.
+    pub proved: Option<bool>,
+    /// Background jobs still running when the last run ended (after the finish nudge).
+    pub jobs_left: u32,
+    /// `bash` results of the current operation that carried the CI polling note (`ui.ciPoll`).
+    pub ci_polls: u32,
     /// Whether the current agent operation's last reply stopped at its output token limit.
     pub output_truncated: bool,
     /// Terminal result of the last prompt or extension-triggered run.
@@ -389,6 +396,8 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<(), OxaError> {
+        // Answers the broker gave without any pump (yolo) are recorded at the start of every turn.
+        crate::host::drain_owner_confirm_records(&mut self.st, sink);
         // pi (agent-session.ts `prompt`): a line naming an extension command runs that command
         // instead of a prompt; no run starts unless the command triggers one.
         if let Expanded::Hook { name, args } = crate::expand_input(&self.st, &text) {
@@ -977,6 +986,7 @@ impl Session {
             &mut sink,
             ui,
         );
+        crate::host::drain_owner_confirm_records(&mut self.st, &mut sink);
         if let Some(broker) = self.st.shared.owner_confirm() {
             broker.close();
         }
@@ -1163,6 +1173,9 @@ impl Session {
         let guard = self.begin_foreground()?;
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
+        self.st.stats.proved = None;
+        self.st.stats.jobs_left = 0;
+        self.st.stats.ci_polls = 0;
         self.st.stats.output_truncated = false;
         crate::goal::begin(&self.st);
         Ok(guard)

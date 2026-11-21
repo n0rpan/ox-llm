@@ -103,6 +103,21 @@ class Selection(unittest.TestCase):
         self.assertEqual(matrix['include'], [{'workspace': 'engine', 'runner': 'ubuntu-24.04', 'packages': ['server']}])
         self.assertEqual(deferred, ['model', 'oxe-cli'])
 
+    def test_workspace_added_to_the_data_with_all_is_selected(self):
+        old = (lane.WORKSPACES, lane.PORTABLE)
+        lane.WORKSPACES = (*old[0], 'tools')
+        try:
+            packages = {'tools/crate': package('crate', 'tools')}
+            matrix, deferred, _ = lane.select(packages, packages, ['tools/crate/src/lib.rs'])
+        finally:
+            lane.WORKSPACES, lane.PORTABLE = old
+        self.assertEqual({e['workspace'] for e in matrix['include']}, {'tools'})
+        self.assertEqual(deferred, [])
+
+    def test_listed_packages_workspace_defers_the_rest_and_comes_from_the_data(self):
+        self.assertEqual(lane.PORTABLE, {'engine': {'server', 'gguf', 'tokenizer', 'sched', 'chat'}})
+        self.assertIn('tools/ci/lane_coverage.json', lane.LANE_CONTRACT)
+
 
 if __name__ == '__main__':
     unittest.main()

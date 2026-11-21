@@ -37,6 +37,7 @@ pub(crate) mod lead_chat;
 pub mod lead_http;
 pub mod lead_input;
 mod lead_loop;
+mod lead_observation;
 pub mod lead_page;
 pub mod lead_panels;
 pub mod lead_peer;

@@ -173,6 +173,55 @@ wrote a new ask and `stuck_assigned` when assignments covered every signal,
 alongside the `stuck` object carrying the signal names, the per-PR report and
 the ask ids written this pass.
 
+The loop reads one observation per pass (the Board sample and the runner
+situation) and every rule is a derivation over it:
+
+- `overdue_queue` escalates only a PR that is still in the merge queue at the
+  alarmed head; an unobserved queue or a PR that left it gives no ask.
+- `publish_pending` counts a local acceptance as published only when the
+  publication's PR head is the accepted commit.
+- `review_held` reports each PR with unresolved review threads (queued PRs first,
+  then oldest thread first, within the report bound): exact head, thread counts,
+  oldest thread age, authors, `incomplete` when the thread page was cut off, and
+  the assignee. Only a current thread holds landing or escalates: an
+  outdated-only hold is reported and never asks. `queued_findings:<pr>` and the
+  ask `lead:stuck:queued-findings:<pr>` mark such a PR in the queue at its exact
+  head; the signal ending on a later pass is the recorded dequeue.
+- A stall with no report row that has an assignee and no escalation does not end
+  the pass: it still proposes the next Board action, with `stuck.signals` attached.
+
+A current (not outdated) unresolved review thread holds landing in the Reader's
+plan ahead of enqueue, retry and already-queued, and proposes a dequeue for a
+queued PR.
+
+Three more rules close the loop on what the Lead cannot see or send:
+
+- **GitHub reserve.** The owner setting `oxa.lead.github_reserve` (user settings
+  only, unset = no gate) keeps requests back per App resource. With it,
+  `oxa work board --app-quota-shadow` reads one free `rate_limit` per sample for
+  fresh core and graphql windows, and runs only its optional reads (`lead_panels`,
+  `queued_run_pages`, `sample_test_reports`) while the window stays above the
+  reserve. The gate sits in the Reader's two transports before a request is
+  launched or charged, so required reads are never held. Each deferral is a
+  warning and a `quota_deferred` entry in the sample (`awaiting_observation` or the
+  reset time); the Lead state repeats it. Model and subscription limits are untouched.
+- **Receipts.** `oxa send` and the worker tool's `send` return a receipt id
+  (`delivered`, `not_delivered` or `queued`) because the owner removes the inbox
+  file only after accepting it. `retry` checks the same message again and
+  `withdraw` removes it, so a retry never creates a second writer. Worker `start`
+  and `stop` results carry the same `receipt <id>: ...` line.
+- **Refused review identity.** When the reviewer account answers a review request
+  with its account-not-connected refusal and posts no summary afterwards, the
+  decision is `requester_rejected`: nothing is re-sent under that identity, and the
+  Lead escalates `lead:stuck:review-identity:<pr>` (signal `review_rejected:<pr>`).
+
+
+- **Worker gone.** The loop reads the Lead session's worker registry with each pass. A
+  stall-report assignee whose worker is Dead or Stopped adds `worker_gone:<name>` and
+  gets no assignee, so the existing no-worker escalation asks the owner instead of
+  reporting `stuck_assigned`.
+
+
 ## Event integration after L1
 
 Consume the runner's sequenced events and bounded situation file after L1 is on

@@ -144,6 +144,11 @@ fn dedicated_file(path: &Path, uid: u32, id: &str, project: &Path) -> Result<Opt
 }
 
 impl LeadOwnerBinding {
+    /// The dedicated Lead session's exact id: the parent of the workers it starts.
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session.id
+    }
+
     /// Explicit operator action after owner authentication. Returns a new ID for
     /// user settings. Opens no provider and imports no history, model, or goal.
     pub fn create(dirs: &Dirs, canonical_project: &Path, owner_uid: u32) -> Result<String, OxaError> {

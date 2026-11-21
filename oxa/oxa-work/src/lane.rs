@@ -10,6 +10,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+pub(crate) mod coverage;
+
 pub const LANE_WORKFLOW: &str = "lane.yml";
 pub const LANE_POLL: Duration = Duration::from_secs(15);
 pub const LANE_WAIT: Duration = Duration::from_secs(75 * 60);
@@ -254,6 +256,91 @@ fn protected_controls_unchanged(policy: &RunPolicy, repo: &Path, base: &str, hea
     }
 }
 
+/// The workflow definition that runs must be the base branch's own, not one inherited from
+/// another pushed branch: the controls may not differ between the destination's tip of the
+/// task base branch and the head (from their merge base). When that tip is not in the local
+/// object store the two checks above stand (no new block).
+fn base_branch_controls_unchanged(
+    policy: &RunPolicy,
+    repo: &Path,
+    task_base: &str,
+    head: &str,
+) -> Result<()> {
+    if task_base.is_empty() || task_base.starts_with('-') || task_base.chars().any(char::is_whitespace) {
+        return Ok(());
+    }
+    let remote = crate::checked(crate::git(
+        policy,
+        repo,
+        &["remote", "get-url", "--push", "--all", "origin"],
+    ))?;
+    let Some(url) = remote.lines().next().filter(|url| !url.starts_with('-')) else {
+        return Ok(());
+    };
+    let reference = format!("refs/heads/{task_base}");
+    let mut command = crate::git(
+        policy,
+        repo,
+        &[
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=always",
+            "-c",
+            "protocol.file.allow=always",
+            "ls-remote",
+            url,
+            &reference,
+        ],
+    );
+    crate::publish::isolate_github_environment(&mut command);
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
+    let text = crate::checked(command)
+        .map_err(|_| "lane acceptance cannot read the destination's base branch".to_string())?;
+    let Some(tip) = text
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .find(|(_, name)| *name == reference)
+        .map(|(oid, _)| oid)
+        .filter(|oid| matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    else {
+        return Ok(());
+    };
+    let spec = format!("{tip}^{{commit}}");
+    if !crate::output(crate::git(policy, repo, &["cat-file", "-e", &spec]))
+        .is_ok_and(|out| out.status.success())
+    {
+        return Ok(());
+    }
+    let Ok(fork) = crate::checked(crate::git(policy, repo, &["merge-base", tip, head])) else {
+        return Ok(());
+    };
+    let changed = crate::checked(crate::git(
+        policy,
+        repo,
+        &[
+            "diff",
+            "--name-only",
+            fork.trim(),
+            head,
+            "--",
+            PROTECTED_LANE_CONTROLS[0],
+            PROTECTED_LANE_CONTROLS[1],
+        ],
+    ))?;
+    if changed.trim().is_empty() {
+        Ok(())
+    } else {
+        Err(
+            "lane acceptance refuses a head whose GitHub workflows or lane runner differ from the base branch's; land those separately"
+                .into(),
+        )
+    }
+}
+
 /// Remove the `gh run view --log-failed` envelope: `<job>\t<step>\t<timestamp>`.
 fn log_message(line: &str) -> &str {
     let mut rest = line;
@@ -413,6 +500,7 @@ pub(crate) fn accept(
     let proof = crate::committed::verify_commit_with(repo, binary, policy, saved, lock, true)?;
     proof.verify(policy, head, base)?;
     protected_controls_unchanged(policy, repo, base, head)?;
+    base_branch_controls_unchanged(policy, repo, &task.base, head)?;
     let repository = crate::publish::origin_repository(repo, gh, policy, lock)?;
     // The same content scan `--publish` runs, before anything is sent.
     crate::publish::scan_push(policy, repo, head)?;
@@ -425,7 +513,7 @@ pub(crate) fn accept(
             "PR #{number} is in the merge queue; use a new task branch for follow-up lane work"
         ));
     }
-    crate::publish::push_head(policy, repo, head, &task.branch, lock)?;
+    crate::publish::push_with_receipt(policy, repo, head, &task.branch, lock, &mut None)?;
     let started = Instant::now();
     let run = wait_with(
         || {

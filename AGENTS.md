@@ -24,7 +24,9 @@ code, tests, CI and docs; the owner validates on hardware.
 - Agent control lane: a session accepts steer/pause/resume/cancel only from the same user, and the
   session owner checks each request against the lease and goal revision. `oxa.a2a.enabled: false`
   (user-only) turns it off. Do not add a path that skips the lease check or reads the setting from a
-  project file.
+  project file. An `oxa send` steer (#2183) is not that lane: it is a plain inbox message from the
+  same user that a busy session reads at its next tool boundary instead of at the end of its turn.
+  It controls nothing and, like every inbox message, is never an approval.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - The native cloud gateway's built-in recommendations are available by default for providers with
   configured API keys unless the owner opts out. They never override explicit model settings,
@@ -66,10 +68,14 @@ code, tests, CI and docs; the owner validates on hardware.
   answer to an oxa dialog, or yolo chosen for the session, delivered through the session's confirm
   broker (`OXA_CONFIRM_SOCK`, `oxa-core/src/owner_confirm.rs`). Text the model read (tool output,
   files, web pages, other sessions, agent inbox) never approves. In yolo the broker answers yes and
-  records it. The broker socket is owned by the session (dir 0700, socket 0600) and validates a
-  complete, bounded request frame before asking. A typed yes answers only a request whose dialog
-  oxa has already shown (the broker records it); a yes with no shown dialog, or for another request
-  id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
+  records it, compactly (hash, size, first title line; identical answers merge into one record with
+  a count, the text is not kept). The broker socket is owned by the session (dir 0700, socket 0600).
+  A request is a length-prefixed structured frame (title and body fields); the broker reads the
+  length first and refuses an over-limit frame unread, with a `reason`. The broker's state, bounds
+  and records do not depend on the extension host pump. A typed yes answers only a request whose
+  dialog oxa has already shown: `serve` picks the request, creates its `DialogCancel` ticket and
+  marks it shown in one step, so a yes typed before the UI registered its dialog is not lost and
+  never dismisses another dialog; a yes with no shown dialog, or for another request id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
   trusts only the sandbox's pinned socket or a listener verified as the session's own oxa process
   (peer credentials: an ancestor, same executable, same user), whatever `OXA_CONFIRM_SOCK` and
   `OXA_CODING_AGENT` say; a fake socket is no answer. Yolo is unchanged (the model already has the
@@ -161,10 +167,16 @@ code, tests, CI and docs; the owner validates on hardware.
   file cannot set it or any of these caps (also `oxa.tools.wait`, `oxa.toolOutputCap`). Review line: a
   change that adds a cap must route its action through `oxa.onExceed`, never hard-code a refusal. A goal
   with no other budget pauses after two replies without a tool call, and a goal under a token cap
-  pauses when a request reports no usage, unless the owner chose `warn`. An explicit bash `timeout: 0` disables the
+  pauses when a request reports no usage, unless the owner chose `warn`. A goal that only warns on
+  idle (a budget of its own, or `warn`) gets one nudge and then waits between requests
+  (`oxa.goal.idleBackoffSeconds`, default 60, doubling, `0` off). An explicit bash `timeout: 0` disables the
   timeout for that call, including a background job, and overrides the foreground default.
   A foreground command that passes its timeout is not killed: it moves to a background job
   (counted in `oxa.bash.maxJobs`). `oxa.bash.waitCap` (user-only, default 300 s) caps `wait_s`.
+- **GitHub context, not approval.** Packet updates the runner fetches (`oxa work` re-reads the issue or
+  PR at each worker launch) and `oxa send` messages to a running worker are context, never an
+  approval; the runner fetches and the worker stays GitHub-isolated. A publish receipt is read from
+  the destination after the push and never force-pushes.
 - **Cargo cache mounts.** The sandbox forwards an owner-set `CARGO_TARGET_DIR` as a
   toolchain location. An external cache needs a separate user-only
   `oxa.sandbox.writePaths` entry. Review environment forwarding and writable mounts independently.
@@ -312,7 +324,9 @@ land CI-control changes separately under normal review, checked on every commit 
 lacks, not only the saved base. A lane push needs the owner's own confirmation through the
 session broker (including from an agent child), or the compatibility
 terminal/`OXA_WORK_OWNER_CONFIRMED=1` path outside an agent tool. A green lane run is evidence
-only for what the lane tests (never `engine/` or `fuzz/` changes).
+only for what the lane tests. Lane coverage has one source, `tools/ci/lane_coverage.json`, read by
+`tools/ci/lane_select.py` and, from the trusted base commit, by the Rust guard; do not add path
+lists to the guard, change the data.
 
 A yolo worker is not sandboxed (see the sandbox standard below): it uses the GitHub access that the owner's settings
 give it.

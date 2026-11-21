@@ -326,39 +326,16 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
-            // #1512 S5: an owner answer to an approval request or the request list; a plain
-            // follow-up takes the inbox path below.
-            Subcommand::Send(words) if words.iter().any(|w| w == "--approve" || w == "--approvals") => {
-                crate::approve_cmd::run(&words, &dirs, &cwd, env, &mut *stdout)
-            }
             Subcommand::Local(_) if is_agent(env) => Err(OxaError::new(
                 codes::INVALID,
                 "Local model setup requires the owner outside an agent tool",
             )),
             Subcommand::Local(words) => run_local(&words, &dirs, &cwd, &mut *stdout),
-            Subcommand::Send(words) => match words.as_slice() {
-                [id, text] if oxa_session::valid_inbox_id(id) => {
-                    let mut piped = String::new();
-                    let read = if text == "-" {
-                        stdin
-                            .read_to_string(&mut piped)
-                            .map(|_| ())
-                            .map_err(|e| OxaError::io("cannot read session message from stdin", &e))
-                    } else {
-                        Ok(())
-                    };
-                    read.and_then(|()| {
-                        let message = if text == "-" { &piped } else { text };
-                        oxa_session::send_inbox(&dirs.agent_dir, id, message)
-                            .map(|_| 0)
-                            .map_err(|e| OxaError::io("cannot send session message", &e))
-                    })
-                }
-                _ => Err(OxaError::new(
-                    codes::USAGE,
-                    "Usage: oxa send <session-id> <text|->",
-                )),
-            },
+            // #1512 S5: a follow-up (with its delivery receipt), an owner answer to an approval
+            // request, or the request list; `approve_cmd` parses every form.
+            Subcommand::Send(words) => {
+                crate::approve_cmd::run(&words, &dirs, &cwd, env, &mut *stdout, &mut *stdin)
+            }
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
             Subcommand::ReportIssue(words) => crate::run_report_issue(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Wipe(words) => crate::run_wipe(
@@ -2081,7 +2058,9 @@ fn run_headless(
             headless_inbox_enabled(&built.settings),
         ),
     };
+    built.result_facts.ci_polls(session.stats().ci_polls);
     built.result_facts.goal(session.goal());
+    built.result_facts.finish(session.stats());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
