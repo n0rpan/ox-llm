@@ -360,30 +360,40 @@ mod tests {
         record
     }
 
-    #[test]
-    fn a_recorded_pr_is_published_even_when_the_push_readback_is_unknown() {
-        let head = "b".repeat(40);
-        // A lane run that concluded while its verdict was still owed: nothing accepted yet.
-        let mut record = accepted(&head);
-        record.acceptance_outcome = None;
+    /// A rejected push: the remote branch is behind the requested commit, nothing recorded as PR.
+    fn rejected(head: &str) -> Record {
+        let mut record = accepted(head);
         record.outcome = Outcome::Blocked;
         record.publish_receipt = Some(crate::PublishReceipt {
-            requested: head.clone(),
-            remote: None,
-            class: crate::Divergence::RemoteUnknown,
+            requested: head.into(),
+            remote: Some("c".repeat(40)),
+            class: crate::Divergence::RemoteBehind,
         });
-        record.pull_request = Some("https://github.com/example/project/pull/1".into());
+        record
+    }
+
+    #[test]
+    fn a_rejected_lane_push_with_no_pr_is_reported_as_pending() {
+        let head = "b".repeat(40);
+        let mut record = rejected(&head);
         record.lane = Some(crate::lane::LaneVerdict {
             head: head.clone(),
-            run_id: 1,
-            conclusion: "success".into(),
+            run_id: 7,
+            conclusion: "failure".into(),
             failed: Vec::new(),
         });
-        // The publication action finished and recorded the PR: nothing is owed any more.
-        assert!(!publication_pending(&record));
+        assert!(publication_pending(&record));
         let status = PublicationStatus::read(&record, 0).expect("reported, not hidden");
-        assert_eq!(status.phase, "published_readback_unknown");
-        assert!(status.disposition.contains("could not be read back"));
+        assert_eq!(status.phase, "committed_no_push_recorded");
+        // The rejected push itself is not walked again: the same shape with no lane run is
+        // an ordinary execution attempt, and a lane that never ran owes nothing yet.
+        let mut execution = accepted(&head);
+        execution.outcome = Outcome::Blocked;
+        execution.publish_receipt = record.publish_receipt.clone();
+        assert!(!publication_pending(&execution));
+        let mut no_lane_run = accepted(&head);
+        no_lane_run.acceptance_outcome = None;
+        assert!(!publication_pending(&no_lane_run));
     }
 
     #[test]
@@ -392,6 +402,10 @@ mod tests {
         assert!(publication_pending(&record));
         assert_eq!(
             PublicationStatus::summary(&record, 0).unwrap(),
+            "publication pending: committed_no_push_recorded (age unknown)"
+        );
+        assert_eq!(
+            PublicationStatus::summary(&rejected(&record.head_sha.clone().unwrap()), 0).unwrap(),
             "publication pending: committed_no_push_recorded (age unknown)"
         );
         let mut published = record.clone();
@@ -403,16 +417,6 @@ mod tests {
         });
         published.pull_request = Some("https://github.com/example/project/pull/1".into());
         assert!(!publication_pending(&published));
-        // A record that only awaits its lane run does not owe publication yet.
-        let mut awaiting_lane = accepted(&head);
-        awaiting_lane.acceptance_outcome = None;
-        awaiting_lane.lane = Some(crate::lane::LaneVerdict {
-            head,
-            run_id: 1,
-            conclusion: "cancelled".into(),
-            failed: Vec::new(),
-        });
-        assert!(!publication_pending(&awaiting_lane));
     }
 
     #[test]
