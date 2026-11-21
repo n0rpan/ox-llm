@@ -29,7 +29,8 @@ thread_local! {
     static AGENT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 /// The bearer header of the local client token the running lead wrote for its owner.
-/// The start line is printed before the file is published, so wait briefly for it.
+/// A local lead publishes the token before it reports its listener; the brief wait covers a
+/// read that races the atomic replace.
 fn bearer() -> String {
     AGENT.with(|agent| {
         let dir = agent
@@ -81,15 +82,25 @@ fn start_with_situation(
     );
     let stdout = child.0.stdout.take().unwrap();
     let (send, receive) = std::sync::mpsc::channel();
+    // Keep draining until the child exits: after the listener line it prints the URL for the
+    // owner, and a closed read end would kill it with EPIPE before it serves a request.
     std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut line);
-        let _ = send.send(line);
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if send.send(line).is_err() {
+                break;
+            }
+        }
     });
-    assert!(receive
-        .recv_timeout(Duration::from_secs(10))
-        .unwrap()
-        .contains("listening"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let line = receive
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .expect("lead serve did not report its listener");
+        if line.contains("listening") {
+            break;
+        }
+    }
     child
 }
 
@@ -828,12 +839,11 @@ fn authorized_durable_asks_reach_the_protected_view_as_a_live_readback() {
     let mut child = Running(invocation.spawn().unwrap());
     let stdout = child.0.stdout.take().unwrap();
     let (send, receive) = std::sync::mpsc::channel();
+    // Drain the whole start output, as `start_with_situation` does, so the URL line finds a reader.
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
-            let line = line.unwrap_or_default();
-            let found = line.contains("listening");
-            let _ = send.send(line);
-            if found {
+            let Ok(line) = line else { break };
+            if send.send(line).is_err() {
                 break;
             }
         }
