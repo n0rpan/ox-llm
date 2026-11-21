@@ -39,6 +39,7 @@ pub mod envnote;
 mod epoch;
 mod exec;
 mod fire;
+pub mod fork;
 pub mod goal;
 mod host;
 pub mod loopguard;
@@ -65,6 +66,7 @@ mod think;
 mod toolset;
 mod tune;
 mod user_bash;
+pub mod wire_evidence;
 
 pub use agent_loop::{append_entry, run_loop, RunEnd};
 pub use commands::{
@@ -74,6 +76,7 @@ pub use commands::{
 pub use compaction::{boot_preload, compact_now, idle_prefill, maybe_compact, SETTING_BOOT_PRELOAD};
 pub use epoch::{epoch_inputs, open_epoch, reload, replay_prefix};
 pub use exec::{execute_calls, request, RequestOpts, EXTENSION_REBASE_ENTRY, TOOL_CALL_ID_ENV};
+pub use fork::ForkSeed;
 pub use host::{serve_host, serve_pending, CoreHost, HostRequest};
 pub use navigate::{clone_current, fork_at, fork_from, navigate, ForkPosition, Forked};
 pub use outcome::RunOutcome;

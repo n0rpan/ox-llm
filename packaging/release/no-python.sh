@@ -3,10 +3,11 @@
 #   no-python.sh ARCHIVE.tar.gz|DIR ...   scan release archives or unpacked trees
 #   no-python.sh --list FILE              scan the regular files named in FILE (one path per line)
 # Rules: no .py/.pyc/.pyo or __pycache__; no python shebang; every file under bin/ or usr/bin/
-# is an ELF binary; no controller payload paths; no python invocation in non-ELF scripts,
+# is a native binary (ELF; Mach-O arm64 only in a *-macos-arm64.tar.gz archive); no controller payload paths; no python invocation in non-ELF scripts,
 # units and hooks (licence, notice, readme, manifest and json files are documentation).
 set -eu
 fail=0
+native=7f454c46
 note() { printf 'no-python: %s\n' "$1" >&2; fail=1; }
 
 scan_list() { # $1 = file with one path per line
@@ -35,9 +36,9 @@ scan_list() { # $1 = file with one path per line
     esac
     case $f in
       */usr/bin/*|*/bin/*)
-        [ "$magic" = 7f454c46 ] || note "non-native executable: $f" ;;
+        [ "$magic" = "$native" ] || note "non-native executable: $f" ;;
     esac
-    [ "$magic" = 7f454c46 ] && continue
+    [ "$magic" = "$native" ] && continue
     case $f in
       */licenses/*) continue ;;
     esac
@@ -60,6 +61,10 @@ if [ "${1:-}" = "--list" ]; then
 else
   [ $# -ge 1 ] || { echo "usage: no-python.sh ARCHIVE_OR_DIR..." >&2; exit 2; }
   for target in "$@"; do
+    case $target in
+      *-macos-arm64.tar.gz) native=cffaedfe ;;
+      *) native=7f454c46 ;;
+    esac
     if [ -d "$target" ]; then
       root=$target
     else

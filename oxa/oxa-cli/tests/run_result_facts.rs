@@ -211,3 +211,145 @@ fn a_failed_request_with_no_usage_is_an_explicit_incomplete_lower_bound() {
     assert_eq!(result["tokens"]["complete"], false);
     assert_eq!(result["tokens"]["unreported_requests"], 1);
 }
+
+#[test]
+fn an_explicit_allowed_set_reports_no_extra_for_a_named_write() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"cacheWarming":"off","oxa":{"envNote":false,"bootPreload":false}}"#,
+    );
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool(
+                "save",
+                "write",
+                r#"{"path":"result.txt","content":"actual file"}"#,
+            ),
+            ScriptTurn::text("done"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = command(&env, &server.url())
+        .args([
+            "-p",
+            "--no-session",
+            "--no-mcp",
+            "--no-extensions",
+            "--no-context-files",
+            "--tools",
+            "write",
+            "--allowed-changed-files",
+            "result.txt",
+            "make a file",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = terminal(&output.stderr);
+    assert_eq!(result["files_changed_evidence"], "tool-observed");
+    assert_eq!(result["files_changed"], serde_json::json!(["result.txt"]));
+    assert_eq!(result["files_changed_allowed"], serde_json::json!(["result.txt"]));
+    assert_eq!(result["files_changed_extra"], serde_json::json!([]));
+}
+
+#[test]
+fn an_explicit_allowed_set_reports_a_named_write_outside_it_as_extra() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"cacheWarming":"off","oxa":{"envNote":false,"bootPreload":false}}"#,
+    );
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool(
+                "save",
+                "write",
+                r#"{"path":"result.txt","content":"actual file"}"#,
+            ),
+            ScriptTurn::text("done"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = command(&env, &server.url())
+        .args([
+            "-p",
+            "--no-session",
+            "--no-mcp",
+            "--no-extensions",
+            "--no-context-files",
+            "--tools",
+            "write",
+            "--allowed-changed-files",
+            "other.txt",
+            "make a file",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = terminal(&output.stderr);
+    assert_eq!(result["files_changed_evidence"], "tool-observed");
+    assert_eq!(result["files_changed"], serde_json::json!(["result.txt"]));
+    assert_eq!(result["files_changed_allowed"], serde_json::json!(["other.txt"]));
+    assert_eq!(result["files_changed_extra"], serde_json::json!(["result.txt"]));
+}
+
+#[test]
+fn without_an_allowed_set_the_new_fields_stay_null() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"cacheWarming":"off","oxa":{"envNote":false,"bootPreload":false}}"#,
+    );
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool(
+                "save",
+                "write",
+                r#"{"path":"result.txt","content":"actual file"}"#,
+            ),
+            ScriptTurn::text("done"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = command(&env, &server.url())
+        .args([
+            "-p",
+            "--no-session",
+            "--no-mcp",
+            "--no-extensions",
+            "--no-context-files",
+            "--tools",
+            "write",
+            "make a file",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = terminal(&output.stderr);
+    assert!(result["files_changed"].is_null());
+    assert_eq!(result["files_changed_evidence"], "unavailable");
+    assert!(result["files_changed_extra"].is_null());
+    assert!(result["files_changed_allowed"].is_null());
+}

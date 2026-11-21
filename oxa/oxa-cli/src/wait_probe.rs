@@ -6,12 +6,15 @@
 //!   pending. A run for another commit never counts.
 //! * `{"kind":"pr_merged","pr":<n>}`: done when the pull request is merged; closed without a
 //!   merge is an error (it can never merge by waiting).
+//! * `{"kind":"pr_activity","pr":<n>,"head":<40 hex>}`: see `pr_activity.rs`; done when a review or
+//!   PR comment is new, the head moved, or the PR is merged or closed.
 //!
 //! SECURITY. This runs `gh` with the owner's login, outside the sandbox, on arguments a model
 //! chose. So: `gh` is started with an argument vector (never a shell), in fixed shapes; `sha`
 //! is 40 hex characters, `workflow` is `[A-Za-z0-9._ -]{1,100}` starting with an alphanumeric,
-//! `pr` is a positive integer; the repository is read from the `origin` remote of the session
-//! cwd (github.com only) and never from the call; every call has a deadline and an output cap;
+//! `pr` is a positive integer; the repository is the call's optional `"repo":"OWNER/NAME"`
+//! (validated shape, github.com only, read-only probes) and otherwise the `origin` remote of the
+//! session cwd; every call has a deadline and an output cap;
 //! stderr is discarded and no token or environment value is printed; `gh` is found with
 //! `netguard::trusted_executable_for` like every other host tool, so a project shim is never run.
 //! The read probes `pr_view`, `pr_checks`, `run_log_failed` and `issue_view` live in `gh_probe.rs`
@@ -24,14 +27,20 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// One `gh` or `git` call must finish within this.
-const CALL_DEADLINE: Duration = Duration::from_secs(20);
+pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(20);
 /// Most bytes of one `gh` answer that are read; more is an error.
 pub(crate) const OUTPUT_CAP: usize = 256 * 1024;
 /// Most failed job names put in the evidence.
 const MAX_FAILED_JOBS: usize = 20;
+
+/// The kinds this set answers with `gh`: one predicate for the answer and the network access it
+/// declares, so a later kind is covered by both at once.
+fn answers_kind(kind: &str) -> bool {
+    matches!(kind, "ci" | "pr_merged" | "pr_activity") || crate::gh_probe::is_read_kind(kind)
+}
 
 /// The hook set answering `ci` and `pr_merged`.
 pub(crate) struct ProbeHooks {
@@ -42,6 +51,8 @@ pub(crate) struct ProbeHooks {
     /// A runner-owned `oxa work` worker has no GitHub access (AGENTS.md); the runner owns
     /// every GitHub call, including these probes.
     runner_owns_github: bool,
+    /// What `wait until pr_activity` has already seen, per PR (`pr_activity.rs`).
+    pub(crate) activity: Mutex<std::collections::HashMap<u64, crate::pr_activity::ActivityBaseline>>,
 }
 
 impl ProbeHooks {
@@ -53,6 +64,7 @@ impl ProbeHooks {
             repo: Mutex::new(None),
             runner_owns_github: std::env::var_os(oxa_work::RUNNER_GITHUB_ENV)
                 .is_some_and(|value| value == "1"),
+            activity: Mutex::default(),
         }
     }
 
@@ -84,6 +96,7 @@ impl ProbeHooks {
             path: Some(path.as_os_str().to_os_string()),
             repo: Mutex::new(Some(repo.to_string())),
             runner_owns_github,
+            activity: Mutex::default(),
         }
     }
 
@@ -103,6 +116,11 @@ impl ProbeHooks {
     /// The home directory as text, for the output scrubber.
     pub(crate) fn home_string(&self) -> String {
         self.home.to_string_lossy().into_owned()
+    }
+
+    /// A runner-owned `oxa work` worker has no GitHub access; the runner owns every call.
+    pub(crate) fn runner_owns_github(&self) -> bool {
+        self.runner_owns_github
     }
 
     /// Like `run`, with its own read cap, and the listed exit codes count as an answer.
@@ -158,16 +176,36 @@ impl ProbeHooks {
         Ok(repo)
     }
 
+    /// The repository of one probe: the call's own `repo` when it has the `OWNER/NAME` shape
+    /// (the probes are read-only and `GH_HOST` stays github.com), else the cached origin of the
+    /// cwd. Only the origin-derived value is cached.
+    pub(crate) fn repo_for(&self, args: &Value, budget: Duration) -> Result<String, String> {
+        match args.get("repo") {
+            None | Some(Value::Null) => self
+                .repo(budget)
+                .map_err(|error| format!("{error}; pass \"repo\":\"OWNER/NAME\" to name the repository")),
+            Some(Value::String(repo)) if oxa_work::valid_repository(repo) => Ok(repo.clone()),
+            Some(_) => Err("repo must be OWNER/NAME".into()),
+        }
+    }
+
     pub(crate) fn gh(&self, args: &[&str], budget: Duration) -> Result<Value, String> {
         let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         let out = self.run("gh", &args, budget)?;
         serde_json::from_str(&out).map_err(|_| "gh printed output that is not JSON".to_string())
     }
 
-    fn ci(&self, args: &Value, budget: Duration) -> Result<Option<String>, String> {
+    pub(crate) fn remaining(deadline: Instant) -> Result<Duration, String> {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| "the wait deadline expired during the GitHub probe".to_string())
+    }
+
+    fn ci(&self, args: &Value, deadline: Instant) -> Result<Option<String>, String> {
         let sha = valid_sha(args["sha"].as_str())?;
         let workflow = valid_workflow(args["workflow"].as_str())?;
-        let repo = self.repo(budget)?;
+        let repo = self.repo_for(args, Self::remaining(deadline)?)?;
         let runs = self.gh(
             &[
                 "run",
@@ -183,7 +221,7 @@ impl ProbeHooks {
                 "-L",
                 "5",
             ],
-            budget,
+            Self::remaining(deadline)?,
         )?;
         // Only a run of exactly this head counts; the newest one decides.
         let run = runs
@@ -207,7 +245,10 @@ impl ProbeHooks {
         let mut text = format!("{workflow} run {id} at {sha}: {conclusion}");
         if conclusion != "success" {
             let id = id.to_string();
-            let jobs = self.gh(&["run", "view", &id, "-R", &repo, "--json", "jobs"], budget)?;
+            let jobs = self.gh(
+                &["run", "view", &id, "-R", &repo, "--json", "jobs"],
+                Self::remaining(deadline)?,
+            )?;
             let failed: Vec<String> = jobs["jobs"]
                 .as_array()
                 .into_iter()
@@ -231,12 +272,12 @@ impl ProbeHooks {
         Ok(Some(text))
     }
 
-    fn pr_merged(&self, args: &Value, budget: Duration) -> Result<Option<String>, String> {
+    fn pr_merged(&self, args: &Value, deadline: Instant) -> Result<Option<String>, String> {
         let pr = args["pr"]
             .as_u64()
             .filter(|n| *n > 0)
             .ok_or("pr must be a positive integer")?;
-        let repo = self.repo(budget)?;
+        let repo = self.repo_for(args, Self::remaining(deadline)?)?;
         let pr_arg = pr.to_string();
         let view = self.gh(
             &[
@@ -248,7 +289,7 @@ impl ProbeHooks {
                 "--json",
                 "state,mergedAt,headRefOid",
             ],
-            budget,
+            Self::remaining(deadline)?,
         )?;
         let merged = view["state"].as_str() == Some("MERGED")
             || view["mergedAt"].as_str().is_some_and(|m| !m.is_empty());
@@ -265,7 +306,7 @@ impl ProbeHooks {
 }
 
 /// A 40-character hex commit id, lowercased.
-fn valid_sha(sha: Option<&str>) -> Result<String, String> {
+pub(crate) fn valid_sha(sha: Option<&str>) -> Result<String, String> {
     match sha {
         Some(s) if s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(s.to_ascii_lowercase()),
         _ => Err("sha must be a full 40-character hex commit id".into()),
@@ -331,13 +372,24 @@ impl Hooks for ProbeHooks {
     fn prompt_sections(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+    fn poll_access(&self, until: &Value) -> Vec<oxa_proto::Access> {
+        let kind = until["kind"].as_str().unwrap_or("");
+        // A runner-owned session runs no gh at all: nothing to ask for.
+        if answers_kind(kind) && !self.runner_owns_github {
+            vec![oxa_proto::Access::Net {
+                host: "github.com".to_string(),
+            }]
+        } else {
+            Vec::new()
+        }
+    }
     fn poll_event(
         &self,
         kind: &str,
         args: &Value,
         budget: Duration,
     ) -> Option<Result<Option<String>, String>> {
-        if kind != "ci" && kind != "pr_merged" && !crate::gh_probe::is_read_kind(kind) {
+        if !answers_kind(kind) {
             return None;
         }
         if self.runner_owns_github {
@@ -349,7 +401,7 @@ impl Hooks for ProbeHooks {
         }
         if oxa_proto::offline() {
             return Some(Err(oxa_proto::offline_error(
-                "wait until ci / pr_merged (GitHub)",
+                "wait until ci / pr_merged / pr_activity (GitHub)",
             )
             .to_string()));
         }
@@ -358,9 +410,11 @@ impl Hooks for ProbeHooks {
         if budget.is_zero() {
             return Some(Ok(None));
         }
+        let deadline = Instant::now() + budget;
         Some(match kind {
-            "ci" => self.ci(args, budget),
-            "pr_merged" => self.pr_merged(args, budget),
+            "ci" => self.ci(args, deadline),
+            "pr_merged" => self.pr_merged(args, deadline),
+            "pr_activity" => self.pr_activity(args, deadline),
             _ => self.read_probe(kind, args, budget).map(Some),
         })
     }
@@ -397,7 +451,7 @@ mod tests {
             for d in [&bin, &work, &home] {
                 mk(d);
             }
-            let script = "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\necho \"$@\" >> \"$dir/calls\"\necho \"host=$GH_HOST\" >> \"$dir/hosts\"\ncase \"$1 $2\" in\n  \"run list\") cat \"$dir/run_list.json\" ;;\n  \"run view\") cat \"$dir/run_view.json\" ;;\n  \"pr view\") cat \"$dir/pr_view.json\" ;;\n  *) exit 2 ;;\nesac\n";
+            let script = "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\necho \"$@\" >> \"$dir/calls\"\necho \"host=$GH_HOST\" >> \"$dir/hosts\"\n[ ! -f \"$dir/delay\" ] || sleep \"$(cat \"$dir/delay\")\"\ncase \"$1 $2\" in\n  \"run list\") cat \"$dir/run_list.json\" ;;\n  \"run view\") cat \"$dir/run_view.json\" ;;\n  \"pr view\") cat \"$dir/pr_view.json\" ;;\n  *) exit 2 ;;\nesac\n";
             let gh = bin.join("gh");
             std::fs::write(&gh, script).unwrap();
             std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -496,6 +550,26 @@ mod tests {
     }
 
     #[test]
+    fn ci_probe_shares_one_deadline_across_subprocesses() {
+        let f = Fake::new("shared-deadline");
+        f.answer(
+            "run_list",
+            &format!(
+                r#"[{{"databaseId":11,"status":"completed","conclusion":"failure","headSha":"{SHA}"}}]"#
+            ),
+        );
+        f.answer("run_view", r#"{"jobs":[]}"#);
+        std::fs::write(f.bin.join("delay"), "0.25").unwrap();
+
+        let started = Instant::now();
+        assert!(f.poll_within(ci_args(SHA), Duration::from_millis(400)).is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(650),
+            "each subprocess must not receive a fresh 400ms budget"
+        );
+    }
+
+    #[test]
     fn probe_rejects_malformed_sha_and_workflow() {
         let f = Fake::new("invalid");
         f.answer("run_list", "[]");
@@ -561,6 +635,38 @@ mod tests {
             &format!(r#"{{"state":"CLOSED","mergedAt":null,"headRefOid":"{SHA}"}}"#),
         );
         assert!(f.poll(pr).unwrap_err().contains("closed without being merged"));
+    }
+
+    #[test]
+    fn an_explicit_repo_needs_no_origin_and_a_malformed_one_starts_nothing() {
+        let f = Fake::new("explicit");
+        f.answer(
+            "pr_view",
+            &format!(r#"{{"state":"MERGED","mergedAt":"2026-11-18T10:00:00Z","headRefOid":"{SHA}"}}"#),
+        );
+        let hooks = ProbeHooks::for_test_paths(
+            &f.hooks.cwd,
+            &f.hooks.home,
+            Path::new(f.hooks.path.as_deref().unwrap()),
+            "unused/origin",
+        );
+        *hooks.repo.lock().unwrap() = None;
+        let wait = Duration::from_secs(30);
+        let pr = |repo: Value| json!({"kind": "pr_merged", "pr": 42, "repo": repo});
+        let done = hooks.poll_event("pr_merged", &pr(json!("acme/widgets")), wait);
+        assert!(done.unwrap().unwrap().is_some());
+        assert!(f.calls().unwrap().contains("pr view 42 -R acme/widgets"));
+        // Neither a repo nor an origin: the error says how to name one.
+        let error = hooks
+            .poll_event("pr_merged", &json!({"kind": "pr_merged", "pr": 42}), wait)
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("repo"), "{error}");
+        let before = f.calls();
+        for bad in [json!("bad repo"), json!("a/b/c"), json!(7)] {
+            assert!(hooks.poll_event("pr_merged", &pr(bad), wait).unwrap().is_err());
+        }
+        assert_eq!(f.calls(), before, "a malformed repo starts no process");
     }
 
     #[test]

@@ -323,8 +323,8 @@ impl ProgressObserver for StatusWriter {
                 snapshot.between();
                 true
             }
-            Progress::Advanced => false,
-            Progress::GoalControlCommitted { .. } => return,
+            Progress::Advanced | Progress::Prefix { .. } | Progress::FilesChanged { .. } => false,
+            Progress::GoalControlCommitted { .. } | Progress::WrapUp { .. } => return,
             Progress::GoalStatus { status, reason } => {
                 snapshot.goal_status = (status != "none").then_some(status);
                 snapshot.goal_reason = reason.map(|text| text.chars().take(256).collect());
@@ -417,6 +417,11 @@ pub(crate) fn run(
             "usage: oxa status <session-id|session-file> [--session-dir <dir>]",
         )
     };
+    // `oxa status --json` is the suite's status object for the panel. The session form below is
+    // unchanged; `--json` is never a session id.
+    if matches!(words, [flag] if flag == "--json") {
+        return crate::suite_status::run(dirs, cwd, env, out);
+    }
     let Some(id) = words.first().filter(|id| !id.starts_with('-')) else {
         return Err(usage());
     };
@@ -470,7 +475,7 @@ fn strip_unproven_local(value: &mut Value) {
     }
 }
 
-fn proven_local_engine(value: &Value) -> bool {
+pub(crate) fn proven_local_engine(value: &Value) -> bool {
     let Some(child) = value["local_engine_pid"]
         .as_u64()
         .and_then(|pid| u32::try_from(pid).ok())
@@ -505,7 +510,7 @@ fn proven_local_engine(value: &Value) -> bool {
     owned && safe && scope
 }
 
-fn read_snapshot(path: &Path) -> Result<Value, OxaError> {
+pub(crate) fn read_snapshot(path: &Path) -> Result<Value, OxaError> {
     for _ in 0..8 {
         let before = fs::symlink_metadata(path).map_err(|e| OxaError::io("cannot read worker status", &e))?;
         if !before.is_file() {

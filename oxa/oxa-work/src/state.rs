@@ -33,6 +33,8 @@ pub enum Step {
     Repair,
     Recheck,
     Saving,
+    /// The saved commit is pushed and its lane workflow is being observed.
+    Lane,
     #[default]
     Finished,
     Publishing,
@@ -66,6 +68,8 @@ pub(crate) struct Execution {
     pub base: String,
     pub prompt: String,
     pub commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived_commands: Vec<String>,
     /// Crates the worker declared as requiring hosted acceptance tests.
     /// `None` until a worker declares any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,13 +167,18 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         .ok_or("task checkpoint record is missing")?;
     let optional = [
         "pull_request",
+        "head_saved_at_ms",
         "draft",
         "problem_notes",
         "reports",
         "acceptance_outcome",
         "task_tokens",
         "worker_launch_revision",
+        "lane",
+        "lane_repairs",
         "checks",
+        "publish_receipt",
+        "packet",
     ];
     if keys.iter().any(|key| !record.contains_key(*key))
         || record
@@ -319,6 +328,7 @@ mod tests {
             prompt: "Synthetic task".into(),
             max_time: crate::default_max_time(),
             reviewed_pull_request: None,
+            lane_ci: false,
         };
         let record = crate::blocked_record(&task, String::new());
         State::new(task, record, false)
@@ -341,6 +351,7 @@ mod tests {
                 base: base.clone(),
                 prompt: "saved prompt".into(),
                 commands: vec!["saved command".into()],
+                derived_commands: Vec::new(),
                 declared: None,
                 worker_error: None,
                 merge_error: None,
@@ -355,9 +366,15 @@ mod tests {
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,
                 offline: true,
+                gh_binary: None,
+                push_approved: false,
+                content_scan: None,
                 runner_owns_github: false,
+                github_token_command: Vec::new(),
+                github_token_write_paths: Vec::new(),
                 autonomy: Default::default(),
-                autonomy_now: None,
+                worker_github: Default::default(),
+                authority_now: None,
                 storage: fixture.0.path().to_path_buf(),
             };
             for rerun in [false, true] {

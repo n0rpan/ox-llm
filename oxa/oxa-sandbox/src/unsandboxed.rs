@@ -5,7 +5,7 @@
 //! masking, the network setting in [`crate::NetSandbox`]) are unaffected.
 use crate::bwrap::base_env;
 use crate::layout::Layout;
-use crate::run::{run_unsandboxed_env, run_unsandboxed_stdin};
+use crate::run::{run_unsandboxed_env, run_unsandboxed_stdin_env};
 use crate::NO_OS_SANDBOX_NOTICE;
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::PathBuf;
@@ -23,7 +23,9 @@ pub struct Unsandboxed {
 
 impl Unsandboxed {
     fn env(&self, s: &ExecSpec) -> Vec<(String, String)> {
-        base_env(s, &self.home.to_string_lossy(), &self.layout)
+        let mut e = base_env(&self.home.to_string_lossy(), &self.layout);
+        e.extend(s.env.iter().cloned());
+        e
     }
 }
 
@@ -41,14 +43,21 @@ impl Sandbox for Unsandboxed {
     fn persistence_notice(&self) -> Option<&str> {
         Some(NO_OS_SANDBOX_NOTICE)
     }
+    fn host_rights(&self) -> bool {
+        true
+    }
     fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
         Vec::new()
     }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        run_unsandboxed_env(s, Some(&self.env(s)), c, live, true)
+        let mut result = run_unsandboxed_env(s, Some(&self.env(s)), c, live, true);
+        result.unsandboxed = true;
+        result
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        run_unsandboxed_env(s, Some(&self.env(s)), c, live, false)
+        let mut result = run_unsandboxed_env(s, Some(&self.env(s)), c, live, false);
+        result.unsandboxed = true;
+        result
     }
     fn run_with_stdin(
         &self,
@@ -57,6 +66,6 @@ impl Sandbox for Unsandboxed {
         c: &CancelToken,
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
-        run_unsandboxed_stdin(s, stdin, c, live, &self.env(s))
+        run_unsandboxed_stdin_env(s, stdin, c, live, &self.env(s))
     }
 }

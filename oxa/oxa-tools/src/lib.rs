@@ -20,6 +20,8 @@
 mod ask;
 mod bash;
 mod checked;
+mod ci_poll;
+mod deliverable;
 pub mod descriptions;
 mod diff;
 mod edit;
@@ -33,11 +35,12 @@ mod write;
 
 pub use ask::AskTool;
 pub use bash::{net_for as bash_net_for, BashTool, ShellConfig};
+pub use deliverable::{observe as observe_deliverable, DeliverableTool, State as DeliverableState};
 pub use diff::{apply_edits, detect_line_ending, strip_bom, unified_diff, Edit, EditOutcome};
 pub use edit::EditTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
-pub use jobs::{JobInfo, JobRead, JobRegistry, JobStatus, BUFFER_CAP, MAX_JOBS, READ_CAP};
+pub use jobs::{JobDone, JobInfo, JobRead, JobRegistry, JobStatus, TakenJob, BUFFER_CAP, MAX_JOBS, READ_CAP};
 pub use ls::LsTool;
 pub use read::ReadTool;
 pub use shape::{shape, strip_ansi};
@@ -127,6 +130,18 @@ pub fn resolve_path(cwd: &Path, arg: &str) -> PathBuf {
 /// Explicit absolute `/tmp` paths name session scratch, except host mounts and outputs.
 /// Relative paths retain their host-cwd meaning, including `..` outside the workspace.
 /// This translates names only: the policy still judges the resolved host path.
+/// #955: the note a file tool adds to a success message when the file it wrote is hidden from
+/// the sandboxed bash tool (warn, never refuse). Nothing for a path bash shares (read-only or
+/// not) and nothing under the session's `/tmp`, which bash sees as `/tmp`.
+pub(crate) fn bash_view_note(cx: &oxa_proto::ToolCtx, path: &Path) -> Option<String> {
+    if cx.sandbox.scratch_dir().is_some_and(|sc| path.starts_with(sc)) {
+        return None;
+    }
+    (cx.sandbox.bash_view(cx.cwd, path, true) == oxa_proto::BashView::Hidden).then(|| {
+        "Note: sandboxed bash cannot see this path (it is hidden there). Add it to oxa.sandbox.readPaths or oxa.sandbox.writePaths in user settings to share it.".to_string()
+    })
+}
+
 pub fn resolve_tool_path(cx: &oxa_proto::ToolCtx, arg: &str) -> PathBuf {
     let abs = resolve_path(cx.cwd, arg);
     let Ok(rest) = abs.strip_prefix("/tmp") else {

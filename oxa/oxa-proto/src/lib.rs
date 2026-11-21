@@ -52,6 +52,7 @@ mod wire;
 pub mod bounded_io;
 pub mod control;
 pub mod guard;
+pub mod owner_reply;
 pub mod panic;
 pub mod time;
 pub mod work;
@@ -77,6 +78,38 @@ pub use serde_json::Value;
 /// Version of this frozen interface. Bumped only by the architect.
 pub const PROTO_VERSION: u32 = 4;
 
+/// The version this build reports to its owner (`oxa --version`, status, headers).
+///
+/// A release build stamps the full release name (for a dev build `0.2.2-dev.29+1d3c121`, no
+/// leading `v`) through the `OX_BUILD_VERSION` environment variable at compile time; every
+/// other build (plain `cargo build`, all tests) reports the package version. Protocol values
+/// (User-Agent, engine fingerprint) deliberately stay on `CARGO_PKG_VERSION`.
+pub const BUILD_VERSION: &str =
+    select_build_version(option_env!("OX_BUILD_VERSION"), env!("CARGO_PKG_VERSION"));
+
+/// The stamp when present and non-empty, else the package version.
+pub const fn select_build_version(stamp: Option<&'static str>, package: &'static str) -> &'static str {
+    match stamp {
+        Some(s) if !s.is_empty() => s,
+        _ => package,
+    }
+}
+
+#[cfg(test)]
+mod build_version_tests {
+    use super::select_build_version as select;
+
+    #[test]
+    fn stamp_wins_empty_or_absent_falls_back() {
+        assert_eq!(
+            select(Some("0.2.2-dev.29+1d3c121"), "0.2.1"),
+            "0.2.2-dev.29+1d3c121"
+        );
+        assert_eq!(select(Some(""), "0.2.1"), "0.2.1");
+        assert_eq!(select(None, "0.2.1"), "0.2.1");
+    }
+}
+
 /// Product names (plan sec. 0). Never spell these literally elsewhere.
 pub mod names {
     /// Binary and product name.
@@ -95,6 +128,9 @@ pub mod names {
     /// Environment variable (in `ToolCtx::env`) that carries the id of the running tool call;
     /// extension tools pass it to `execute` as `toolCallId`.
     pub const ENV_TOOL_CALL_ID: &str = "OXA_TOOL_CALL_ID";
+    /// Set to `1` by every spawner of an unattended run (worker, subagent child, `oxa work`):
+    /// no person is at the keyboard, so the OS sandbox stays on by default (#1512).
+    pub const ENV_UNATTENDED: &str = "OXA_UNATTENDED";
     /// Session file format version (pi v3 envelope).
     pub const SESSION_VERSION: u32 = 3;
 }

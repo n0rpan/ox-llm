@@ -1218,3 +1218,64 @@ fn every_session_has_its_own_scratch() {
         .unwrap()
         .contains("discarded after each command"));
 }
+
+fn view_machine(env: &TestEnv) -> Layout {
+    let home = env.home();
+    env.write("home/.cargo/bin/x", "");
+    env.write("home/shared/f", "");
+    env.write("home/ro/f", "");
+    env.write("work/f", "");
+    Layout {
+        read: vec![home.join("ro")],
+        write: vec![home.join("shared")],
+        ..Layout::default()
+    }
+}
+
+/// #955: the view says what the mounts show: hidden under the home, shared in the cwd and in a
+/// write path, read-only in a read path and in the plain root.
+#[test]
+fn bash_view_follows_the_mounts() {
+    use oxa_proto::BashView::{Hidden, ReadOnly, Same};
+    let env = TestEnv::new();
+    let layout = view_machine(&env);
+    let home = env.home();
+    let work = env.work();
+    let b = Bwrap {
+        bwrap: PathBuf::from("bwrap"),
+        home: home.clone(),
+        layout,
+    };
+    assert_eq!(b.bash_view(&work, &home.join(".cargo/bin/x"), true), Hidden);
+    assert_eq!(b.bash_view(&work, &work.join("f"), true), Same);
+    assert_eq!(b.bash_view(&work, &work.join("new/deeper/file"), true), Same);
+    assert_eq!(b.bash_view(&work, &home.join("shared/f"), true), Same);
+    assert_eq!(b.bash_view(&work, &home.join("ro/f"), true), ReadOnly);
+    assert_eq!(b.bash_view(&work, Path::new("/etc/hostname"), true), ReadOnly);
+    // A read-only command sees its cwd read-only.
+    assert_eq!(b.bash_view(&work, &work.join("f"), false), ReadOnly);
+}
+
+/// #955: what the view calls hidden is absent inside the real sandbox, what it calls shared is
+/// present.
+#[test]
+fn bash_view_matches_what_bwrap_shows() {
+    use oxa_proto::BashView::Hidden;
+    let env = TestEnv::new();
+    let layout = view_machine(&env);
+    let Some(b) = real(&env, layout) else {
+        return;
+    };
+    let home = env.home();
+    let work = env.work();
+    for p in [home.join(".cargo/bin/x"), home.join("shared/f"), work.join("f")] {
+        let view = b.bash_view(&work, &p, true);
+        let (_, out) = run(
+            &b,
+            &format!("test -e '{}' && echo present || echo absent", p.display()),
+            &work,
+        );
+        let want = if view == Hidden { "absent" } else { "present" };
+        assert_eq!(out.trim(), want, "{} is {view:?}", p.display());
+    }
+}

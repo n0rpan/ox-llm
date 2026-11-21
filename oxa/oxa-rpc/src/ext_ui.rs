@@ -4,6 +4,7 @@ use crate::server::write_out;
 use crate::{Out, RpcCommand};
 use oxa_proto::{Access, Answer, DangerAnswer, Level, Placement, Ui, Value};
 use serde_json::{json, Map};
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -77,10 +78,6 @@ impl UiRouter {
         // Dropping the senders disconnects the receivers the dialogs wait on.
         waiting.clear();
     }
-    /// Dismiss dialogs waiting now without closing the router to future dialogs.
-    pub fn cancel_waiting(&self) {
-        lock(&self.waiting).clear();
-    }
     /// Drop a dialog that gave up (timeout): a late answer is then not delivered to anyone.
     pub(crate) fn forget(&self, id: &str) {
         lock(&self.waiting).retain(|(w, _)| w != id);
@@ -110,6 +107,67 @@ fn is_cancelled(v: &Value) -> bool {
     v.get("cancelled").and_then(Value::as_bool) == Some(true)
 }
 
+fn confirmed(v: &Value) -> Option<bool> {
+    if is_cancelled(v) {
+        return None;
+    }
+    v.get("confirmed")?.as_bool()
+}
+
+/// Ask a confirmation before the RPC server's input thread exists.
+///
+/// This is the synchronous adapter for the same extension-UI confirmation protocol used by
+/// [`RpcUi::confirm`]. Commands that are not the matching response are saved in `early` so the
+/// server can replay them after startup. EOF, malformed matching responses and cancellation are
+/// all declines.
+pub fn confirm_before_start(
+    stdin: &mut dyn Read,
+    stdout: &mut dyn Write,
+    early: &mut Vec<u8>,
+    title: &str,
+    message: &str,
+) -> bool {
+    let id = new_id();
+    let mut request = request_base(id.clone(), "confirm");
+    request.insert("title".to_string(), Value::from(title));
+    request.insert("message".to_string(), Value::from(message));
+    if writeln!(stdout, "{}", Value::Object(request))
+        .and_then(|()| stdout.flush())
+        .is_err()
+    {
+        return false;
+    }
+
+    loop {
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        let mut eof = false;
+        loop {
+            match stdin.read(&mut byte) {
+                Ok(1) => {
+                    line.push(byte[0]);
+                    if byte[0] == b'\n' {
+                        break;
+                    }
+                }
+                _ => {
+                    eof = true;
+                    break;
+                }
+            }
+        }
+        match crate::parse_command(std::str::from_utf8(&line).unwrap_or_default()) {
+            Ok(cmd) if cmd.kind == "extension_ui_response" && cmd.id.as_deref() == Some(&id) => {
+                return confirmed(&cmd.body) == Some(true);
+            }
+            _ => early.extend_from_slice(&line),
+        }
+        if eof {
+            return false;
+        }
+    }
+}
+
 fn placement_name(at: Placement) -> &'static str {
     match at {
         Placement::AboveEditor => "aboveEditor",
@@ -133,7 +191,29 @@ impl RpcUi {
     /// A dialog: registers the id, writes the request (with `timeout` when given) and waits for
     /// the answer. `None` on timeout, when the router is gone, or when no answer comes.
     fn dialog(&mut self, method: &str, fields: Map<String, Value>, timeout_ms: Option<u32>) -> Option<Value> {
+        self.dialog_with(method, fields, timeout_ms, None)
+    }
+
+    /// [`RpcUi::dialog`] that `cancel` can dismiss. The hook is armed after the id is registered
+    /// and before the request is written, so a cancel that came first is not lost and only this
+    /// dialog is forgotten.
+    fn dialog_with(
+        &mut self,
+        method: &str,
+        fields: Map<String, Value>,
+        timeout_ms: Option<u32>,
+        cancel: Option<&oxa_proto::DialogCancel>,
+    ) -> Option<Value> {
         let (id, rx) = self.router.register();
+        if let Some(cancel) = cancel {
+            let router = self.router.clone();
+            let armed = id.clone();
+            cancel.arm(move || router.forget(&armed));
+            if cancel.is_cancelled() {
+                self.router.forget(&id);
+                return None;
+            }
+        }
         let mut m = request_base(id.clone(), method);
         m.extend(fields);
         if let Some(ms) = timeout_ms {
@@ -179,15 +259,20 @@ impl Ui for RpcUi {
         f.insert("title".to_string(), Value::from(title));
         f.insert("message".to_string(), Value::from(body));
         let v = self.dialog("confirm", f, timeout_ms)?;
-        if is_cancelled(&v) {
-            return None;
-        }
-        v.get("confirmed")?.as_bool()
+        confirmed(&v)
     }
 
-    fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
-        let router = self.router.clone();
-        Some(Arc::new(move || router.cancel_waiting()))
+    fn confirm_cancellable(
+        &mut self,
+        title: &str,
+        body: &str,
+        cancel: &oxa_proto::DialogCancel,
+    ) -> Option<bool> {
+        let mut f = Map::new();
+        f.insert("title".to_string(), Value::from(title));
+        f.insert("message".to_string(), Value::from(body));
+        let v = self.dialog_with("confirm", f, None, Some(cancel))?;
+        confirmed(&v)
     }
 
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {

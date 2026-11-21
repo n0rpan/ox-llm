@@ -7,17 +7,34 @@ use std::path::{Path, PathBuf};
 mod native_queue;
 pub(crate) use native_queue::authenticate_native_claim;
 
-pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String> {
-    crate::dispatch::project_trusted(
+/// The nearest and outermost Git boundaries of a canonical directory, without running Git.
+pub(crate) fn git_boundaries(cwd: &Path) -> Option<(&Path, &Path)> {
+    let mut repos = cwd.ancestors().filter(|path| path.join(".git").exists());
+    let nearest = repos.next()?;
+    Some((nearest, repos.last().unwrap_or(nearest)))
+}
+
+pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs, err: &mut dyn Write) -> Result<bool, String> {
+    let mut notices = Vec::new();
+    let trusted = crate::dispatch::project_trusted(
         &crate::Args::default(),
         env,
         dirs,
         cwd,
         &oxa_perm::gated_resources(cwd),
         false,
-        &mut vec![],
+        &mut notices,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    crate::dispatch::write_diagnostics(err, notices.into_iter());
+    Ok(trusted)
+}
+
+pub(crate) fn needs_trust(cwd: &Path, purpose: &str) -> String {
+    format!(
+        "source project is not trusted; {purpose} could not run. Fix: {}",
+        crate::approval::approval_fix(cwd)
+    )
 }
 
 /// Decode the registration from the already-verified owner config.
@@ -104,16 +121,8 @@ pub(crate) fn run(
         let binary: PathBuf = std::env::current_exe().map_err(|e| e.to_string())?;
         // Find the source boundary from files before executing any host tool.
         let cwd_c = cwd.canonicalize().map_err(|e| e.to_string())?;
-        let project = cwd_c
-            .ancestors()
-            .find(|p| p.join(".git").exists())
-            .ok_or("oxa work requires a Git repository")?;
         // Nested repository metadata cannot bless code from an outer project.
-        let host_project = project
-            .ancestors()
-            .filter(|p| p.join(".git").exists())
-            .last()
-            .unwrap_or(project);
+        let (project, host_project) = git_boundaries(&cwd_c).ok_or("oxa work requires a Git repository")?;
         let host_path = crate::netguard::trusted_work_path(
             std::ffi::OsStr::new(env.get("PATH").unwrap_or("")),
             host_project,
@@ -163,25 +172,44 @@ pub(crate) fn run(
             Some(&root),
             Some(&dirs.home),
         );
-        let policy = oxa_work::RunPolicy {
+        let user_settings = oxa_config::Settings::load(dirs, &root, false);
+        let mut policy = oxa_work::RunPolicy {
             git_binary,
             host_path,
             terminate_binary,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             offline: oxa_proto::offline(),
             runner_owns_github: false,
-            autonomy: runner_autonomy(&oxa_config::Settings::load(dirs, &root, false)),
-            // Re-read for every launch: lowering `permissions.defaultMode` revokes yolo for the
+            github_token_command: crate::netguard::github_token_command(&user_settings),
+            github_token_write_paths: crate::sandbox_layout::worker_token_write_paths(
+                &user_settings,
+                env,
+                dirs,
+            ),
+            autonomy: runner_autonomy(&user_settings),
+            worker_github: runner_worker_github(&user_settings),
+            // Re-read for every launch, like the autonomy level: lowering
+            // `permissions.defaultMode` (or pinning `runner`) revokes worker GitHub for the
             // tasks a running queue has not started yet.
-            autonomy_now: Some({
+            authority_now: Some({
                 let (dirs, root) = (dirs.clone(), root.clone());
-                std::sync::Arc::new(move || runner_autonomy(&oxa_config::Settings::load(&dirs, &root, false)))
-                    as std::sync::Arc<dyn Fn() -> oxa_proto::Autonomy + Send + Sync>
+                std::sync::Arc::new(move || {
+                    let settings = oxa_config::Settings::load(&dirs, &root, false);
+                    (runner_autonomy(&settings), runner_worker_github(&settings))
+                })
+                    as std::sync::Arc<dyn Fn() -> (oxa_proto::Autonomy, oxa_work::WorkerGithub) + Send + Sync>
             }),
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;
+        // Lane acceptance needs the trusted gh executable and the owner's push
+        // approval. The queue may hold lane tasks, so its approval is taken from
+        // the environment only; an interactive run asks below once it knows.
+        configure_lane(&mut policy, &root, env, dirs, false);
         if args.first().is_some_and(|arg| arg == "board") {
-            return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy);
+            return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy, err);
         }
         if matches!(args.first().map(String::as_str), Some("status" | "--status")) {
             let json = match args {
@@ -213,16 +241,28 @@ pub(crate) fn run(
                         row.liveness
                     )
                     .map_err(|e| e.to_string())?;
+                    if let Some(publication) = row.publication {
+                        let age = publication
+                            .age_secs
+                            .map_or_else(|| "age unknown".to_owned(), |s| format!("{s}s since save"));
+                        writeln!(
+                            out,
+                            "  {} {}: {} ({age}). {}",
+                            row.record.branch,
+                            row.record.head_sha.as_deref().unwrap_or_default(),
+                            publication.phase,
+                            publication.disposition
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
                 }
             }
             return Ok(0);
         }
         if let [command, id] = args {
             if command == "verify" {
-                if !trusted(&root, env, dirs)? {
-                    return Err(
-                        "source project is not trusted; approve it before running saved checks".into(),
-                    );
+                if !trusted(&root, env, dirs, err)? {
+                    return Err(needs_trust(&root, "saved checks"));
                 }
                 let verified = oxa_work::verify_saved_task(&root, &binary, &policy, id)?;
                 let record = verified.record();
@@ -250,19 +290,14 @@ pub(crate) fn run(
             }
             end -= 1;
         }
-        if (publish || reports)
-            && env.pairs().iter().any(|(name, _)| {
-                matches!(
-                    name.as_str(),
-                    "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
-                )
-            })
-        {
-            return Err("publishing and problem reporting require the owner outside an agent tool".into());
+        if (publish || reports) && agent_launched(env) && !crate::report_cmd::has_session_broker(env) {
+            return Err(
+                "publishing and problem reporting from an agent tool require the session owner broker".into(),
+            );
         }
         let task_args = &args[..end];
-        let is_trusted = trusted(&root, env, dirs)?;
-        let context = Context {
+        let is_trusted = trusted(&root, env, dirs, err)?;
+        let mut context = Context {
             cwd: root.clone(),
             binary: binary.clone(),
             policy: policy.clone(),
@@ -277,7 +312,7 @@ pub(crate) fn run(
         };
         if task_args.first().is_some_and(|word| word == "--native-queue") {
             if !is_trusted {
-                return Err("source project is not trusted; approve it before unattended work".into());
+                return Err(needs_trust(&root, "unattended work and its checks"));
             }
             let [_, flag, config] = task_args else {
                 return Err("usage: oxa work --native-queue --config PATH".into());
@@ -289,7 +324,7 @@ pub(crate) fn run(
         }
         if task_args.first().is_some_and(|word| word == "--queue") {
             if !is_trusted {
-                return Err("source project is not trusted; approve it before unattended work".into());
+                return Err(needs_trust(&root, "unattended work and its checks"));
             }
             let (directory, options) = queue_options(task_args, cwd)?;
             let df = crate::netguard::trusted_executable_for(
@@ -322,6 +357,7 @@ pub(crate) fn run(
                 })?;
             return Ok(i32::from(summary.failed > 0 || summary.pending > 0));
         }
+        let mut packet_just_fetched = false;
         let (tasks, explicit_model) = match task_args {
             [file] if !file.starts_with('-') => (oxa_work::read_tasks(&cwd.join(file))?, false),
             [flag, number, model_flag, model] if flag == "--issue" && model_flag == "--model" => {
@@ -329,7 +365,7 @@ pub(crate) fn run(
                     return Err("GitHub issue lookup is unavailable in offline mode".into());
                 }
                 if !is_trusted {
-                    return Err("source project is not trusted; approve it before issue lookup".into());
+                    return Err(needs_trust(&root, "issue lookup"));
                 }
                 let number = number.parse().map_err(|_| "invalid issue number")?;
                 let task = if let Some(task) = oxa_work::saved_issue_task(&policy, number, model)? {
@@ -345,6 +381,7 @@ pub(crate) fn run(
                     let mut task =
                         oxa_work::issue_task(&root, &gh, &policy.host_path, number, model.clone())?;
                     task.prompt.insert_str(0, &oxa_work::github_runner_guidance("issue"));
+                    packet_just_fetched = true;
                     task
                 };
                 (vec![task], true)
@@ -354,7 +391,7 @@ pub(crate) fn run(
                     return Err("GitHub pull request lookup is unavailable in offline mode".into());
                 }
                 if !is_trusted {
-                    return Err("source project is not trusted; approve it before pull request lookup".into());
+                    return Err(needs_trust(&root, "pull request lookup"));
                 }
                 let gh = crate::netguard::trusted_executable_for(
                     "gh",
@@ -364,6 +401,7 @@ pub(crate) fn run(
                 )
                 .ok_or("no trusted gh executable outside the source project")?;
                 let number = number.parse().map_err(|_| "invalid pull request number")?;
+                packet_just_fetched = true;
                 (
                     vec![oxa_work::pull_request_task(&root, &gh, &policy, number, model.clone())?],
                     true,
@@ -374,6 +412,10 @@ pub(crate) fn run(
                     .into(),
             ),
         };
+        if tasks.iter().any(|task| task.lane_ci) {
+            configure_lane(&mut policy, &root, env, dirs, true);
+            context.policy = policy.clone();
+        }
         let owner_selected_model = explicit_model
             && !env.pairs().iter().any(|(name, _)| {
                 matches!(
@@ -397,14 +439,45 @@ pub(crate) fn run(
         } else {
             tasks
                 .iter()
-                .map(|_| Err("source project is not trusted; approve it before unattended work".into()))
+                .map(|_| Err(needs_trust(&root, "unattended work and its checks")))
                 .collect()
+        };
+        // #1446: the runner keeps a worker's issue or PR packet current at each launch.
+        let feed: Option<std::sync::Arc<dyn oxa_work::PacketFeed>> = match task_args {
+            [flag, _, model_flag, model]
+                if (flag == "--issue" || flag == "--pr")
+                    && model_flag == "--model"
+                    && is_trusted
+                    && !oxa_proto::offline() =>
+            {
+                crate::netguard::trusted_executable_for(
+                    "gh",
+                    Some(policy.host_path.as_os_str()),
+                    Some(&root),
+                    Some(&dirs.home),
+                )
+                .map(|gh| {
+                    std::sync::Arc::new(GhPacketFeed {
+                        root: root.clone(),
+                        gh,
+                        policy: policy.clone(),
+                        model: model.clone(),
+                        agent_dir: dirs.agent_dir.clone(),
+                        just_fetched: std::sync::atomic::AtomicBool::new(packet_just_fetched),
+                    }) as std::sync::Arc<dyn oxa_work::PacketFeed>
+                })
+            }
+            _ => None,
         };
         let planned: Vec<_> = tasks
             .into_iter()
             .zip(plans)
             .map(|(task, plan)| {
                 plan.map(|plan| {
+                    let plan = match &feed {
+                        Some(feed) => plan.with_packet_feed(feed.clone()),
+                        None => plan,
+                    };
                     if owner_selected_model {
                         plan.with_owner_model_selection()
                     } else {
@@ -441,6 +514,115 @@ pub(crate) fn run(
             let _ = writeln!(err, "oxa work: {e}");
             2
         }
+    }
+}
+
+/// Re-reads the issue or pull request a task came from, with the same bounded packet builders
+/// the first fetch used, so a worker sees what changed on GitHub since. The runner fetches; the
+/// worker stays GitHub-isolated.
+struct GhPacketFeed {
+    root: PathBuf,
+    gh: PathBuf,
+    policy: oxa_work::RunPolicy,
+    model: String,
+    agent_dir: PathBuf,
+    /// True while the task was fetched in this very run and no launch has asked yet.
+    just_fetched: std::sync::atomic::AtomicBool,
+}
+
+impl oxa_work::PacketFeed for GhPacketFeed {
+    fn fresh(&self, task: &oxa_work::Task) -> Result<Option<String>, String> {
+        if let Some(number) = task.id.strip_prefix("issue-").and_then(|n| n.parse::<u64>().ok()) {
+            if self.just_fetched.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                // The packet was read a moment ago to build the task; do not read it twice.
+                return Ok(None);
+            }
+            let mut fresh = oxa_work::issue_task(
+                &self.root,
+                &self.gh,
+                &self.policy.host_path,
+                number,
+                self.model.clone(),
+            )?;
+            fresh
+                .prompt
+                .insert_str(0, &oxa_work::github_runner_guidance("issue"));
+            return Ok(Some(fresh.prompt));
+        }
+        if self.just_fetched.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(None);
+        }
+        if let Some(number) = task
+            .id
+            .strip_prefix("pr-")
+            .and_then(|rest| rest.split('-').next())
+            .and_then(|n| n.parse::<u64>().ok())
+        {
+            let fresh =
+                oxa_work::pull_request_task(&self.root, &self.gh, &self.policy, number, self.model.clone())?;
+            return Ok(Some(fresh.prompt));
+        }
+        Ok(None)
+    }
+
+    fn deliver(&self, session: &str, text: &str) -> Result<(), String> {
+        oxa_session::send_inbox(&self.agent_dir, session, text).map_err(|e| e.to_string())
+    }
+}
+
+/// Whether the process runs under a coding agent or subagent, whose actions are never
+/// the owner's own confirmation.
+pub(crate) fn agent_launched(env: &Env) -> bool {
+    env.pairs().iter().any(|(name, _)| {
+        matches!(
+            name.as_str(),
+            "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+        )
+    })
+}
+
+/// Resolve `gh` and the owner's lane push approval. Missing gh only blocks the
+/// lane task that needs it; other tasks run unchanged.
+fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs: &Dirs, ask: bool) {
+    if policy.gh_binary.is_none() {
+        policy.gh_binary = crate::netguard::trusted_executable_for(
+            "gh",
+            Some(policy.host_path.as_os_str()),
+            Some(root),
+            Some(&dirs.home),
+        );
+    }
+    if policy.content_scan.is_none() {
+        // Lane pushes go through exactly the scan `--publish` runs.
+        // The scan reads project settings, so it is built on first use, which only a
+        // trusted project's lane acceptance reaches, never while an unapproved
+        // checkout is being opened.
+        let (scan_env, scan_dirs, scan_root) = (env.clone(), dirs.clone(), root.to_path_buf());
+        let scan = std::sync::OnceLock::<crate::report_cmd::PushScan>::new();
+        policy.content_scan = Some(std::sync::Arc::new(move |item| {
+            scan.get_or_init(|| {
+                crate::report_cmd::PushScan::new(
+                    &scan_env,
+                    &oxa_config::Settings::load(&scan_dirs, &scan_root, true),
+                )
+            })
+            .check(item)
+        }));
+    }
+    // Compatibility for an owner-controlled launcher. Agent children authenticate the owner's
+    // answer through the broker instead. Resolved on both paths: a queue launch has no single
+    // question to ask, so its lane tasks would stay unapprovable without this.
+    if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1")
+        && !agent_launched(env)
+        && env.get(oxa_core::owner_confirm::SOCK_ENV).is_none()
+    {
+        policy.push_approved = true;
+    }
+    if ask && !policy.push_approved {
+        let question = "Lane acceptance will push each accepted commit to origin and wait for lane CI. Type yes to allow pushes for this run: ";
+        // One authenticated ask: the broker when the session exported one, otherwise the
+        // owner's own terminal. An agent child has neither.
+        policy.push_approved = crate::report_cmd::tty_confirm(env)(question) == Some(true);
     }
 }
 
@@ -628,6 +810,17 @@ fn runner_autonomy(settings: &oxa_config::Settings) -> oxa_proto::Autonomy {
     }
 }
 
+/// GitHub access of the runner's workers. The setting is read from the user layer only; unset
+/// follows the owner's mode (yolo `worker`, auto `broker`, standard `runner`).
+fn runner_worker_github(settings: &oxa_config::Settings) -> oxa_work::WorkerGithub {
+    oxa_work::WorkerGithub::resolve(
+        settings
+            .user_value("oxa.work.workerGithub")
+            .and_then(|v| v.as_str()),
+        settings.default_permission_mode(),
+    )
+}
+
 #[cfg(test)]
 mod queue_option_tests {
     use super::queue_options;
@@ -667,8 +860,30 @@ mod queue_option_tests {
 
 #[cfg(test)]
 mod registration_tests {
-    use super::{registered_native_worker, runner_autonomy};
+    use super::{registered_native_worker, runner_autonomy, runner_worker_github};
+    use oxa_work::WorkerGithub::{Broker, Runner, Worker};
     use serde_json::json;
+
+    #[test]
+    fn worker_github_is_user_only() {
+        let project =
+            json!({"oxa": {"work": {"workerGithub": "worker"}}, "permissions": {"defaultMode": "yolo"}});
+        let settings =
+            oxa_config::Settings::from_values(json!({"permissions": {"defaultMode": "standard"}}), project);
+        assert_eq!(runner_worker_github(&settings), Runner);
+        let user = |mode: &str, github: Option<&str>| {
+            let mut value = json!({"permissions": {"defaultMode": mode}});
+            if let Some(github) = github {
+                value["oxa"] = json!({"work": {"workerGithub": github}});
+            }
+            runner_worker_github(&oxa_config::Settings::from_values(value, json!({})))
+        };
+        assert_eq!(user("yolo", None), Worker);
+        assert_eq!(user("auto", None), Broker);
+        assert_eq!(user("standard", None), Runner);
+        assert_eq!(user("yolo", Some("runner")), Runner);
+        assert_eq!(user("standard", Some("broker")), Broker);
+    }
 
     #[test]
     fn project_cannot_raise_worker_mode() {

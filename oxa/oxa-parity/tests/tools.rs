@@ -101,12 +101,34 @@ fn schema_of(ran: &Ran, name: &str) -> serde_json::Value {
         .clone()
 }
 
-const ALL_SEVEN: [&str; 7] = ["bash", "edit", "find", "grep", "ls", "read", "write"];
+const ALL_SEVEN: [&str; 8] = ["bash", "edit", "find", "grep", "ls", "read", "wait", "write"];
 
 /// Tool selection without a turn: the names the engine was offered.
 fn offered(env: &TestEnv, extra: &[&str]) -> Vec<String> {
     let ran = drive(env, vec![ScriptTurn::text("ok")], extra);
     declared_names(&ran)
+}
+
+/// TOOLS-025 (A): (oxa only) `deliverable` records the output file a request names; the run
+/// ends with a typed record for it. The end-to-end behaviour (written and verified, gone and
+/// reported missing, a private path refused) is covered by `oxa-cli/tests/deliverable_evidence.rs`;
+/// this row pins that the tool is offered with its schema like any other declared tool.
+#[test]
+fn tools_025() {
+    // INVARIANT: one more declared read-class tool (no gate, no prompt change on a run that
+    // does not declare a file); its end record is evidence, covered end to end in
+    // `oxa-cli/tests/deliverable_evidence.rs`.
+    let env = TestEnv::new();
+    let ran = drive(&env, vec![ScriptTurn::text("ok")], &[]);
+    assert!(
+        declared_names(&ran).contains(&"deliverable".to_string()),
+        "deliverable is declared: {:?}",
+        declared_names(&ran)
+    );
+    let schema = schema_of(&ran, "deliverable");
+    assert_eq!(schema["required"], serde_json::json!(["path"]));
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["properties"]["path"]["type"], "string");
 }
 
 // ---------------------------------------------------------------- meta-checks
@@ -142,7 +164,7 @@ fn every_row_has_test_or_recorded_omission() {
         );
         checked += 1;
     }
-    assert_eq!(checked, 24, "TOOLS rows of PARITY.md");
+    assert_eq!(checked, 25, "TOOLS rows of PARITY.md");
 }
 
 /// documented output or recorded fixture
@@ -655,7 +677,8 @@ fn tools_013() {
     let env = TestEnv::new();
     let outside = env.tmp().join("outside.txt");
     let cmd = format!(r#"{{"command":"echo x > '{}'; echo done"}}"#, outside.display());
-    let r = run_one(&env, "bash", &cmd, &[]);
+    // #1512 S3: an attended run has no OS sandbox unless asked for it.
+    let r = run_one(&env, "bash", &cmd, &["--sandbox"]);
     assert!(
         !outside.exists(),
         "the sandbox keeps writes out of the workspace; result: {r:?}"
@@ -846,6 +869,8 @@ fn tools_019() {
     let env = TestEnv::new();
     let mut lead: Vec<String> = ALL_SEVEN.iter().map(|s| s.to_string()).collect();
     lead.push("ask".to_string());
+    // #2293 A: the session's file-deliverable check, offered like `ask`.
+    lead.push("deliverable".to_string());
     // K5a: the worker tool is on by default (`oxa.workers.enabled` true) in a parent session.
     lead.push("worker".to_string());
     lead.sort();

@@ -1,24 +1,24 @@
-name: oxa macOS (non-required)
-# Native arm64 build of the oxa-cli binary (#795). Not required, not in the merge queue, not in
-# the gate. It runs on main, on manual dispatch and on PRs touching platform-sensitive paths. The job is expected to be red until the macOS sandbox slices land; that is the signal.
+name: oxa macOS
+# Native arm64 build of the oxa-cli binary (#795), about 90 minutes.
+# - Pull requests: checks.yml calls this workflow as its `macos` job only on ready PRs whose change
+#   the classifier marks `macos` (tools/ci/paths.py: macOS packaging, this workflow, dev-build.yml,
+#   oxa/Cargo.toml and Cargo.lock, paths naming macos/darwin, the oxa files with macOS-only code).
+#   When it runs, the `gate` aggregate fails if it fails. It never runs in the merge queue.
+# - Main: dev-build.yml builds and publishes the macOS dev archive after every push to main and
+#   opens a p1 "macOS dev build broken on main" issue when that build fails.
+# - Releases: release.yml calls this workflow with `version` (the tag); it then builds the release
+#   profile stamped with that version, stages ox-llm-<tag>-macos-arm64.tar.gz with
+#   packaging/macos/stage.sh and uploads it as the `macos-dist-arm64` artifact. A failure fails
+#   the release.
+# Standalone it runs on manual dispatch only; no push or pull_request trigger of its own, so no
+# tree is built twice (#2049).
 
 on:
-  push:
-    branches: ['main']
-  pull_request:
-    paths:
-      - 'oxa/oxa-session/**'
-      - 'oxa/oxa-sandbox/**'
-      - 'oxa/oxa-cli/**'
-      - 'oxa/oxc-gateway/**'
-      - 'packaging/macos/**'
-      - '.github/workflows/macos*.yml'
-      - 'oxa/Cargo.lock'
   workflow_dispatch:
   workflow_call:
     inputs:
       version:
-        description: release tag requested by the calling workflow; empty for pushes and pull requests
+        description: release tag requested by the calling workflow (stages and uploads the archive); empty for pull requests
         type: string
         default: ''
 
@@ -27,16 +27,17 @@ permissions:
 
 concurrency:
   group: macos-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'merge_group' }}
 
 jobs:
   test:
-    name: oxa-cli build (macOS arm64, non-required)
+    name: oxa-cli build (macOS arm64)
     runs-on: macos-15
     timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: '3'
       RUST_VERSION: '1.99.1'
+      VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,11 +60,45 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$RUST_VERSION" >> "$GITHUB_ENV"
           echo "$RUSTUP_HOME/toolchains/$RUST_VERSION-aarch64-apple-darwin/bin" >> "$GITHUB_PATH"
       - name: Build oxa-cli binary
+        if: inputs.version == ''
         working-directory: oxa
         run: cargo build --profile ci --locked -p oxa-cli --bin oxa
       - name: Check binary exists
+        if: inputs.version == ''
         working-directory: oxa
         shell: bash
         run: |
           test -x target/ci/oxa
           file target/ci/oxa
+      - name: Release build stamped with the tag
+        if: inputs.version != ''
+        working-directory: oxa
+        shell: bash
+        run: |
+          set -euo pipefail
+          re='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+          [[ $VERSION =~ $re ]] || { echo "bad version string: $VERSION" >&2; exit 1; }
+          OX_BUILD_VERSION=${VERSION#v} cargo build --release --locked -p oxa-cli --bin oxa
+      - name: Stage and check the release archive
+        id: stage
+        if: inputs.version != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/macos-dist"
+          archive=$(bash packaging/macos/stage.sh "$VERSION" oxa/target/release/oxa "$out")
+          test "$archive" = "$out/ox-llm-$VERSION-macos-arm64.tar.gz"
+          probe=$(mktemp -d "$RUNNER_TEMP/probe.XXXXXX")
+          tar -xzf "$archive" -C "$probe"
+          cmp oxa/target/release/oxa "$probe/usr/bin/oxa"
+          test "$(lipo -archs "$probe/usr/bin/oxa")" = arm64
+          [ "$(env -i "$probe/usr/bin/oxa" --version)" = "oxa ${VERSION#v}" ] \
+            || { echo "oxa --version is not 'oxa ${VERSION#v}'" >&2; exit 1; }
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.version != ''
+        with:
+          name: macos-dist-arm64
+          path: ${{ steps.stage.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 7

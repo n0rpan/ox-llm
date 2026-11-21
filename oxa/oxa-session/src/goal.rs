@@ -113,9 +113,7 @@ impl Goal {
         Ok(())
     }
     pub fn exhausted(&self) -> bool {
-        self.budget
-            .max_tokens
-            .is_some_and(|n| self.tokens_used >= n || self.unknown_requests > 0)
+        self.budget.max_tokens.is_some_and(|n| self.tokens_used >= n)
             || self.budget.max_time_ms.is_some_and(|n| self.elapsed_ms >= n)
             || self.budget.max_turns.is_some_and(|n| self.turns >= n)
     }
@@ -153,6 +151,12 @@ impl Goal {
     /// Called once when the assistant stops normally; a wait is a real tool call.
     /// Returns true only when another fixed-message continuation is permitted.
     pub fn stopped(&mut self, had_tools: bool) -> bool {
+        self.stopped_with(had_tools, true)
+    }
+    /// [`Goal::stopped`] with the owner's idle rule: with `pause_idle` two replies without a
+    /// tool call pause the goal; without it (the default) they are only counted (`idle_stops`
+    /// reaches 2) and pursuit goes on; the caller then nudges once and waits between requests.
+    pub fn stopped_with(&mut self, had_tools: bool, pause_idle: bool) -> bool {
         if self.status != GoalStatus::Pursuing {
             return false;
         }
@@ -166,7 +170,7 @@ impl Goal {
         } else {
             (self.idle_stops + 1).min(2)
         };
-        if self.idle_stops == 2 {
+        if self.idle_stops == 2 && pause_idle {
             self.status = GoalStatus::Paused;
             self.pause_reason = Some(IDLE_PAUSE_REASON.into());
             return false;
@@ -177,6 +181,22 @@ impl Goal {
         if self.status == GoalStatus::Pursuing {
             self.status = GoalStatus::Paused;
             self.pause_reason = None;
+        }
+    }
+    /// End a pursuing or paused goal as blocked, with a reason the owner sees (an owner budget
+    /// chose `stop` over a pause).
+    pub fn stop_because(&mut self, reason: &str) {
+        if matches!(self.status, GoalStatus::Pursuing | GoalStatus::Paused) {
+            self.status = GoalStatus::Blocked;
+            self.pause_reason = None;
+            self.evidence = Some(reason.into());
+        }
+    }
+    /// Pause with a reason the owner sees (the goal cannot go on until they act).
+    pub fn pause_because(&mut self, reason: &str) {
+        if self.status == GoalStatus::Pursuing {
+            self.status = GoalStatus::Paused;
+            self.pause_reason = Some(reason.into());
         }
     }
     pub fn resume(&mut self) -> Result<(), OxaError> {

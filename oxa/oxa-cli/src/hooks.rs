@@ -83,6 +83,152 @@ pub struct HookInputs<'a> {
     pub yolo: oxa_proto::YoloSwitch,
 }
 
+/// The `worker` tool's hook set (K5a/K5b), or `None` when it is off (a worker child, the
+/// `oxa.workers.enabled` setting (user settings only), no trusted `kill`, no executable); the reason is a notice.
+/// One builder for every session that starts workers: the ordinary one and the live owner Lead
+/// session ([`build_owner_hooks`]), so both use the same launch, limits (`oxa.workers.max`) and
+/// supervisor.
+#[derive(Clone, Copy)]
+enum WorkerToolScope {
+    /// The ordinary session's tool switches also constrain its worker.
+    Inherit,
+    /// The switches select the sole tool exposed to Lead, not its worker's tools.
+    LeadExposure,
+}
+
+fn build_worker_hooks(
+    i: &HookInputs<'_>,
+    notices: &mut Vec<(Level, String)>,
+    tool_scope: WorkerToolScope,
+) -> Option<Arc<WorkerHooks>> {
+    // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
+    // empty as unset, so the pairs are read directly), under `--no-session` (a worker persists
+    // its own session) and when `oxa.workers.enabled` is false (user settings only).
+    let worker_depth = i
+        .env
+        .pairs()
+        .iter()
+        .rev()
+        .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
+        .map(|(_, v)| v.as_str());
+    if !i.args.no_session && worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
+        let agent_dir = if i.dirs.agent_dir.is_absolute() {
+            i.dirs.agent_dir.clone()
+        } else {
+            i.cwd.join(&i.dirs.agent_dir)
+        };
+        let lead_dirs =
+            (matches!(tool_scope, WorkerToolScope::LeadExposure) && i.trusted).then(|| oxa_config::Dirs {
+                agent_dir: agent_dir.clone(),
+                ..i.dirs.clone()
+            });
+        // The owner's model policy (user settings only); malformed parts are dropped with a notice.
+        let (models, model_notices) = crate::workers::model_policy::from_settings(i.settings);
+        // The HTTP owner opens one Session per message. Reuse its process-owned
+        // supervisor before constructing WorkerCore, which pins a launcher copy
+        // of the current executable as part of construction.
+        if matches!(tool_scope, WorkerToolScope::LeadExposure) {
+            if let Some(workers) = worker_tool::retained_owner_workers(
+                &i.dirs.agent_dir,
+                worker_tool::max_workers(i.settings),
+                &i.yolo,
+                lead_dirs.clone(),
+                models.clone(),
+            ) {
+                return Some(workers);
+            }
+        }
+        notices.extend(model_notices.into_iter().map(|n| (Level::Warning, n)));
+        match std::env::current_exe() {
+            Ok(bin) => {
+                // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
+                // so no worker starts without a way to stop it.
+                let host_path = std::ffi::OsString::from(i.env.get("PATH").unwrap_or(""));
+                let project = i
+                    .cwd
+                    .canonicalize()
+                    .ok()
+                    .and_then(|cwd| {
+                        crate::work_cmd::git_boundaries(&cwd).map(|(_, outer)| outer.to_path_buf())
+                    })
+                    .unwrap_or_else(|| i.cwd.to_path_buf());
+                match crate::workers::proc::start(i.settings, &host_path, &project, &i.dirs.home) {
+                    Ok(supervisor) => {
+                        // The worker child writes its sessions where this session does.
+                        let sessions_dir = i
+                            .settings
+                            .session_dir(&i.dirs.home, i.cwd)
+                            .filter(|_| i.env.get("OXA_SESSION_DIR").is_none())
+                            .unwrap_or_else(|| i.dirs.sessions_dir.clone());
+                        // The child keeps the parent's allowance, exclusions and session
+                        // directory: a worker is not a way around them.
+                        let default_sessions = i.dirs.sessions_dir.clone();
+                        let parent_scope = worker_tool::ParentScope {
+                            max_tokens: i.args.max_tokens,
+                            exclude_tools: i.args.exclude_tools.clone(),
+                            session_dir: (sessions_dir != default_sessions).then(|| sessions_dir.clone()),
+                            narrowing: crate::workers::launch::Narrowing {
+                                offline: i.args.offline,
+                                no_approve: i.args.approve == Some(false),
+                                no_context_files: i.args.no_context_files,
+                                // The live Lead's worker-only allowlist describes the tools exposed
+                                // to Lead, not the tools its coding workers may use. Ordinary parent
+                                // sessions still narrow their children exactly as before.
+                                tools: matches!(tool_scope, WorkerToolScope::Inherit)
+                                    .then_some(i.args.tools.clone())
+                                    .flatten(),
+                                no_tools: matches!(tool_scope, WorkerToolScope::Inherit) && i.args.no_tools,
+                                no_builtin_tools: i.args.no_builtin_tools,
+                                no_mcp: i.args.no_mcp,
+                                no_web_search: i.args.no_web_search,
+                                no_extensions: i.args.no_extensions,
+                                no_skills: i.args.no_skills,
+                                no_prompt_templates: i.args.no_prompt_templates,
+                            },
+                        };
+                        let workers = Arc::new(WorkerHooks::new(WorkerConfig {
+                            oxa_bin: bin,
+                            cwd: i.cwd.to_path_buf(),
+                            lead_dirs,
+                            agent_dir,
+                            max: worker_tool::max_workers(i.settings),
+                            supervisor,
+                            sessions_dir,
+                            parent_env: i.env.pairs().to_vec(),
+                            parent_scope,
+                            yolo: i.yolo.clone(),
+                            resume_on_start: crate::workers::resume::enabled(i.settings),
+                            advertise_wait: matches!(tool_scope, WorkerToolScope::Inherit),
+                            send_ack_seconds: worker_tool::send_ack_seconds(i.settings),
+                            models,
+                            cache: crate::worker_cache::view(i.settings, &i.dirs.home, i.env, i.cwd),
+                        }));
+                        return Some(workers);
+                    }
+                    Err(e) => notices.push((Level::Warning, format!("worker: the tool is off ({e})"))),
+                }
+            }
+            Err(e) => notices.push((
+                Level::Warning,
+                format!("worker: the oxa executable is not known ({e}); the tool is off"),
+            )),
+        }
+    }
+    None
+}
+
+/// The hook sets of the live, owner-authorized Lead session (`with_lead_owner`): only the
+/// `worker` tool. No extensions, exec hooks, MCP or other tools; the shadow preset
+/// (`args.lead`) never reaches this and stays read-only.
+pub(crate) fn build_owner_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> HookSets {
+    let mut sets = HookSets::default();
+    if let Some(workers) = build_worker_hooks(i, notices, WorkerToolScope::LeadExposure) {
+        sets.hooks.push(workers.clone());
+        sets.workers = Some(workers);
+    }
+    sets
+}
+
 /// Build the hook sets. Problems that do not stop the start (a failed extension, a bad hook
 /// entry, an `mcp.json` diagnostic) are pushed to `notices`.
 pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Result<HookSets, OxaError> {
@@ -209,7 +355,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
     }
 
     // ---- wait probes (W3) ----
-    // `wait` with `until` kind `ci` / `pr_merged`: answered through `gh`, no tools or prompt text.
+    // `wait` with `until` kind `ci` / `pr_merged` / `pr_activity`: answered through `gh`, no tools or prompt text.
     sets.hooks
         .push(Arc::new(crate::wait_probe::ProbeHooks::new(i.cwd, &i.dirs.home)));
 
@@ -242,85 +388,9 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
     }
 
     // ---- builtin:worker (K5a) ----
-    // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
-    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false.
-    let worker_depth = i
-        .env
-        .pairs()
-        .iter()
-        .rev()
-        .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
-        .map(|(_, v)| v.as_str());
-    if !i.args.no_session && worker_tool::built(worker_depth, worker_tool::enabled(i.settings)) {
-        match std::env::current_exe() {
-            Ok(bin) => {
-                // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
-                // so no worker starts without a way to stop it.
-                let host_path = std::ffi::OsString::from(i.env.get("PATH").unwrap_or(""));
-                let project = i
-                    .cwd
-                    .canonicalize()
-                    .ok()
-                    .and_then(|cwd| {
-                        cwd.ancestors()
-                            .filter(|path| path.join(".git").exists())
-                            .last()
-                            .map(Path::to_path_buf)
-                    })
-                    .unwrap_or_else(|| i.cwd.to_path_buf());
-                match crate::workers::proc::start(i.settings, &host_path, &project, &i.dirs.home) {
-                    Ok(supervisor) => {
-                        // The worker child writes its sessions where this session does.
-                        let sessions_dir = i
-                            .settings
-                            .session_dir(&i.dirs.home, i.cwd)
-                            .filter(|_| i.env.get("OXA_SESSION_DIR").is_none())
-                            .unwrap_or_else(|| i.dirs.sessions_dir.clone());
-                        // The child keeps the parent's allowance, exclusions and session
-                        // directory: a worker is not a way around them.
-                        let default_sessions = i.dirs.sessions_dir.clone();
-                        let parent_scope = worker_tool::ParentScope {
-                            max_tokens: i.args.max_tokens,
-                            exclude_tools: i.args.exclude_tools.clone(),
-                            session_dir: (sessions_dir != default_sessions).then(|| sessions_dir.clone()),
-                            narrowing: crate::workers::launch::Narrowing {
-                                offline: i.args.offline,
-                                no_approve: i.args.approve == Some(false),
-                                no_context_files: i.args.no_context_files,
-                                tools: i.args.tools.clone(),
-                                no_tools: i.args.no_tools,
-                                no_builtin_tools: i.args.no_builtin_tools,
-                                no_mcp: i.args.no_mcp,
-                                no_web_search: i.args.no_web_search,
-                                no_extensions: i.args.no_extensions,
-                            },
-                        };
-                        let agent_dir = if i.dirs.agent_dir.is_absolute() {
-                            i.dirs.agent_dir.clone()
-                        } else {
-                            i.cwd.join(&i.dirs.agent_dir)
-                        };
-                        let workers = Arc::new(WorkerHooks::new(WorkerConfig {
-                            oxa_bin: bin,
-                            agent_dir,
-                            max: worker_tool::max_workers(i.settings),
-                            supervisor,
-                            sessions_dir,
-                            parent_env: i.env.pairs().to_vec(),
-                            parent_scope,
-                            yolo: i.yolo.clone(),
-                        }));
-                        sets.hooks.push(workers.clone());
-                        sets.workers = Some(workers);
-                    }
-                    Err(e) => notices.push((Level::Warning, format!("worker: the tool is off ({e})"))),
-                }
-            }
-            Err(e) => notices.push((
-                Level::Warning,
-                format!("worker: the oxa executable is not known ({e}); the tool is off"),
-            )),
-        }
+    if let Some(workers) = build_worker_hooks(i, notices, WorkerToolScope::Inherit) {
+        sets.hooks.push(workers.clone());
+        sets.workers = Some(workers);
     }
 
     // ---- codemode ----
@@ -452,4 +522,149 @@ fn file_log(path: PathBuf) -> oxa_ext::ExtLog {
             let _ = writeln!(f, "{} {}", level.as_str(), line.replace('\n', " "));
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inputs<'a>(
+        args: &'a Args,
+        dirs: &'a Dirs,
+        cwd: &'a Path,
+        settings: &'a Settings,
+        resources: &'a Resources,
+        sandbox: &'a Arc<dyn Sandbox>,
+        env: &'a oxa_config::Env,
+    ) -> HookInputs<'a> {
+        HookInputs {
+            args,
+            dirs,
+            cwd,
+            settings,
+            resources,
+            sandbox,
+            trusted: false,
+            nested: false,
+            env,
+            yolo: oxa_proto::YoloSwitch::new(oxa_proto::PermissionMode::Standard.autonomy()),
+        }
+    }
+
+    fn tool_names(sets: &HookSets) -> Vec<String> {
+        sets.hooks
+            .iter()
+            .flat_map(|h| h.tools())
+            .map(|t| t.spec().name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn live_lead_session_exposes_worker_tool() {
+        let test = oxa_fake::TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let settings = Settings::default();
+        let resources = Resources::default();
+        let sandbox: Arc<dyn Sandbox> = Arc::new(oxa_sandbox::NoSandbox);
+        let env = oxa_config::Env::from_pairs(&[("PATH", "/usr/bin:/bin")]);
+        let args = Args {
+            tools: Some(vec![worker_tool::TOOL_NAME.to_string()]),
+            no_tools: true,
+            offline: true,
+            ..Args::default()
+        };
+        let cwd = test.work();
+        let mut notices = Vec::new();
+        let sets = build_owner_hooks(
+            &inputs(&args, &dirs, &cwd, &settings, &resources, &sandbox, &env),
+            &mut notices,
+        );
+        assert!(sets.workers.is_some(), "{notices:?}");
+        assert_eq!(tool_names(&sets), vec!["worker".to_string()]);
+        assert!(sets
+            .hooks
+            .iter()
+            .flat_map(|h| h.tools())
+            .all(|t| !t.spec().description.contains("worker_done")));
+        let child_scope = sets.workers.as_ref().unwrap().parent_narrowing();
+        assert_eq!(child_scope.tools, None, "Lead's allowlist leaked into its worker");
+        assert!(
+            !child_scope.no_tools,
+            "Lead's no-tools baseline leaked into its worker"
+        );
+        assert!(
+            child_scope.offline,
+            "the parent's execution policy was not inherited"
+        );
+        let (child_args, _) = crate::workers::launch::child_argv(
+            &crate::workers::launch::WorkerSpec {
+                name: "lead-child".into(),
+                session_id: "synthetic-session".into(),
+                model: "synthetic-model".into(),
+                goal_file: "/synthetic/goal".into(),
+                mode: None,
+                max_tokens: None,
+                exclude_tools: Vec::new(),
+                session_dir: None,
+                narrowing: child_scope,
+            },
+            oxa_proto::Mode::Workspace,
+            oxa_proto::Autonomy::Standard,
+        )
+        .unwrap();
+        assert!(child_args.iter().any(|arg| arg == "--offline"));
+        assert!(!child_args
+            .iter()
+            .any(|arg| arg == "--tools=worker" || arg == "--no-tools"));
+        // Only the worker hook set: no extensions, MCP or subagent in the owner session.
+        assert!(sets.extensions.is_none() && sets.mcp.is_none() && sets.subagent.is_none());
+        // The same off switches as everywhere: a worker child gets none.
+        let nested =
+            oxa_config::Env::from_pairs(&[("PATH", "/usr/bin:/bin"), (worker_tool::ENV_WORKER_DEPTH, "1")]);
+        let none = build_owner_hooks(
+            &inputs(&args, &dirs, &cwd, &settings, &resources, &sandbox, &nested),
+            &mut notices,
+        );
+        assert!(none.workers.is_none() && none.hooks.is_empty());
+        // The worker settings are user-only: a trusted project file cannot give the owner
+        // session the tool when the user turned it off.
+        std::fs::create_dir_all(dirs.settings_file().parent().unwrap()).unwrap();
+        std::fs::write(dirs.settings_file(), r#"{"oxa":{"workers":{"enabled":false}}}"#).unwrap();
+        test.write(
+            "work/.oxa/settings.json",
+            r#"{"oxa":{"workers":{"enabled":true}}}"#,
+        );
+        let layered = Settings::load(&dirs, &cwd, true);
+        let denied = build_owner_hooks(
+            &inputs(&args, &dirs, &cwd, &layered, &resources, &sandbox, &env),
+            &mut notices,
+        );
+        assert!(denied.workers.is_none() && denied.hooks.is_empty());
+    }
+
+    #[test]
+    fn shadow_lead_preset_stays_read_only_without_worker_tool() {
+        let test = oxa_fake::TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let settings = Settings::default();
+        let resources = Resources::default();
+        let sandbox: Arc<dyn Sandbox> = Arc::new(oxa_sandbox::NoSandbox);
+        let env = oxa_config::Env::from_pairs(&[("PATH", "/usr/bin:/bin")]);
+        let args = Args {
+            lead: true,
+            shadow: true,
+            ..Args::default()
+        };
+        let cwd = test.work();
+        let mut notices = Vec::new();
+        let sets = build_hooks(
+            &inputs(&args, &dirs, &cwd, &settings, &resources, &sandbox, &env),
+            &mut notices,
+        )
+        .unwrap();
+        assert!(sets.workers.is_none());
+        assert!(tool_names(&sets).is_empty());
+        assert_eq!(sets.hooks.len(), 1);
+        assert!(sets.hooks.iter().all(|h| !h.allows_goals()));
+    }
 }

@@ -163,6 +163,22 @@ pub enum Refusal {
     LocalOnly,
     Unauthenticated,
     NotAllowed,
+    /// Local mode: the request carries no valid per-client token (#193).
+    ClientToken,
+}
+
+/// Local mode needs more than the same-user peer: every request, page or POST, proves it holds
+/// the token `oxa lead serve` minted. Compared without an early exit on the first differing byte.
+pub(crate) fn client_token_ok(expected: &str, given: Option<&str>) -> bool {
+    let Some(given) = given else {
+        return false;
+    };
+    let (a, b) = (expected.as_bytes(), given.as_bytes());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        diff |= usize::from(a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(1));
+    }
+    !expected.is_empty() && diff == 0
 }
 
 /// Authorize before obtaining any observation. No socket, process, mutation, or secret reads.
@@ -195,6 +211,31 @@ pub(crate) fn chat_post(
     }
     if !(config.fixed_prompts() || config.owner_chat()) || request.method != "POST" || request.path != "/chat"
     {
+        return Err(Refusal::ReadOnly);
+    }
+    observe(
+        config,
+        peer,
+        request.authority,
+        request.forwarded_login,
+        identity,
+        || (),
+    )
+    .map(|_| ())
+}
+
+/// The owner's answer to an approval request (#1512 S6): the same owner gate as `chat_post`,
+/// on its own path. Answering needs owner chat, so a fixed prompt alone never grants it.
+pub(crate) fn approval_post(
+    config: &Config,
+    peer: IpAddr,
+    request: &crate::lead_http::Request<'_>,
+    identity: &impl IdentityProvider,
+) -> Result<(), Refusal> {
+    if !config.enabled {
+        return Err(Refusal::Disabled);
+    }
+    if !config.owner_chat() || request.method != "POST" || request.path != "/approvals" {
         return Err(Refusal::ReadOnly);
     }
     observe(
@@ -241,5 +282,109 @@ fn observe<T>(
         // the request is unauthenticated, whichever mode is configured.
         (_, None) => Err(Refusal::Unauthenticated),
         _ => Err(Refusal::NotAllowed),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lead_http::Request;
+
+    /// A verified Tailscale login for the one configured owner.
+    struct Owner;
+    impl IdentityProvider for Owner {
+        fn verified(&self) -> Option<VerifiedIdentity<'_>> {
+            Some(VerifiedIdentity::TailscaleLogin(
+                "owner",
+                "lead.example.invalid:9448",
+            ))
+        }
+    }
+
+    fn config(enabled: bool, owner_chat: bool) -> Config {
+        Config {
+            enabled,
+            fixed_prompts: false,
+            owner_chat,
+            mode: Mode::Tailscale,
+            bind: Ipv4Addr::LOCALHOST.into(),
+            port: 8743,
+            allowed: vec!["owner".into()],
+            proxy: None,
+        }
+    }
+
+    fn request(method: &'static str, path: &'static str) -> Request<'static> {
+        Request {
+            method,
+            path,
+            authority: "lead.example.invalid:9448",
+            forwarded_login: Some("owner"),
+            client_token: None,
+            token_in_query: false,
+            denied: Default::default(),
+        }
+    }
+
+    #[test]
+    fn client_token_compares_whole_value() {
+        assert!(client_token_ok("abc", Some("abc")));
+        assert!(!client_token_ok("abc", Some("abd")));
+        assert!(!client_token_ok("abc", Some("abcd")));
+        assert!(!client_token_ok("abc", Some("ab")));
+        assert!(!client_token_ok("abc", None));
+        assert!(!client_token_ok("", Some("")));
+    }
+
+    #[test]
+    fn approval_post_requires_enabled_and_owner_chat() {
+        let peer: IpAddr = Ipv4Addr::LOCALHOST.into();
+        let post = request("POST", "/approvals");
+        assert_eq!(
+            approval_post(&config(false, true), peer, &post, &Owner),
+            Err(Refusal::Disabled)
+        );
+        assert_eq!(
+            approval_post(&config(true, false), peer, &post, &Owner),
+            Err(Refusal::ReadOnly)
+        );
+        assert_eq!(approval_post(&config(true, true), peer, &post, &Owner), Ok(()));
+        assert_eq!(
+            approval_post(&config(true, true), peer, &post, &Unverified),
+            Err(Refusal::Unauthenticated)
+        );
+        let other_login = Request {
+            forwarded_login: Some("guest"),
+            ..request("POST", "/approvals")
+        };
+        assert_eq!(
+            approval_post(&config(true, true), peer, &other_login, &Owner),
+            Err(Refusal::NotAllowed)
+        );
+    }
+
+    #[test]
+    fn approval_post_refuses_get_and_other_paths() {
+        let peer: IpAddr = Ipv4Addr::LOCALHOST.into();
+        let config = config(true, true);
+        for (method, path) in [
+            ("GET", "/approvals"),
+            ("PUT", "/approvals"),
+            ("POST", "/chat"),
+            ("POST", "/approvals?x=1"),
+            ("POST", "/"),
+        ] {
+            assert_eq!(
+                approval_post(&config, peer, &request(method, path), &Owner),
+                Err(Refusal::ReadOnly),
+                "{method} {path}"
+            );
+        }
+        // A remote peer is refused by the same observation as chat, never answered.
+        let remote: IpAddr = std::net::Ipv4Addr::new(192, 0, 2, 7).into();
+        assert_eq!(
+            approval_post(&config, remote, &request("POST", "/approvals"), &Owner),
+            Err(Refusal::LocalOnly)
+        );
     }
 }

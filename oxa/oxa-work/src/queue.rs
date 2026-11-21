@@ -1002,9 +1002,15 @@ mod tests {
             host_path: "/usr/bin".into(),
             terminate_binary: None,
             offline: true,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             runner_owns_github: false,
+            github_token_command: Vec::new(),
+            github_token_write_paths: Vec::new(),
             autonomy: Default::default(),
-            autonomy_now: None,
+            worker_github: Default::default(),
+            authority_now: None,
             storage: directory.path().join("runner"),
         };
         assert!(Command::new(&policy.git_binary)

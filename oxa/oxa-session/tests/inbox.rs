@@ -1,6 +1,6 @@
 //! The inbox is local IPC, not a socket, and must stay in private, no-follow directories.
 use oxa_fake::TestEnv;
-use oxa_session::{send_inbox, send_inbox_control, Inbox, InboxItem, SessionRef};
+use oxa_session::{send_inbox, send_inbox_control, send_inbox_steer, Inbox, InboxItem, SessionRef};
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::sync::mpsc;
@@ -230,17 +230,38 @@ fn inbox_wipe_covers_orphans_temporary_files_and_rejects_symlink_parents() {
 }
 
 #[test]
+fn inbox_large_message_spills() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let spill_root = agent.join("tmp");
+    let full = "y".repeat(256 * 1024 + 1);
+    send_inbox(&agent, "spilled", &full).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch(&agent, "spilled", move |s| tx.send(s).is_ok()).unwrap();
+    let pointer = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    drop(watch);
+    assert!(pointer.starts_with("The message is 262145 bytes"), "{pointer}");
+    assert!(rx.try_recv().is_err(), "exactly one pointer is queued");
+    let spill: Vec<_> = fs::read_dir(spill_root.join("spilled"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "txt"))
+        .collect();
+    assert_eq!(spill.len(), 1, "one private spill file holds the full text");
+    assert_eq!(fs::read_to_string(&spill[0]).unwrap(), full);
+    assert_eq!(
+        fs::metadata(&spill[0]).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(pointer.contains(&spill[0].display().to_string()), "{pointer}");
+}
+
+#[test]
 fn inbox_oversized_files_stay_on_disk_without_delivery() {
     let env = TestEnv::new();
     let agent = env.root().join("agent");
     send_inbox(&agent, "bounded", "normal").unwrap();
     let oversized = agent.join("inbox/bounded/oversized.msg");
-    assert_eq!(
-        send_inbox(&agent, "bounded", &"x".repeat(256 * 1024 + 1))
-            .unwrap_err()
-            .kind(),
-        std::io::ErrorKind::InvalidInput
-    );
     fs::write(&oversized, vec![b'x'; 256 * 1024 + 1]).unwrap();
     let (tx, rx) = mpsc::channel();
     let watch = Inbox::watch(&agent, "bounded", move |s| tx.send(s).is_ok()).unwrap();
@@ -294,4 +315,26 @@ fn inbox_bounded_scan_advances_past_invalid_batches() {
         70,
         "invalid files are retained, not repeatedly scanned"
     );
+}
+
+/// #2183: the sender chooses the delivery, and the owner's watcher keeps it: a steer for the next
+/// tool boundary, a follow-up for the end of the turn.
+#[test]
+fn a_steer_and_a_follow_up_keep_their_delivery_kind() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    send_inbox_steer(&agent, "steered", "act on this now").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch_messages(&agent, "steered", move |item| tx.send(item).is_ok()).unwrap();
+    let timeout = Duration::from_secs(3);
+    assert_eq!(
+        rx.recv_timeout(timeout).unwrap(),
+        InboxItem::Steer("act on this now".into())
+    );
+    send_inbox(&agent, "steered", "when you are done").unwrap();
+    assert_eq!(
+        rx.recv_timeout(timeout).unwrap(),
+        InboxItem::FollowUp("when you are done".into())
+    );
+    drop(watch);
 }

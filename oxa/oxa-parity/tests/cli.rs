@@ -156,7 +156,18 @@ fn names(list: &[&str]) -> Vec<String> {
 }
 
 fn all_tools() -> Vec<String> {
-    names(&["ask", "bash", "edit", "find", "grep", "ls", "read", "write"])
+    names(&[
+        "ask",
+        "bash",
+        "deliverable",
+        "edit",
+        "find",
+        "grep",
+        "ls",
+        "read",
+        "wait",
+        "write",
+    ])
 }
 
 /// Every `.jsonl` file below the agent directory's `sessions`.
@@ -943,7 +954,18 @@ fn cli_027() {
     let minus = tool_names(&reqs[1]);
     assert!(!minus.contains(&"ls".to_string()) && minus.contains(&"read".to_string()));
     // Lead defaults include ask plus subagent where O-146 offers it.
-    let default_minus_ls = names(&["ask", "bash", "edit", "find", "grep", "read", "subagent", "write"]);
+    let default_minus_ls = names(&[
+        "ask",
+        "bash",
+        "deliverable",
+        "edit",
+        "find",
+        "grep",
+        "read",
+        "subagent",
+        "wait",
+        "write",
+    ]);
     assert_eq!(minus, default_minus_ls, "the default selection minus ls");
     // Below 32K subagent is not offered, but lead-only ask remains.
     let small = fake_opts(
@@ -960,7 +982,17 @@ fn cli_027() {
     ));
     assert_eq!(
         tool_names(&small.requests()[0]),
-        names(&["ask", "bash", "edit", "find", "grep", "read", "write"]),
+        names(&[
+            "ask",
+            "bash",
+            "deliverable",
+            "edit",
+            "find",
+            "grep",
+            "read",
+            "wait",
+            "write"
+        ]),
         "the default selection minus ls on a model below 32K"
     );
     let mixed = run(&env, &server.url(), &["-p", "-t", "read,+ls", "x"]);
@@ -2189,4 +2221,64 @@ fn out_011() {
         let o = run(&env, &server.url(), &refs);
         assert_eq!(code(&o), 0, "`{line}` exit code; stderr: {}", err(&o));
     }
+}
+
+// invariant: A-docs setting up another cloud provider preserves the existing key file
+#[test]
+fn cloud_key_setup_preserves_existing_credentials() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let page = std::fs::read_to_string(root.join("docs/pages/quickstart.md")).expect("quickstart.md");
+    let setup = page
+        .split("Create the file private")
+        .nth(1)
+        .and_then(|tail| tail.split("```console\n").nth(1))
+        .and_then(|tail| tail.split("```").next())
+        .expect("cloud key setup console block")
+        .lines()
+        .map(|line| {
+            line.strip_prefix("$ ")
+                .unwrap_or_else(|| panic!("setup line is not a console command: {line}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let run_setup = |env: &TestEnv| {
+        let output = Command::new("sh")
+            .args(["-eu", "-c", &setup])
+            .env_clear()
+            .env("HOME", env.home())
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .expect("run documented cloud key setup");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "cloud key setup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    let existing = TestEnv::new();
+    let key_file = existing.home().join(".config/oxc/llm/cloud-secrets.json");
+    std::fs::create_dir_all(key_file.parent().unwrap()).unwrap();
+    let original = br#"{"provider":"existing"}"#;
+    std::fs::write(&key_file, original).unwrap();
+    std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    run_setup(&existing);
+    assert_eq!(std::fs::read(&key_file).unwrap(), original);
+    assert_eq!(
+        std::fs::metadata(&key_file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    let fresh = TestEnv::new();
+    let key_file = fresh.home().join(".config/oxc/llm/cloud-secrets.json");
+    run_setup(&fresh);
+    assert_eq!(std::fs::read(&key_file).unwrap(), b"");
+    assert_eq!(
+        std::fs::metadata(&key_file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }

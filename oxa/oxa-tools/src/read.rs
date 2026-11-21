@@ -1,7 +1,8 @@
 //! A6: the `read` tool.
 // ported from pi packages/coding-agent/src/core/tools/read.ts
 use crate::descriptions::{self, diet, errors, limits};
-use oxa_proto::{image_placeholder, Access, Tool, ToolCtx, ToolOutput, ToolSpec, ToolTune, Value};
+use base64::Engine as _;
+use oxa_proto::{image_placeholder, Access, Tool, ToolCtx, ToolOutput, ToolSpec, ToolTune, Value, WireImage};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 
@@ -17,7 +18,7 @@ const SCAN_CHUNK: usize = 64 * 1024;
 /// Model-facing text of an argument error. Not in `descriptions`: pi has no fixed text for it.
 const INVALID_PATH_ARG: &str = "Invalid arguments: path must be a string";
 
-/// `read {path, offset?, limit?}`: text with pi's paging (`offset` 1-based, `limit` lines; 2000 lines / 50 KB per call with pi's continuation notice). Large files are streamed, never loaded whole. A binary file is refused with pi's text. An image returns `oxa_proto::image_placeholder` (name, width, height read from the header) and nothing else.
+/// `read {path, offset?, limit?}`: text with pi's paging (`offset` 1-based, `limit` lines; 2000 lines / 50 KB per call with pi's continuation notice). Large files are streamed, never loaded whole. A binary file is refused with pi's text. An image (PNG, JPEG, GIF, WebP) returns `oxa_proto::image_placeholder` (name, width, height read from the header) and nothing else, unless the model takes images (`ToolTune::image_input`): then the image is returned as an image part, within `ToolTune::max_image_bytes`.
 #[derive(Debug, Clone)]
 pub struct ReadTool {
     spec: ToolSpec,
@@ -47,10 +48,7 @@ impl Tool for ReadTool {
         Ok(vec![Access::Read(crate::resolve_tool_path(cx, path))])
     }
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
-        match read_file(args, cx) {
-            Ok(text) => ToolOutput::ok(text),
-            Err(text) => ToolOutput::error(text),
-        }
+        read_file(args, cx).unwrap_or_else(ToolOutput::error)
     }
 }
 
@@ -72,8 +70,9 @@ fn arg_number(args: &Value, key: &str) -> Result<Option<f64>, String> {
     }
 }
 
-/// The whole read. `Ok` is the text for the model (pi's notices included); `Err` is a tool error.
-fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
+/// The whole read. `Ok` is the output for the model (pi's notices included, an image part for an
+/// image the model takes); `Err` is a tool error.
+fn read_file(args: &Value, cx: &ToolCtx) -> Result<ToolOutput, String> {
     let path = arg_path(args)?;
     let offset = arg_number(args, "offset")?;
     let limit = arg_number(args, "limit")?;
@@ -93,7 +92,7 @@ fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
     // Images first: their headers contain NUL bytes, so the binary test must not see them.
     let probe = read_probe(&abs, path, cx)?;
     if let Some((w, h)) = image_size(&abs, &probe, cx).map_err(|e| read_io_error(path, &e))? {
-        return Ok(image_placeholder(path, w, h));
+        return read_image(&abs, path, &probe, (w, h), meta.len(), cx);
     }
     if probe.contains(&0) {
         return Err(errors::read_binary_refused(path));
@@ -146,12 +145,12 @@ fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
     }
     if shown.first_exceeds {
         // The limit named is the room the line had (pi: the cap itself).
-        return Ok(errors::read_line_too_long(
+        return Ok(ToolOutput::ok(errors::read_line_too_long(
             start + 1,
             sc.kept[0].len,
             content,
             path,
-        ));
+        )));
     }
     let mut text = shown.content;
     let last = start + shown.lines;
@@ -177,7 +176,94 @@ fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
             }
         }
     }
-    Ok(text)
+    Ok(ToolOutput::ok(text))
+}
+
+/// B2b: the result of `read` on an image. The placeholder line, unless the model takes images
+/// (`tune.image_input`) and the file is a type it takes (PNG, JPEG, GIF, WebP): then the image is
+/// returned as an image part. An image over `tune.max_image_bytes` (0 = no limit) is not sent;
+/// the line names the size, the limit and the setting. The bytes come through the same pinned
+/// open as any read, so a private path or a swapped link is refused before any byte is sent.
+fn read_image(
+    abs: &Path,
+    shown: &str,
+    head: &[u8],
+    (w, h): (u32, u32),
+    size: u64,
+    cx: &ToolCtx,
+) -> Result<ToolOutput, String> {
+    let placeholder = image_placeholder(shown, w, h);
+    let Some(mime) = image_mime(head).filter(|_| cx.tune.image_input) else {
+        return Ok(image_read_out(placeholder));
+    };
+    let max = u64::from(cx.tune.max_image_bytes);
+    if max > 0 && size > max {
+        return Ok(image_read_out(format!(
+            "[image {shown} {w}x{h}: not sent, {size} bytes is over the limit of {max} (oxa.read.maxImageBytes)]"
+        )));
+    }
+    let mut file = crate::checked::open(cx, abs).map_err(|e| read_io_error(shown, &e))?;
+    let bytes = read_image_bytes(&mut file, max).map_err(|e| read_io_error(shown, &e))?;
+    let bytes = match bytes {
+        ImageBytes::Within(bytes) => bytes,
+        ImageBytes::OverLimit(actual) => {
+            return Ok(image_read_out(format!(
+                "[image {shown} {w}x{h}: not sent, at least {actual} bytes is over the limit of {max} (oxa.read.maxImageBytes)]"
+            )))
+        }
+    };
+    let mut out = image_read_out(format!("[image {shown} {w}x{h}: shown to the model]"));
+    out.images = vec![WireImage {
+        mime: mime.to_string(),
+        base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    }];
+    Ok(out)
+}
+
+/// An image-read result, marked for the finish decision (`oxa.done.imageCrossCheck`): the run
+/// consulted an image file, even when the model only got the placeholder line. The marker is
+/// display-only state (`ToolOutput::ui`); it never reaches the wire.
+fn image_read_out(text: String) -> ToolOutput {
+    let mut out = ToolOutput::ok(text);
+    out.ui = serde_json::json!({ "imageRead": true });
+    out
+}
+
+enum ImageBytes {
+    Within(Vec<u8>),
+    OverLimit(u64),
+}
+
+/// Read at most one byte beyond the configured cap, so a file that grows after its metadata was
+/// inspected cannot turn the image path into an unbounded allocation.
+fn read_image_bytes(reader: &mut impl Read, max: u64) -> io::Result<ImageBytes> {
+    let mut bytes = Vec::new();
+    if max == 0 {
+        reader.read_to_end(&mut bytes)?;
+        return Ok(ImageBytes::Within(bytes));
+    }
+    reader.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        Ok(ImageBytes::OverLimit(bytes.len() as u64))
+    } else {
+        Ok(ImageBytes::Within(bytes))
+    }
+}
+
+/// The media type of an image the model takes (PNG, JPEG, GIF or WebP), from its first bytes.
+/// `None` for any other file (a BMP is a placeholder).
+fn image_mime(head: &[u8]) -> Option<&'static str> {
+    if head.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if head.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if head.starts_with(b"RIFF") && head.get(8..12) == Some(&b"WEBP"[..]) {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 /// L4: the byte cap of the first page of `read`: the tuned page cap (`read_page_bytes`, at
@@ -190,12 +276,12 @@ fn page_cap(tune: &ToolTune) -> usize {
 }
 
 /// L4: the byte cap of `grep`, `find`, `ls` and a `read` with `offset` / `limit`: the tool
-/// output cap of the tuning (`output_cap_bytes`, never above pi's 16 KiB), or pi's 16 KiB when
-/// the tuning sets none. The output cap of `shape` stays the last word on every result.
+/// output cap of the tuning (`output_cap_bytes`, which an owner setting or a cloud window may
+/// raise above pi's 16 KiB), or pi's 16 KiB when the tuning sets none. The output cap of `shape` stays the last word on every result.
 pub(crate) fn output_cap(tune: &ToolTune) -> usize {
     match tune.output_cap_bytes {
         0 => limits::TOOL_OUTPUT_CAP_DEFAULT,
-        b => (b as usize).min(limits::TOOL_OUTPUT_CAP_DEFAULT),
+        b => b as usize,
     }
 }
 
@@ -551,4 +637,29 @@ fn jpeg_frame(b: &[u8]) -> Option<(u32, u32)> {
         i += seg;
     }
     None
+}
+
+#[cfg(test)]
+mod image_read_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn actual_image_read_is_bounded_to_limit_plus_one() {
+        let mut input = Cursor::new(vec![7; 32]);
+        assert!(matches!(
+            read_image_bytes(&mut input, 8).unwrap(),
+            ImageBytes::OverLimit(9)
+        ));
+        assert_eq!(input.position(), 9);
+    }
+
+    #[test]
+    fn zero_image_limit_reads_the_whole_input() {
+        let mut input = Cursor::new(vec![7; 32]);
+        assert!(matches!(
+            read_image_bytes(&mut input, 0).unwrap(),
+            ImageBytes::Within(bytes) if bytes.len() == 32
+        ));
+    }
 }

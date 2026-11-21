@@ -1,8 +1,10 @@
 name: release
 # Release binaries, built by GitHub's ARM64 runners from the tagged source (see the README,
 # "Download"). A pushed tag v* builds, tests and packages oxe-server (MoE), oxe-server-flash, oxi
-# and oxa (build.yml), writes SHA256SUMS, generates build provenance (actions/attest-build-provenance)
-# and creates the GitHub Release with the tag's commit message as its notes.
+# and oxa (build.yml), the combined Linux archives (release-build.yml) and the native macOS arm64
+# oxa archive (macos.yml, on GitHub's macos-15 runner; required: a failed macOS build fails the
+# release), writes SHA256SUMS, generates build provenance (actions/attest-build-provenance)
+# and creates the GitHub Release with the tag's commit message and changelog fragments.
 # No secrets: the job token only. Only the release job holds write permissions and the
 # "release" environment, which must be protected in the repository settings (required reviewer,
 # deployment tags v*), together with a tag ruleset that limits who may create v* tags.
@@ -48,8 +50,15 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
+  macos:
+    # ox-llm-<tag>-macos-arm64.tar.gz: the native oxa for Apple silicon (packaging/macos/stage.sh)
+    needs: version
+    uses: ./.github/workflows/macos.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
   release:
-    needs: [version, build, combined]
+    needs: [version, build, combined, macos]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -72,7 +81,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: packaging/release
+          sparse-checkout: |
+            changelog.d
+            packaging/release
+            tools/ci
+      - name: Render changelog from the tagged source
+        run: python3 -I tools/ci/changelog.py changelog.d > "$RUNNER_TEMP/changelog.md"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
@@ -82,6 +96,10 @@ jobs:
         with:
           pattern: release-build-*
           path: combined
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-dist-arm64
+          path: macos-dist
       - name: Combined archives and SBOMs
         run: |
           set -euo pipefail
@@ -91,6 +109,9 @@ jobs:
             done
             sha256sum "dist/ox-llm-$TAG-linux-$a.tar.gz" | sed 's# dist/# #' > "dist/ox-llm-$TAG-linux-$a.tar.gz.sha256"
           done
+          mac="ox-llm-$TAG-macos-arm64.tar.gz"
+          cp "macos-dist/$mac" "dist/$mac"
+          sha256sum "dist/$mac" | sed 's# dist/# #' > "dist/$mac.sha256"
       - name: No Python in any release tarball
         run: packaging/release/no-python.sh dist/*.tar.gz
       - name: SHA256SUMS
@@ -103,6 +124,7 @@ jobs:
           for p in oxe-server oxe-server-flash oxi oxa; do
             test -f "./$p-$TAG-linux-aarch64.tar.gz" || { echo "missing tarball: $p"; exit 1; }
           done
+          test -f "./ox-llm-$TAG-macos-arm64.tar.gz" || { echo "missing tarball: macos-arm64"; exit 1; }
           cat ./*.tar.gz.sha256 > SHA256SUMS
           sha256sum ./*.sbom.cdx.json | sed 's# \./# #' >> SHA256SUMS
           rm ./*.tar.gz.sha256
@@ -123,6 +145,10 @@ jobs:
           {
             echo "$changelog"
             echo
+            if [[ -s "$RUNNER_TEMP/changelog.md" ]]; then
+              cat "$RUNNER_TEMP/changelog.md"
+              echo
+            fi
             echo "## Binaries"
             echo
             echo "Built by GitHub Actions from \`$TAG\` (commit $GITHUB_SHA) in [run $GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID); nobody uploads binaries by hand."
@@ -135,7 +161,8 @@ jobs:
             echo "| \`oxe-server-flash-$TAG-linux-aarch64.tar.gz\` | \`oxe-server\` with the Flash engine (\`--engine flash\`) + \`flash-m0\` (expert sidecar) and \`flash-m3\` (selftest); ggml built in the same run from the pinned public sources |"
             echo "| \`oxi-$TAG-linux-aarch64.tar.gz\` | \`oxi\`: FLUX.2 klein image engine (experimental) |"
             echo "| \`oxa-$TAG-linux-aarch64.tar.gz\` | \`oxa\`: the coding agent (talks to the engine over its OpenAI-compatible API) |"
-            echo "| \`ox-llm-$TAG-linux-aarch64.tar.gz\` / \`ox-llm-$TAG-linux-x86_64.tar.gz\` | combined: oxa, oxe, oxe-server, licences; with \`.sbom.cdx.json\` |"
+            echo "| \`ox-llm-$TAG-linux-aarch64.tar.gz\` / \`ox-llm-$TAG-linux-x86_64.tar.gz\` | combined: oxa, oxe, oxe-server, local-ai-memlat-boot, licences and four inert MEMLAT templates; with \`.sbom.cdx.json\` |"
+            echo "| \`ox-llm-$TAG-macos-arm64.tar.gz\` | \`usr/bin/oxa\` for macOS on Apple silicon (cloud models; no local engine) |"
             echo
             echo "Verify:"
             echo

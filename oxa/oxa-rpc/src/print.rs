@@ -447,7 +447,7 @@ impl EventSink for DrainRetry<'_> {
 
 /// The session inbox of a headless run, watched until the returned watcher is dropped. It is
 /// installed only when `enabled` (`oxa.inbox.headless`), the session is persisted and its goal
-/// is pursuing. Each admitted message is an ordinary follow-up of this session; a refused or
+/// is pursuing or the run is an `oxa work` worker (`OXA_WORK_INBOX=1`). Each admitted message is an ordinary follow-up of this session; a refused or
 /// oversized message stays on disk. Not used by the managed-steering path.
 fn headless_inbox(
     session: &Session,
@@ -458,9 +458,14 @@ fn headless_inbox(
     if !enabled || session.state().session_file.is_none() {
         return None;
     }
-    if !session
-        .goal()
-        .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Pursuing)
+    // #1446: an `oxa work` worker (`OXA_WORK_INBOX=1`, set by the runner that launched it) watches
+    // its inbox without a goal, so `oxa send`, the lead chat and the web UI reach it at its next
+    // turn boundary. The owner's `oxa.inbox.headless: false` still turns it off.
+    let work_worker = std::env::var_os("OXA_WORK_INBOX").is_some_and(|v| v == "1");
+    if !work_worker
+        && !session
+            .goal()
+            .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Pursuing)
     {
         return None;
     }
@@ -468,8 +473,16 @@ fn headless_inbox(
     let handle = session.handle();
     let owner = id.clone();
     // Like the RPC owner, a message that arrives once the run is wrapping up stays on disk.
-    let watch = oxa_session::Inbox::watch(agent_dir, &id, move |text| {
-        !handle.wrap_up_requested() && handle.follow_up_for(&owner, text)
+    // #2183: a steer reaches the run at its next tool boundary, a follow-up when it stops.
+    let watch = oxa_session::Inbox::watch_messages(agent_dir, &id, move |item| {
+        if handle.wrap_up_requested() {
+            return false;
+        }
+        match item {
+            oxa_session::InboxItem::Steer(text) => handle.steer_for(&owner, text),
+            oxa_session::InboxItem::FollowUp(text) => handle.follow_up_for(&owner, text),
+            oxa_session::InboxItem::Control(_) => false,
+        }
     });
     match watch {
         Ok(inbox) => Some(inbox),
@@ -504,10 +517,7 @@ fn write_json_header(session: &Session, out: &mut dyn Write) -> Result<(), OxaEr
 
 /// The managed frontend has authenticated the assignment before mounting this worker.
 /// The JSON header remains first. All model events and receipts share one line writer.
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "a2a-control", feature = "managed-steering")
-))]
+#[cfg(target_os = "linux")]
 pub fn run_json_outcome_with_steering_authority(
     session: &mut Session,
     prompts: Vec<(String, Vec<Part>)>,
@@ -554,16 +564,10 @@ pub fn run_json_outcome_with_steering_authority(
     run_json_prompts(session, prompts, &mut writer, err, None)
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "a2a-control", feature = "managed-steering")
-))]
+#[cfg(target_os = "linux")]
 struct SharedRecords(crate::Out);
 
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "a2a-control", feature = "managed-steering")
-))]
+#[cfg(target_os = "linux")]
 impl Write for SharedRecords {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0

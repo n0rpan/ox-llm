@@ -98,7 +98,31 @@ impl ToolOutput {
             ui: Value::Null,
         }
     }
+
+    /// Mark this output as the result of an exceeded owner budget (`oxa.onExceed`): the loop
+    /// shows `notice` once as a warning and records it in the session.
+    pub fn exceeded(mut self, budget: &str, notice: &str) -> Self {
+        let mut ui = match std::mem::take(&mut self.ui) {
+            Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        ui.insert(BUDGET_EXCEEDED.into(), Value::from(budget));
+        ui.insert(BUDGET_NOTICE.into(), Value::from(notice));
+        self.ui = Value::Object(ui);
+        self
+    }
+
+    /// The exceeded budget and its notice, when a tool marked this output with [`Self::exceeded`].
+    pub fn exceeded_notice(ui: &Value) -> Option<(&str, &str)> {
+        Some((
+            ui.get(BUDGET_EXCEEDED)?.as_str()?,
+            ui.get(BUDGET_NOTICE)?.as_str()?,
+        ))
+    }
 }
+
+const BUDGET_EXCEEDED: &str = "budgetExceeded";
+const BUDGET_NOTICE: &str = "budgetNotice";
 
 /// Fixed tool-error texts produced by the loop itself (deterministic, part of W4).
 pub mod tool_errors {
@@ -116,6 +140,18 @@ pub mod tool_errors {
     /// #1512 S2: a dangerous command in a run with no one to ask. `{why}` is the matched rules.
     pub const DANGEROUS_UNATTENDED: &str =
         "Refused: dangerous command ({why}). This run has no one to approve it; nobody declined it.";
+    /// #1512 S5: an unattended run under the OS sandbox refuses a dangerous command at once.
+    /// `{why}` is the matched rules.
+    pub const DANGEROUS_REFUSED: &str = "Refused: dangerous command ({why}). Unattended runs with the OS sandbox refuse dangerous commands. Do the task another way, or report that the owner must run it.";
+    /// #1512 S5: the owner setting `oxa.approval.unattended = "refuse"` refuses a dangerous
+    /// command in an unattended run without the OS sandbox. `{why}` is the matched rules.
+    pub const DANGEROUS_REFUSED_SETTING: &str = "Refused: dangerous command ({why}). The owner setting oxa.approval.unattended refuses dangerous commands in unattended runs. Do the task another way, or report that the owner must run it.";
+    /// #1512 S5: the approval request could not be filed (the approval desk failed), so the
+    /// command is refused. `{why}` is the matched rules.
+    pub const DANGEROUS_REFUSED_NO_REQUEST: &str = "Refused: dangerous command ({why}). An approval request could not be filed for this unattended run. Do the task another way, or report that the owner must run it.";
+    /// #1512 S5: an unattended run without the OS sandbox files an approval request instead.
+    /// `{id}` is the request id, `{session}` the session, `{why}` the matched rules.
+    pub const DANGEROUS_REQUESTED: &str = "Needs owner approval (request {id}): {why}. The owner answers with `oxa send {session} --approve {id} once|session|always|deny` or on the lead web page. Continue with other work and retry this exact command after it is approved.";
     pub const ABORTED: &str = "Tool execution aborted";
     /// A call in a reply cut by the output limit (`Finish::Length`) is never run (pi's
     /// `failToolCallsFromTruncatedMessage`). `{name}` is replaced by the tool name.
@@ -198,6 +234,17 @@ pub struct ToolTune {
     /// `offset` / `limit` cut their result at it (never above pi's 16 KiB), notices inside it.
     /// 0 = none (pi: each tool's own 16 KiB cut).
     pub output_cap_bytes: u32,
+    /// B2b: the model takes image parts (`EngineInfo::images`). `read` then returns the image
+    /// itself instead of the placeholder line. `false` = the placeholder.
+    pub image_input: bool,
+    /// B2b: the largest image `read` sends, in bytes (`oxa.read.maxImageBytes`). 0 = no limit.
+    /// A larger image is not sent; the result names the limit and the setting.
+    pub max_image_bytes: u32,
+    /// `oxa.bash.ciPollHint`: a `bash` command that polls for CI gets a note that names the
+    /// native `wait` call. `false` = no note.
+    pub ci_poll_hint: bool,
+    /// The `wait` tool is declared in this session (`oxa.tools.wait`): the CI note may name it.
+    pub wait_tool: bool,
 }
 
 /// A tool the model can call. Built-ins, extension tools, MCP tools and codemode all implement

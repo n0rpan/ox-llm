@@ -44,7 +44,7 @@ pub enum Answer {
 }
 
 /// One sandboxed command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ExecSpec {
     /// Run as `bash -c <command>`.
     pub command: String,
@@ -56,6 +56,22 @@ pub struct ExecSpec {
     pub timeout_s: Option<u32>,
     /// Extra environment, applied after the sandbox's fixed base environment.
     pub env: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for ExecSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecSpec")
+            .field("command", &self.command)
+            .field("cwd", &self.cwd)
+            .field("writable", &self.writable)
+            .field("net", &self.net)
+            .field("timeout_s", &self.timeout_s)
+            .field(
+                "env_keys",
+                &self.env.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 /// Result of a sandboxed command. `output` is stdout and stderr interleaved as produced.
@@ -126,6 +142,18 @@ pub trait Sandbox: Send + Sync {
     fn for_session(&self) -> Option<std::sync::Arc<dyn Sandbox>> {
         None
     }
+    /// Whether the commands of this sandbox run with the user's own rights (no OS sandbox: they
+    /// can read the host's credentials), so the output sink must scrub them. Default `false`;
+    /// `oxa_sandbox::Unsandboxed` answers `true` and wrappers delegate.
+    fn host_rights(&self) -> bool {
+        false
+    }
+    /// #955: what the bash tool sees at `path` (absolute) when it runs in `cwd`, `writable` as
+    /// the spec would be. The file tools use it to say so when a file they wrote is not shared
+    /// with bash. Default: the same file (no sandbox view).
+    fn bash_view(&self, _cwd: &Path, _path: &Path, _writable: bool) -> BashView {
+        BashView::Same
+    }
     /// The exact `bwrap` argv (without the leading `bwrap`) for `s`. Pure; golden-tested.
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String>;
     /// Run `s`, streaming output chunks to `live`. Cancel and timeout kill the process group.
@@ -156,6 +184,17 @@ pub trait Sandbox: Send + Sync {
             unsandboxed: false,
         }
     }
+}
+
+/// #955: how the bash tool's sandbox shows a host path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BashView {
+    /// The same file, as the file tools see it (readable and writable as the policy allows).
+    Same,
+    /// Visible to bash, but read-only there.
+    ReadOnly,
+    /// Not visible to bash at all.
+    Hidden,
 }
 
 /// How much the policy decides on its own (#202). `Standard` asks the user what the mode table
@@ -265,28 +304,24 @@ impl PermissionMode {
     pub fn describe(self) -> &'static str {
         self.describe_with(OS_SANDBOX)
     }
-    /// [`describe`](Self::describe) for a platform with or without an OS sandbox. Without one the
-    /// text never says the bash sandbox is on: commands run with the user's rights (and are
-    /// disabled while the bash network is off, which that platform cannot enforce).
+    /// [`describe`](Self::describe) for a run with or without the OS sandbox. Without one the
+    /// text never says the bash sandbox is on: it says there is none and that dangerous commands
+    /// ask (#1512 S3: interactive runs are unsandboxed by default and the floor prompt stays).
     pub fn describe_with(self, os_sandbox: bool) -> &'static str {
         match (self, os_sandbox) {
             (PermissionMode::Standard, true) => {
                 "prompts before actions outside the workspace; sandbox and deny-list on"
             }
-            // No OS sandbox: bash runs as the user, and it is disabled while the bash network is
-            // off (that setting cannot be enforced there).
             (PermissionMode::Standard, false) => {
-                "prompts before actions outside the workspace; no OS sandbox on this platform: \
-                 bash runs with your user rights, and is disabled while the bash network is off; \
-                 the deny-list stays on"
+                "prompts before actions outside the workspace; no OS sandbox, dangerous commands \
+                 ask; deny-list on"
             }
             (PermissionMode::Auto, true) => {
                 "no prompts; the bash sandbox, the deny-list and the protected paths stay on"
             }
             (PermissionMode::Auto, false) => {
-                "no prompts; no OS sandbox on this platform: bash runs with your user rights, and \
-                 is disabled while the bash network is off; the deny-list and the protected paths \
-                 stay on"
+                "no prompts; no OS sandbox, dangerous commands still ask; the deny-list and \
+                 protected paths stay on"
             }
             (PermissionMode::Yolo, _) => {
                 "full access: no prompts, bash runs without the sandbox in your own environment, \
@@ -404,4 +439,19 @@ pub trait Policy: Send {
     /// #1512 S2: remember the keys of [`Policy::danger_ask`] for this session (`Session` and
     /// `Always` answers). Never covers any other access.
     fn grant_danger(&mut self, _keys: &[String]) {}
+    /// #1512 S3/S5: the owner's session id for approval requests (bound once the session has
+    /// its id). Never a grant by itself.
+    fn set_session_id(&mut self, _id: &str) {}
+    /// #2292: the session's explicit preservation requirement, a bounded quote of the user's
+    /// own message (`None` clears it). The danger floor appends a reversible-checkpoint note
+    /// to a destructive command's existing question; no new prompt, refusal, cap or grant
+    /// change. Default: ignored.
+    fn set_preservation(&mut self, _requirement: Option<&str>) {}
+    /// #1512 S5: in a run with no one to ask (`!Ui::interactive`) a dangerous command that
+    /// needs an answer is not paused for. `Some(text)` is the tool error (a refusal, or a request
+    /// the owner answers with `oxa send --approve`); `None` = no unattended answer, the caller
+    /// asks the `Ui` as before.
+    fn danger_unattended(&mut self, _a: &Access, _cwd: &Path) -> Option<String> {
+        None
+    }
 }

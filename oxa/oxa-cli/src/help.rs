@@ -28,8 +28,38 @@ const BASE: &[Entry] = &[
     Entry {
         path: &["status"],
         summary: "Read a saved session's current progress and stall signal",
-        usage: &["oxa status <session-id|session-file> [--session-dir <dir>]"],
+        usage: &[
+            "oxa status <session-id|session-file> [--session-dir <dir>]",
+            "oxa status --json",
+        ],
         example: "oxa status 20260101-120000-abcd",
+    },
+    Entry {
+        path: &["cache"],
+        summary: "Report saved prompt-cache evidence without contacting a model",
+        usage: &["oxa cache <session-id|path> [--json]"],
+        example: "oxa cache 20260101-120000-abcd --json",
+    },
+    Entry {
+        path: &["worker", "run"],
+        summary: "Run a worker in its own Git worktree and stream JSON state",
+        usage: &[
+            "oxa [--offline] worker run [--parent kanban] [--name NAME] [--kind KIND] [--job JOB] --goal-file FILE|- [--model MODEL]",
+            "oxa [--offline] worker run [--parent kanban] --resume [--name NAME | --job JOB]",
+        ],
+        example: "oxa worker run --kind build --job k41 --goal-file -",
+    },
+    Entry {
+        path: &["worker", "list"],
+        summary: "Read owner workers and local host load and free memory as JSON",
+        usage: &["oxa worker list [--parent kanban] [--json]"],
+        example: "oxa worker list --parent kanban --json",
+    },
+    Entry {
+        path: &["models"],
+        summary: "List the local and cloud models this install can serve, where each runs and which one is the default",
+        usage: &["oxa models [--json] [search]"],
+        example: "oxa models --json",
     },
     Entry {
         path: &["usage"],
@@ -93,8 +123,13 @@ const BASE: &[Entry] = &[
     },
     Entry {
         path: &["send"],
-        summary: "Queue a session follow-up for its TUI, RPC owner or headless goal run",
-        usage: &["oxa send <session-id> \"text\""],
+        summary: "Send a session a message: a steer for its next tool boundary, or a queued follow-up",
+        usage: &[
+            "oxa send <session-id> \"text\"",
+            "oxa send --follow-up <session-id> \"text\"",
+            "oxa send <session-id> --approve <request-id> once|session|always|deny",
+            "oxa send --approvals",
+        ],
         example: "oxa send 20260101-120000-abcd \"task finished\"",
     },
     Entry {
@@ -126,6 +161,18 @@ const BASE: &[Entry] = &[
         summary: "Print every setting with its value and source",
         usage: &["oxa config [-l]"],
         example: "oxa config",
+    },
+    Entry {
+        path: &["local"],
+        summary: "Wire a local GGUF model into the native local engine settings",
+        usage: &["oxa local add <model.gguf> [options]"],
+        example: "oxa local add ~/models/model.gguf --ctx 16384 --enable",
+    },
+    Entry {
+        path: &["local", "add"],
+        summary: "Write oxa.local for a model from the engine's admission report (user settings only, with a backup)",
+        usage: &["oxa local add <model.gguf> [--name <alias>] [--ctx <positions>] [--max-output <tokens>] [--margin-bytes <n>] [--enable] [--replace] [--engine-dir <dir>] [-- <oxe-server launch arguments>]"],
+        example: "oxa local add ~/models/model.gguf --ctx 16384 --enable -- --oxe-cpus 0-7",
     },
     Entry {
         path: &["mcp"],
@@ -214,6 +261,7 @@ const BASE: &[Entry] = &[
             "oxa work board --shadow --repo OWNER/REPO --once",
             "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--app-quota-shadow]",
             "oxa work board --shadow --repo OWNER/REPO --once --review-policy FILE",
+            "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--landing-shadow] [--lead-alarms]",
         ],
         example: "oxa work board --shadow --repo example/project --once",
     },
@@ -426,6 +474,18 @@ mod tests {
             .unwrap()
             .contains("oxa config -"));
         assert!(requested("mcp", &words(&["list"])).is_none());
+    }
+
+    /// The cache report answers help before its session argument is parsed.
+    #[test]
+    fn cache_help_resolves_before_the_session_argument() {
+        let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for asked in [&["--help"][..], &["20260101-120000-abcd", "--json", "--help"]] {
+            let text = requested("cache", &words(asked)).expect("cache help");
+            assert!(text.starts_with("oxa cache - "), "{text}");
+            assert!(text.contains("oxa cache <session-id|path> [--json]"), "{text}");
+        }
+        assert!(requested("cache", &words(&["--json"])).is_none());
     }
 
     /// An unknown path has no text; the caller turns that into a usage error.

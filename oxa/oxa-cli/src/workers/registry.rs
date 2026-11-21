@@ -5,14 +5,56 @@ use crate::status::atomic;
 use oxa_proto::OxaError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+
+/// `.kanban` cannot be a session ID. A model tool running in a session named `kanban`
+/// must not share the owner command's registry, work artifacts, or launch lease.
+pub(super) const OWNER_PARENT: &str = ".kanban";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerScope {
+    pub(super) repository: PathBuf,
+    pub(super) git_device: u64,
+    pub(super) git_inode: u64,
+    pub(super) sessions_dir: PathBuf,
+    pub(super) offline: bool,
+}
+
+/// A short write lease for independent owner launchers sharing one registry. Never
+/// unlink its inode; a waiter may already have it open. Status readers use atomic snapshots.
+pub(super) fn owner_lease(agent_dir: &Path) -> Result<File, OxaError> {
+    let dir = agent_dir.join("workers");
+    fs::create_dir_all(&dir).map_err(|e| io_err("cannot create worker registry directory", e))?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .mode(0o600)
+        .open(dir.join(".kanban.lock"))
+        .map_err(|e| io_err("cannot open owner worker lease", e))?;
+    let m = file
+        .metadata()
+        .map_err(|e| io_err("cannot inspect owner worker lease", e))?;
+    // SAFETY: geteuid has no preconditions.
+    if !m.is_file() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 || m.nlink() != 1 {
+        return Err(OxaError::new(
+            IO,
+            "owner worker lease must be a private regular file",
+        ));
+    }
+    file.lock()
+        .map_err(|e| io_err("cannot lock owner worker registry", e))?;
+    Ok(file)
+}
 
 pub const CORRUPT: &str = "worker_registry_corrupt";
 const IO: &str = "worker_registry_io";
 const BAD_PARENT: &str = "worker_registry_bad_parent";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerRecord {
     pub name: String,
     pub session_id: String,
@@ -27,6 +69,39 @@ pub struct WorkerRecord {
     pub log_file: PathBuf,
     pub started_ms: u64,
     pub stopped: bool,
+    /// The job kind the caller gave (`review`, `docs`, ...); empty when none.
+    #[serde(default)]
+    pub kind: String,
+    /// The job this attempt belongs to; empty means the worker name.
+    #[serde(default)]
+    pub job: String,
+    /// Why this model was chosen (`explicit`, `policy: kind review`, `escalation: ...`).
+    #[serde(default)]
+    pub choice: String,
+    /// The caller's one-line reason for the model or kind.
+    #[serde(default)]
+    pub reason: String,
+    /// Whether the model id was in the live catalog at start; `None` when it could not be asked.
+    #[serde(default)]
+    pub verified: Option<bool>,
+    /// `ok` or `failed`, as recorded by the caller (`worker result`); empty until recorded.
+    #[serde(default)]
+    pub result: String,
+    #[serde(default)]
+    pub result_reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_scope: Option<OwnerScope>,
+}
+
+impl WorkerRecord {
+    /// The job key: the recorded one, else the worker name.
+    pub fn job_key(&self) -> &str {
+        if self.job.is_empty() {
+            &self.name
+        } else {
+            &self.job
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +124,7 @@ fn file_path(agent_dir: &Path, parent_id: &str) -> Result<PathBuf, OxaError> {
         && parent_id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    if !valid {
+    if !valid && parent_id != OWNER_PARENT {
         return Err(OxaError::new(
             BAD_PARENT,
             format!("invalid parent session id: {parent_id:?}"),
@@ -89,7 +164,7 @@ pub fn save(agent_dir: &Path, parent_id: &str, records: &[WorkerRecord]) -> Resu
 
 /// Whether a status snapshot was written by this worker: the same session and the same process.
 /// The status writer emits both fields; a snapshot without them, or with others, is not ours.
-fn names_worker(rec: &WorkerRecord, status: &Value) -> bool {
+pub(crate) fn names_worker(rec: &WorkerRecord, status: &Value) -> bool {
     status.get("session_id").and_then(Value::as_str) == Some(rec.session_id.as_str())
         && status.get("pid").and_then(Value::as_u64) == Some(u64::from(rec.pid))
 }
@@ -147,6 +222,7 @@ mod tests {
             log_file: "/w/log".into(),
             started_ms: 1_700_000_000_000,
             stopped: false,
+            ..WorkerRecord::default()
         }
     }
 
@@ -284,5 +360,16 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["parent-2.json".to_string()]);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_registry_file_from_before_the_model_fields_still_loads() {
+        let old = r#"[{"name":"a","session_id":"s","pid":1,"pgid":1,"worktree":"/w","branch":"agent/a",
+            "model":"m","mode":"goal","goal_file":"/g","status_file":"/s","log_file":"/l",
+            "started_ms":5,"stopped":false}]"#;
+        let records: Vec<WorkerRecord> = serde_json::from_str(old).unwrap();
+        assert_eq!(records[0].job_key(), "a");
+        assert_eq!(records[0].verified, None);
+        assert!(records[0].result.is_empty());
     }
 }

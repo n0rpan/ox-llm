@@ -1,0 +1,1 @@
+- A resumed session (`--continue`, `--resume`, `/resume`) keeps live `wait` and goal controls, so a pursuing goal no longer answers "Tool wait not found" after a queued message (#2123). A pursuing goal whose tool selection removed `goal_done` pauses with a reason instead of looping.

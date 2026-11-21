@@ -1,6 +1,4 @@
 //! C10 acceptance tests: RPC server, run-control commands.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!
 //! The server runs in a thread over an OS pipe, so a test can send a command while a run is
@@ -124,7 +122,53 @@ fn session_deps(env: &TestEnv, engine: Arc<dyn Engine>) -> Deps {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(target_os = "linux")]
+#[test]
+fn control_files_are_not_consumed_when_the_control_lane_is_off() {
+    use oxa_session::send_inbox_control;
+
+    fn control_files(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            control_files(&path)
+                        } else {
+                            usize::from(path.to_string_lossy().contains(".control-"))
+                        }
+                    })
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let owner = open_session(&env, engine);
+    let bound = owner.inner().sref.clone();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let mut rpc = Rpc::start_with(owner, &env, |session, dirs, input, out| {
+        oxa_rpc::serve_outcome_gated(session, dirs, input, out, false)
+    });
+    rpc.call("ready", json!({"type":"get_state"}));
+    let packet = json!({"method":"cancel","id":"off","revision":1});
+    send_inbox_control(&agent, &bound, &packet.to_string()).unwrap();
+    assert_eq!(control_files(&agent), 1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(control_files(&agent), 1, "the control file must stay unread");
+    assert!(
+        !rpc.records()
+            .iter()
+            .any(|record| record["type"] == "goal_control_receipt"),
+        "no receipt without the control lane"
+    );
+    rpc.finish();
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn file_control_receipts_report_revisioned_and_durable_owner_transitions() {
     use oxa_orchestrator::control::Request;
@@ -132,7 +176,12 @@ fn file_control_receipts_report_revisioned_and_durable_owner_transitions() {
     use oxa_session::{send_inbox_control, Goal, GoalBudget, GoalStatus, SessionRef};
 
     let env = TestEnv::new();
-    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    // The applied resume starts one continuation run: two idle replies, then the goal (no budget
+    // of its own) pauses by default.
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Nothing to do yet."),
+        ScriptTurn::text("Still nothing."),
+    ]));
     let mut owner = open_session(&env, engine.clone());
     let mut sink = NullSink;
     let goal = Goal::new("Review synthetic work.".into(), GoalBudget::default(), 1000).unwrap();
@@ -199,6 +248,11 @@ fn file_control_receipts_report_revisioned_and_durable_owner_transitions() {
     enqueue("resume", "resume", paused_revision);
     let resumed_revision = receipt(&rpc, "resume")["revision"].as_u64().unwrap();
     assert!(resumed_revision > paused_revision);
+    // The resume ran the continuation prompt once; the run moved the goal revision on.
+    rpc.agent_settled();
+    assert_eq!(engine.requests().len(), 2);
+    let state = rpc.call("after_resume", json!({"type":"get_state"}));
+    let resumed_revision = state["data"]["goalRevision"].as_u64().unwrap();
     enqueue("cancel", "cancel", resumed_revision);
     let canceled_revision = receipt(&rpc, "cancel")["revision"].as_u64().unwrap();
     assert!(canceled_revision > resumed_revision);
@@ -372,7 +426,7 @@ fn has_settled(records: &[Value], aborted: bool) -> bool {
         .any(|r| r["type"] == "agent_settled" && r["aborted"] == aborted)
 }
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(target_os = "linux")]
 mod live_steering {
     use super::*;
     use oxa_core::goal::SteeringLease;

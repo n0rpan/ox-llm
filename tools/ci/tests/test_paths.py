@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 import unittest
@@ -103,12 +104,12 @@ class Paths(unittest.TestCase):
                     self.assertEqual(values['docs'], 'true')
                     self.assertEqual(values['md'], 'true')
                     for key in KEYS:
-                        self.assertEqual(values[key], str(everything or (event == 'merge_group' and key == 'oxa')).lower(), key)
+                        self.assertEqual(values[key], str(everything).lower(), key)
 
-    def test_merge_group_docs_reader_runs_for_oxa_documentation(self):
-        # This is documentation to the classifier, but f11_docs reads it at runtime.
-        document = 'oxa/docs/design/sandbox-config-cache-inventory.md'
-        self.assertFalse(paths.classify([document])['oxa'])
+    def test_merge_group_documentation_does_not_start_rust_tests(self):
+        documents = ['oxa/docs/pages/security.md',
+                     'oxa/docs/design/sandbox-config-cache-inventory.md']
+        self.assertFalse(paths.classify(documents)['oxa'])
         with tempfile.TemporaryDirectory() as directory:
             source, output = Path(directory) / 'event.json', Path(directory) / 'output'
             source.write_text(json.dumps({'merge_group': {
@@ -116,12 +117,54 @@ class Paths(unittest.TestCase):
             with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(source),
                     'GITHUB_EVENT_NAME': 'merge_group', 'GITHUB_REF': 'refs/heads/queue',
                     'GITHUB_OUTPUT': str(output)}, clear=True), \
-                    patch.object(paths, 'changed_paths', return_value=[document]):
+                    patch.object(paths, 'changed_paths', return_value=documents):
                 paths.main()
             values = dict(line.split('=', 1) for line in output.read_text().splitlines())
-            for key in ('full', 'docs', 'md', 'oxa'):
+            for key in ('full', 'docs', 'md'):
                 self.assertEqual(values[key], 'true', key)
-            self.assertEqual(values['engine'], 'false')
+            for key in KEYS:
+                self.assertEqual(values[key], 'false', key)
+
+
+    def test_macos_build_only_for_macos_relevant_paths(self):
+        for path in ('packaging/macos/stage.sh', '.github/workflows/macos.yml',
+                     '.github/workflows/dev-build.yml', 'oxa/Cargo.toml', 'oxa/Cargo.lock',
+                     'tools/lab/dev-update-macos.sh', 'tools/ci/tests/test_macos_stage.py',
+                     'oxa/oxa-cli/src/darwin_probe.rs', 'oxa/oxa-sandbox/src/run.rs'):
+            self.assertTrue(paths.classify([path])['macos'], path)
+        for path in ('oxa/oxa-cli/src/main.rs', 'engine/src/a.rs', 'oxc/src/a.py',
+                     '.github/workflows/checks.yml', 'tools/ci/paths.py', 'packaging/release/x.sh',
+                     'docs/install-macos.md', 'new-product/code'):
+            self.assertFalse(paths.classify([path])['macos'], path)
+
+    def test_every_oxa_file_with_macos_only_code_selects_macos(self):
+        # Every oxa file with macOS-only cfg selects the macOS build (listed or detected from its content).
+        root = Path(__file__).resolve().parents[3]
+        pattern = re.compile(r'target_os\s*=\s*"macos"|not\((any\()?target_os\s*=\s*"linux"')
+        found = [str(path.relative_to(root)) for path in sorted((root / 'oxa').rglob('*.rs'))
+                 if 'target' not in path.relative_to(root / 'oxa').parts[:1]
+                 and pattern.search(path.read_text(errors='replace'))]
+        self.assertTrue(found)
+        self.assertEqual([path for path in found if not paths.classify([path])['macos']], [])
+
+    def test_macos_output_follows_full_runs_but_not_the_merge_queue(self):
+        for event, ref, payload, expected in (
+                ('push', 'refs/heads/main', {'before': 'a' * 40, 'after': 'b' * 40}, 'true'),
+                ('schedule', 'refs/heads/main', {}, 'true'),
+                ('merge_group', 'refs/heads/queue',
+                 {'merge_group': {'base_sha': 'a' * 40, 'head_sha': 'b' * 40}}, 'false'),
+                ('pull_request', 'refs/pull/1/merge', {'pull_request': {
+                    'base': {'sha': 'a' * 40}, 'head': {'sha': 'b' * 40}}}, 'false')):
+            with self.subTest(event=event), tempfile.TemporaryDirectory() as directory:
+                source, output = Path(directory) / 'event.json', Path(directory) / 'output'
+                source.write_text(json.dumps(payload))
+                with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(source),
+                        'GITHUB_EVENT_NAME': event, 'GITHUB_REF': ref,
+                        'GITHUB_OUTPUT': str(output)}, clear=True), \
+                        patch.object(paths, 'changed_paths', return_value=['tools/ci/paths.py']):
+                    paths.main()
+                values = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                self.assertEqual(values['macos'], expected)
 
 
 class GitPaths(unittest.TestCase):

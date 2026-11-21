@@ -10,12 +10,13 @@ use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{cache_bytes, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    AgentEvent, AssistantTurn, CancelToken, ChatRequest, CompactReason, Engine, EngineInfo, HeadlessUi,
-    OxaError, StreamEvent, VecSink,
+    codes, AgentEvent, AssistantTurn, CancelToken, ChatRequest, CompactReason, Engine, EngineInfo,
+    HeadlessUi, OxaError, StreamEvent, VecSink,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::{MemStore, SessionStore};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// (alias, n_ctx, max_output, compact_at)
@@ -23,6 +24,8 @@ type Limits = (&'static str, u32, u32, Option<u32>);
 
 const MOE: Limits = ("moe", 131_072, 16_384, Some(100_000));
 const FLASH: Limits = ("flash", 16_384, 1_024, Some(200));
+/// A cloud model the controller publishes beside the local rows (#2256).
+const CLOUD: Limits = ("openai/cloud-model", 200_000, 32_000, None);
 
 /// Two models behind one endpoint. A chat request loads the model it names. Chat itself is the
 /// scripted engine's; every request is checked against the limits of the model it names, and
@@ -32,6 +35,10 @@ struct TwoModels {
     chat: ScriptedEngine,
     loaded: Mutex<&'static str>,
     publish: bool,
+    /// Publish `CLOUD` as a cloud row (`remote: true`, provider `openai`).
+    cloud: AtomicBool,
+    /// `info` fails (an engine that cannot describe the model) while set.
+    info_fails: Mutex<bool>,
     violations: Mutex<Vec<String>>,
 }
 
@@ -41,8 +48,14 @@ impl TwoModels {
             chat: ScriptedEngine::new(turns),
             loaded: Mutex::new(MOE.0),
             publish,
+            cloud: AtomicBool::new(false),
+            info_fails: Mutex::new(false),
             violations: Mutex::new(Vec::new()),
         })
+    }
+    fn with_cloud(self: Arc<Self>) -> Arc<TwoModels> {
+        self.cloud.store(true, Ordering::SeqCst);
+        self
     }
     fn load(&self, m: &'static str) {
         *self.loaded.lock().unwrap() = m;
@@ -50,6 +63,8 @@ impl TwoModels {
     fn limits(m: &str) -> Limits {
         if m == FLASH.0 {
             FLASH
+        } else if m == CLOUD.0 {
+            CLOUD
         } else {
             MOE
         }
@@ -70,15 +85,33 @@ impl TwoModels {
 
 impl Engine for TwoModels {
     fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+        if *self.info_fails.lock().unwrap() {
+            return Err(OxaError::new(
+                codes::ENGINE_DOWN,
+                "the engine cannot describe the model",
+            ));
+        }
         let loaded = *self.loaded.lock().unwrap();
         let limits_for = match target {
-            Some(t) if self.publish && (t == MOE.0 || t == FLASH.0) => t,
+            Some(t)
+                if self.publish
+                    && (t == MOE.0
+                        || t == FLASH.0
+                        || (self.cloud.load(Ordering::SeqCst) && t == CLOUD.0)) =>
+            {
+                t
+            }
             _ => loaded,
         };
         let (_, n_ctx, max_output, compact_at) = Self::limits(limits_for);
+        let remote = limits_for == CLOUD.0;
+        let mut models = vec![MOE.0.to_string(), FLASH.0.to_string()];
+        if self.cloud.load(Ordering::SeqCst) {
+            models.push(CLOUD.0.to_string());
+        }
         Ok(EngineInfo {
             base_url: "two-models:".to_string(),
-            models: vec![MOE.0.to_string(), FLASH.0.to_string()],
+            models,
             model: loaded.to_string(),
             limits_for: limits_for.to_string(),
             n_ctx,
@@ -86,7 +119,11 @@ impl Engine for TwoModels {
             queue: 0,
             compact_at,
             prefill_only: loaded == MOE.0,
-            caps: oxa_proto::EngineCaps::default(),
+            caps: oxa_proto::EngineCaps {
+                remote,
+                remote_provider: remote.then_some("openai"),
+                ..oxa_proto::EngineCaps::default()
+            },
             thinking: None,
             images: None,
         })
@@ -481,4 +518,54 @@ fn hard_overflow_compacts_with_auto_compaction_off() {
     let ev = prompt(&mut s, &"x".repeat(hard as usize));
     assert!(s.inner().stats.compactions >= 1);
     assert_eq!(compactions(&ev), vec![CompactReason::Overflow]);
+}
+
+/// #2256: the published location follows the active model. A session on a cloud model that
+/// switches to a local one is local again (the TUI shows what `state()` publishes); a published
+/// cloud row still reports its provider.
+#[test]
+fn the_published_location_follows_the_switched_model() {
+    let env = TestEnv::new();
+    write_settings(
+        &env,
+        r#"{"compaction": {"reserveTokens": 1024, "keepRecentTokens": 4000, "enabled": false}}"#,
+    );
+    let eng = TwoModels::new(
+        vec![
+            ScriptTurn::text("a"),
+            ScriptTurn::text("b"),
+            ScriptTurn::text("c"),
+        ],
+        true,
+    )
+    .with_cloud();
+    let mut s = open_with(&env, eng, Some(CLOUD.0));
+    let cloud = s.state();
+    assert!(cloud.model_remote, "the published cloud row is remote");
+    assert_eq!(cloud.model_provider, Some("openai"));
+    let mut sink = VecSink::default();
+    s.set_model(MOE.0, &mut sink).expect("to the local model");
+    let local = s.state();
+    assert_eq!(local.model, MOE.0);
+    assert!(!local.model_remote, "a local model after a cloud one is local");
+    assert_eq!(local.model_provider, None);
+}
+
+#[test]
+fn an_information_failure_never_keeps_the_previous_models_provider() {
+    let env = TestEnv::new();
+    write_settings(&env, r#"{"compaction": {"enabled": false}}"#);
+    let eng = TwoModels::new(vec![ScriptTurn::text("a")], true).with_cloud();
+    let mut s = open_with(&env, eng.clone(), Some(CLOUD.0));
+    assert_eq!(s.state().model_provider, Some("openai"));
+    *eng.info_fails.lock().unwrap() = true;
+    let mut sink = VecSink::default();
+    s.set_model(FLASH.0, &mut sink).expect("to flash");
+    let st = s.state();
+    assert_eq!(st.model, FLASH.0);
+    assert!(
+        st.model_remote,
+        "the engine did not say where the model runs: remote, unverified"
+    );
+    assert_eq!(st.model_provider, None, "not the previous model's provider");
 }

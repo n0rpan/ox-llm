@@ -35,14 +35,19 @@
 //! With [`LIMIT`] identical consecutive results the new result is replaced by a short notice
 //! ([`crate::prompt::repeat_notice`]) that says the content is unchanged and already in context
 //! and asks the model to change approach. The call still runs, so a changed outcome is never
-//! hidden. After [`NOTICES_BEFORE_STOP`] notices in the same run the guard no longer ends the
+//! hidden. The change-of-approach suggestion is written once, on the first notice of the loop;
+//! every later notice is short, carries the attempt count (the identical results and notices of
+//! this loop so far, plus this call) and points back to that suggestion, so a loop costs a new
+//! number rather than the same paragraph per try. A healthy turn never reaches the notice and is
+//! unchanged. After [`NOTICES_BEFORE_STOP`] notices in the same run the guard no longer ends the
 //! run (#1448): the user is warned once — shown and persisted with the remedy ([`warning_text`])
 //! — and the run continues, so a later reply can still finish the task. The advisor can still end
 //! it on escalation (`agent_loop.rs`); `oxa.maxTurns` and cancellation bound a loop that never
 //! recovers. Further repeats keep getting the notice. Nothing already sent is rewritten (W1):
 //! the notice is the tool result of the new call.
 use crate::SessionState;
-use oxa_proto::{Role, Value, WireMsg};
+use oxa_proto::{Role, Value, WireImage, WireMsg};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// The setting that turns the guard off (default on).
 pub const SETTING: &str = "oxa.toolRepeatGuard";
@@ -72,7 +77,7 @@ pub(crate) fn judge(
     st: &SessionState,
     name: &str,
     args_raw: &str,
-    text: &str,
+    result: &str,
     in_batch: &[(&str, &str, &str, bool)],
 ) -> Verdict {
     if !st.settings.bool(SETTING, true) {
@@ -90,7 +95,7 @@ pub(crate) fn judge(
             .get("wait_s")
             .and_then(|w| w.as_f64())
             .is_some_and(|w| w >= 1.0)
-        && text
+        && result
             .lines()
             .next()
             .is_some_and(|h| h.starts_with("Job ") && h.contains(": running ("))
@@ -108,13 +113,13 @@ pub(crate) fn judge(
             }
             return finish(found, name, args_raw);
         }
-        match step(&mut found, t, text) {
+        match step(&mut found, t, result) {
             Step::Go => {}
             Step::Break => return finish(found, name, args_raw),
         }
     }
     let failed = |i: usize| result_failed(st, i);
-    scan(st.transcript.wire(), &failed, name, &args, text, &mut found);
+    scan(st.transcript.wire(), &failed, name, &args, result, &mut found);
     finish(found, name, args_raw)
 }
 
@@ -122,7 +127,10 @@ fn finish(found: Found, name: &str, args_raw: &str) -> Verdict {
     if found.identical < LIMIT {
         return Verdict::Pass;
     }
-    let notice = crate::prompt::repeat_notice(name, args_raw, found.identical);
+    // The attempt counts every call of this loop so far: the identical results and the notices
+    // before this one, plus this one (#2298).
+    let attempt = found.identical + found.notices + 1;
+    let notice = crate::prompt::repeat_notice(name, args_raw, found.identical, attempt);
     if found.notices >= NOTICES_BEFORE_STOP {
         Verdict::Warn(notice)
     } else {
@@ -228,13 +236,28 @@ pub(crate) fn scan(
                     }
                     return;
                 }
-                if let Step::Break = step(found, m.content.as_deref().unwrap_or(""), text) {
+                let earlier = result_key(m.content.as_deref().unwrap_or(""), &m.images);
+                if let Step::Break = step(found, &earlier, text) {
                     return;
                 }
             }
             _ => {}
         }
     }
+}
+
+/// Stable, bounded identity for repeat detection. Image bytes must participate, but copying their
+/// base64 into the batch comparison would double the largest allocation in a tool result.
+pub(crate) fn result_key(text: &str, images: &[WireImage]) -> String {
+    if images.is_empty() {
+        return text.to_string();
+    }
+    let mut hash = DefaultHasher::new();
+    for image in images {
+        image.mime.hash(&mut hash);
+        image.base64.hash(&mut hash);
+    }
+    format!("{text}\n[image-content:{:016x}]", hash.finish())
 }
 
 /// The call `id` answers: the newest assistant message before it that carries it.
@@ -313,5 +336,18 @@ mod job_poll_tests {
             finish(found, "bash", r#"{"job":"job-1"}"#),
             Verdict::Notice(_)
         ));
+    }
+
+    #[test]
+    fn image_bytes_are_part_of_the_result_identity() {
+        let image = |base64: &str| WireImage {
+            mime: "image/png".to_string(),
+            base64: base64.to_string(),
+        };
+        assert_ne!(
+            result_key("same dimensions", &[image("AAAA")]),
+            result_key("same dimensions", &[image("AAAB")])
+        );
+        assert_eq!(result_key("plain", &[]), "plain");
     }
 }

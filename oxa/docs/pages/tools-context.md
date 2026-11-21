@@ -60,7 +60,8 @@ usage, so reported reasoning tokens can be one greater than the text cap.
 
 - **bash timeout.** A bash call with no `timeout` waits 120 seconds in the foreground.
   `oxa.bash.defaultTimeout` sets the value; `0` means none. A command still running then is not
-  killed: it continues as a background job and the result gives the job id and the wall time. A
+  killed: it continues as a background job and the result gives the job id, the wall time, the
+  typed `job` forms to read, wait for or stop it, and a note that the id is not a shell command. A
   foreground command that took 10 seconds or more ends with a `[wall time ...]` line.
 - **Shorter first page of `read`.** A `read` with no `offset` or `limit` returns the first 400
   lines, and at most 8 KiB. On a model with a context below 32K tokens it returns 200 lines and
@@ -68,7 +69,7 @@ usage, so reported reasoning tokens can be one greater than the text cap.
   suggests `grep` to find a part.
 - **Output cap on a small context.** On a model with a context below 32K tokens, the cap on one
   tool output is set from the context window: about 12% of the window, at roughly three bytes
-  per token, and at least 2 KiB. A larger context keeps the cap of `oxa.toolOutputCap`.
+  per token, and at least 2 KiB. A larger local context keeps the cap of `oxa.toolOutputCap`; on a cloud model the unset cap scales with the window (3/16 of it in bytes, at least 16 KiB).
 - **Kept tail after a compaction.** On a small context, the recent messages kept after a
   compaction are about 2000 tokens, unless `compaction.keepRecentTokens` is set. See
   [compaction.md](compaction.md).
@@ -79,14 +80,19 @@ usage, so reported reasoning tokens can be one greater than the text cap.
   compaction point, one tool result is at most a quarter of it (three bytes per token, never
   below 2048 bytes), unless `oxa.toolOutputCap` is set. Only the first page of a `read` (no
   `offset` or `limit`) is at most 8 KiB; `grep`, `find`, `ls` and a `read` with `offset` or
-  `limit` are cut at the cap itself (16 KiB by default on a large context), never above
-  16 KiB. A cut ends with a note inside the cap: the next `offset` for `read`, a narrower
+  `limit` are cut at the cap itself (16 KiB by default on a large local context; 3/16 of the
+  window on a cloud model; a higher `oxa.toolOutputCap` applies too). A cut ends with a note inside the cap: the next `offset` for `read`, a narrower
   search for `grep`, `find` and `ls`.
 - **Count form of a large `grep`.** When the matches are more than the `limit`, `grep` answers
   with the total and one count per file (`<path>: <n> matches`) instead of the lines. Narrow
   the pattern, path or glob, or raise limit, to see the lines.
 - **Conciseness rule.** The system prompt asks for short tool use and a final answer of at most
   6 lines, in place of its "be concise" rule (`oxa.diet.output`, on by default).
+- **Headless autonomy.** In a print or JSON run (`oxa -p`, `--mode json`) the system prompt ends
+  with an `<autonomy>` block: nobody can answer, so do not ask, do not end a reply on a plan or a
+  promise, keep going until done or blocked, check the result, report failures honestly. If the
+  final reply still ends on a plan, a promise or an open question, the run sends one nudge to
+  continue (once per run). Interactive and RPC sessions are unchanged.
 - **No `<tools>` section.** The chat template renders the tool list from the tool JSON, so the
   system prompt leaves the `<tools>` section out.
 - **Summary length.** A compaction summary is asked for about 550 words (a target of 700

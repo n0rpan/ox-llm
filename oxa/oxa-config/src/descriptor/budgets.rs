@@ -12,6 +12,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Cloud budget and models",
         "Daily USD budget, subscription caps, cloud models and prices.",
     )
+    .key(Kind::Object, "{}")
     .control(Control::Fields)
     .apply(Apply::Reload)
     .web(WebEdit::ReadOnly)
@@ -89,11 +90,35 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .user_only()
     .widens("Changes the prices used to count spending on discovered models."),
     d(
+        "oxa.cloud.openrouter_provider",
+        Group::Budgets,
+        "",
+        "OpenRouter routing preferences",
+        "Optional zdr (true/false) and data_collection (allow/deny) sent to OpenRouter; unset sends nothing.",
+    )
+    .control(Control::Raw)
+    .apply(Apply::Restart)
+    .web(WebEdit::Confirm)
+    .user_only()
+    .widens("Changes which OpenRouter providers may serve your requests and how they may retain data."),
+    d(
         "oxa.cloud.discovery",
         Group::Budgets,
         "",
         "Discovery endpoints",
         "Base URL per provider when several are configured.",
+    )
+    .control(Control::Raw)
+    .apply(Apply::Restart)
+    .web(WebEdit::ReadOnly)
+    .advanced()
+    .user_only(),
+    d(
+        "oxa.cloud.model_rules",
+        Group::Budgets,
+        "",
+        "Model rules",
+        "Per-model thinking format, reasoning replay, token field and limits.",
     )
     .control(Control::Raw)
     .apply(Apply::Restart)
@@ -119,8 +144,50 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Turn limit per run",
         "End a run after this many model replies. Unset or 0 = no limit.",
     )
+    .key(Kind::Number, "null")
     .number(Unit::Count)
     .zero("no limit")
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
+    d(
+        "oxa.onExceed",
+        Group::Budgets,
+        "Run limits",
+        "What happens when a budget is exceeded",
+        "Per budget: warn (show and record), pause (goals) or stop (refuse the call or block the goal).",
+    )
+    .key(Kind::Object, "{}")
+    .control(Control::Raw)
+    .apply(Apply::Reload)
+    .web(WebEdit::ReadOnly)
+    .advanced()
+    .user_only(),
+    d(
+        "oxa.run.wrapUpTokens",
+        Group::Budgets,
+        "Run limits",
+        "Wrap-up reply size",
+        "Output cap of the final turn when --max-time, --max-tokens or SIGTERM ends a run. Unset = the model's own output limit, at most 4096.",
+    )
+    .key(Kind::Number, "null")
+    .number(Unit::Tokens)
+    .apply(Apply::Reload)
+    .web(WebEdit::ReadOnly)
+    .advanced()
+    .user_only(),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openrouter_provider_preferences_require_restart() {
+        let preferences = ENTRIES
+            .iter()
+            .find(|entry| entry.key == "oxa.cloud.openrouter_provider")
+            .expect("OpenRouter provider preferences descriptor");
+
+        assert_eq!(preferences.apply, Apply::Restart);
+    }
+}

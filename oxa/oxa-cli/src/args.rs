@@ -56,6 +56,11 @@ pub enum Subcommand {
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
     Config(Vec<String>),
+    /// `oxa models [--json] [search]`: the words after `models`. Known words are never
+    /// prompts (#1542).
+    Models(Vec<String>),
+    /// `oxa local add <model.gguf> ..`: the words after `local`.
+    Local(Vec<String>),
     /// O-152: `oxa identity [--refresh] [--offline]`.
     Identity(Vec<String>),
     /// O-152: `oxa report-issue draft|submit ..`.
@@ -78,17 +83,24 @@ pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -
     use oxa_interactive::command_registry::CommandId;
     // Admission belongs exclusively to the oxe binary.
     // Declared in the registry for discovery, help and surfaces, but parsed and handled by the
-    // legacy path below; the registry route must not take them over.
+    // legacy path below; the registry route must not take them over. #1512 S5: `send` keeps its
+    // legacy parser (follow-ups and approval answers).
     !matches!(
         id,
         CommandId::Admission
             | CommandId::Help
+            | CommandId::Status
             | CommandId::WorkStatus
             | CommandId::WorkBoard
+            | CommandId::Send
+            | CommandId::SendApprovals
             | CommandId::Memory
             | CommandId::MemoryList
             | CommandId::MemoryShow
             | CommandId::MemoryRm
+            | CommandId::Models
+            | CommandId::Local
+            | CommandId::LocalAdd
     )
 }
 
@@ -129,7 +141,7 @@ pub struct Args {
     pub output_schema: Option<String>,
     /// Stored goal objective from a UTF-8 file (print/JSON).
     pub goal: Option<String>,
-    /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
+    /// Soft runtime limit for a run in any mode (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
     /// Flag a saved active session after this long without progress.
     pub stall_timeout: Option<std::time::Duration>,
@@ -137,6 +149,11 @@ pub struct Args {
     pub max_tokens: Option<u64>,
     /// `--usage-log FILE`: one JSONL record per model call (owner-only file, no message text).
     pub usage_log: Option<PathBuf>,
+    /// `--wire-evidence`: owner-terminal-only adjacent request observations.
+    pub wire_evidence: bool,
+    /// `--allowed-changed-files <list>`: the allowed changed-file set a task supplies; the
+    /// terminal record reports tool-observed extra files against it (#2297). Empty = no scope.
+    pub allowed_changed_files: Vec<String>,
     /// `--mode text|json|rpc`.
     pub mode: Option<ModeArg>,
     /// `--export <input> [output]`.
@@ -233,6 +250,8 @@ pub struct Args {
     pub version: bool,
     /// The hard offline switch (see the help text).
     pub offline: bool,
+    /// #1512 S3: the OS sandbox (bwrap) for this attended run, as `oxa.sandbox.interactive`.
+    pub sandbox: bool,
     /// Explicitly expose only these native local aliases for the current owner session.
     #[cfg(feature = "share")]
     pub share_models: Vec<String>,
@@ -269,6 +288,14 @@ const COMMANDS: &[(&str, &str)] = &[
         "Read a saved session's current progress and stall signal",
     ),
     (
+        "oxa cache <session-id|path> [--json]",
+        "Report saved prompt-cache evidence without contacting a model",
+    ),
+    (
+        "oxa models [--json] [search]",
+        "List the local and cloud models this install can serve, as a table or as JSON",
+    ),
+    (
         "oxa install <source> [-l]",
         "Install a package source and add it to settings",
     ),
@@ -287,10 +314,23 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
     (
-        "oxa send <session-id> \"text\"",
-        "Queue a session follow-up for its TUI, RPC owner or headless goal run",
+        "oxa send [--follow-up] <session-id> <text|-> [--wait SECONDS]",
+        "Steer a session at its next tool call (--follow-up queues it instead) and print a delivery receipt; - reads stdin; --wait exits 3 if not taken in time",
     ),
+    (
+        "oxa send <session-id> --retry <message-id> | --withdraw <message-id>",
+        "Check a sent message again without sending it twice, or remove an undelivered one",
+    ),
+    (
+        "oxa send <session-id> --approve <request-id> once|session|always|deny",
+        "Answer a dangerous-command approval request of an unattended run",
+    ),
+    ("oxa send --approvals", "List the approval requests that wait for an answer"),
     ("oxa config [-l]", "Print every setting with its value and source"),
+    (
+        "oxa local add <model.gguf> [--ctx N] [--enable] [-- <launch args>]",
+        "Wire a local GGUF into the native local engine settings from the engine's admission report",
+    ),
     (
         "oxa mcp <command>",
         "Manage MCP servers: add, remove, list, login, logout",
@@ -360,7 +400,7 @@ const OPTIONS: &[(&str, &str)] = &[
     ("--goal <file>", "Pursue and persist this goal until complete, blocked, stalled or interrupted"),
     (
         "--max-time <seconds>",
-        "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
+        "Gracefully wrap up a run after this time (fractional seconds allowed)",
     ),
     (
         "--stall-timeout <seconds>",
@@ -368,11 +408,16 @@ const OPTIONS: &[(&str, &str)] = &[
     ),
     (
         "--max-tokens <N>",
-        "Gracefully wrap up a headless run after N new prompt + output tokens (cached tokens are free)",
+        "Gracefully wrap up a run after N new prompt + output tokens (cached tokens are free)",
     ),
     (
         "--usage-log <file>",
         "Write one JSONL record per model call (tokens, duration, model, turn) to FILE; owner-only, no message text",
+    ),
+    ("--wire-evidence", "Show bounded adjacent wire observations on exit (owner terminal only)"),
+    (
+        "--allowed-changed-files <list>",
+        "Comma-separated allowed changed-file set; the result reports tool-observed extra files against it (acceptance evidence, never a refusal)",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -494,6 +539,10 @@ const OPTIONS: &[(&str, &str)] = &[
         "Hard offline switch: non-local connections refused, bash has no network, web_search off",
     ),
     (
+        "--sandbox",
+        "Run bash in the OS sandbox (bwrap) for this interactive run; hooks are always sandboxed; default: no OS sandbox, dangerous commands ask",
+    ),
+    (
         "--                ",
         "End option parsing; treat the remaining arguments as messages and files",
     ),
@@ -540,11 +589,13 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         #[cfg(not(feature = "share"))]
         "share" => return Err(usage("this build does not include sharing")),
         "config" => Subcommand::Config(rest.to_vec()),
+        "local" => Subcommand::Local(rest.to_vec()),
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),
         "send" => Subcommand::Send(rest.to_vec()),
         "status" => Subcommand::Status(rest.to_vec()),
+        "models" => Subcommand::Models(rest.to_vec()),
         "work" => Subcommand::Work(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
         _ => return Ok(None),
@@ -673,11 +724,12 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
                 continue;
             }
         }
-        // These commands accept leading offline switches so their own guards
-        // can report the refusal. A prompt, another option or `--` ends that prefix.
+        // These commands accept leading offline switches so their own guards can report the
+        // refusal, and `models` so the catalog can report an offline cloud route. A prompt,
+        // another option or `--` ends that prefix.
         if !stop
             && (i == 1
-                || ((matches!(arg, "send" | "work" | "share")
+                || ((matches!(arg, "send" | "work" | "share" | "models")
                     || oxa_interactive::command_registry::parse_cli(&argv[i - 1..])
                         .is_some_and(|invocation| registry_owned(invocation.command.id)))
                     && argv[..i - 1].iter().all(|word| word == "--offline")))
@@ -803,8 +855,15 @@ fn parse_flag(
                     .ok_or_else(|| usage("--max-tokens requires a positive integer"))?,
             );
         }
+        "--wire-evidence" => {
+            no_value(inline, flag)?;
+            a.wire_evidence = true;
+        }
         "--usage-log" => {
             a.usage_log = Some(PathBuf::from(value(argv, i, inline, flag, "a file path")?));
+        }
+        "--allowed-changed-files" => {
+            a.allowed_changed_files = list(&value(argv, i, inline, flag, "a comma-separated file list")?);
         }
         "--provider" => a.provider = Some(value(argv, i, inline, flag, "a provider name")?),
         "--model" => a.model = Some(value(argv, i, inline, flag, "a model pattern")?),
@@ -981,6 +1040,10 @@ fn parse_flag(
             no_value(inline, flag)?;
             a.offline = true;
         }
+        "--sandbox" => {
+            no_value(inline, flag)?;
+            a.sandbox = true;
+        }
         "--yolo" => {
             no_value(inline, flag)?;
             a.level = Some(PermissionMode::Yolo);
@@ -1103,6 +1166,14 @@ fn present_flags<'a>(flags: &[(bool, &'a str)]) -> Vec<&'a str> {
         .collect()
 }
 
+/// A registry command that `COMMANDS` already names is printed from that table once.
+fn listed_in_commands(path: &[&str]) -> bool {
+    path.len() == 1
+        && COMMANDS
+            .iter()
+            .any(|(left, _)| left.split_whitespace().nth(1) == Some(path[0]))
+}
+
 /// The `--help` text (cli.md's flag list with `oxa` names), followed by extension flags.
 pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
     let mut out = String::new();
@@ -1113,7 +1184,7 @@ pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
         out.push_str(&format!("  {left:<36}{desc}\n"));
     }
     for entry in oxa_interactive::command_registry::entries(oxa_interactive::command_registry::Surface::Cli)
-        .filter(|entry| registry_owned(entry.id))
+        .filter(|entry| registry_owned(entry.id) && !listed_in_commands(entry.path))
     {
         out.push_str(&format!("  oxa {:<32}{}\n", entry.path.join(" "), entry.summary));
     }

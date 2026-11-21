@@ -27,8 +27,8 @@ EXCEPTIONS = {
     'release-build.yml': 'builds the published binaries; they are never built on the project\'s own runners',
 }
 
-# #795: the native arm64 macOS build (macos.yml) is the only job that may name the hosted macOS image.
-MACOS_EXCEPTIONS = {('macos.yml', 'test', 'macos-15')}
+# #795: the native arm64 macOS builds (macos.yml and the dev-build.yml macos job) are the only jobs that may name the hosted macOS image.
+MACOS_EXCEPTIONS = {('macos.yml', 'test', 'macos-15'), ('dev-build.yml', 'macos', 'macos-15')}
 
 FIX = (
     "Run the job on the hosted ARM image ({arm}) or copy the runner expression from "
@@ -139,20 +139,24 @@ class WorkflowRunners(unittest.TestCase):
         for image in ('macos-13', 'macos-15-intel', 'ubuntu-latest', 'self-hosted'):
             self.assertTrue(problems('macos.yml', text.replace('macos-15', image)), image)
 
-    def test_macos_workflow_stays_out_of_merge_queue(self):
+    def test_macos_is_gated_through_checks_not_its_own_triggers(self):
         text = (WORKFLOWS / 'macos.yml').read_text()
-        self.assertNotIn('merge_group', text)
-
-    def test_macos_runs_only_on_main_dispatch_and_platform_paths(self):
-        text = (WORKFLOWS / 'macos.yml').read_text()
-        self.assertIn("branches: ['main']", text)
-        self.assertNotIn("'agent/**'", text)
+        self.assertNotIn('  pull_request:', text)
+        self.assertNotIn('merge_group:', text)
+        # #2049: a main push lands the commit the queue tested, so its macOS build is not repeated.
+        self.assertNotIn('  push:', text)
         self.assertIn('workflow_dispatch:', text)
-        for path in ('oxa/oxa-session/**', 'oxa/oxa-sandbox/**', 'oxa/oxa-cli/**',
-                     'oxa/oxc-gateway/**', 'packaging/macos/**', '.github/workflows/macos*.yml',
-                     'oxa/Cargo.lock'):
-            self.assertIn(f"'{path}'", text)
-        self.assertNotIn("'oxa/**'", text)
+        self.assertIn('workflow_call:', text)
+        self.assertNotIn('non-required', text)
+        checks = (WORKFLOWS / 'checks.yml').read_text()
+        block = checks[checks.index('\n  macos:\n'):checks.index('\n  oxa-nightly-arm:')]
+        self.assertIn('uses: ./.github/workflows/macos.yml', block)
+        # Ready PRs that touch macOS-relevant paths only; dev-build.yml covers every main push.
+        self.assertIn("needs.changes.outputs.macos == 'true'", block)
+        self.assertIn("github.event.pull_request.draft == false", block)
+        self.assertIn("github.event_name == 'pull_request'", block)
+        self.assertNotIn("'merge_group'", block)
+        self.assertNotIn("'push'", block)
 
     def test_lane_skips_branches_with_an_open_pr(self):
         text = (WORKFLOWS / 'lane.yml').read_text()

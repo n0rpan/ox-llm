@@ -64,6 +64,7 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
     {
         return Err("only finished successful work can be verified for publication".into());
     }
+    require_lane_evidence(&saved)?;
     let export = verify_commit(repo, binary, policy, &saved, &lock)?;
     Ok(VerifiedTask {
         record: saved.record,
@@ -73,6 +74,44 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
     })
 }
 
+/// A lane task's saved success is only as good as its run at the saved head.
+pub(crate) fn require_lane_evidence(saved: &state::State) -> Result<()> {
+    if !saved.task.lane_ci {
+        return Ok(());
+    }
+    let green = saved.record.lane.as_ref().is_some_and(|verdict| {
+        Some(verdict.head.as_str()) == saved.record.head_sha.as_deref() && verdict.passed()
+    });
+    if green {
+        Ok(())
+    } else {
+        Err("saved lane CI evidence is not green at this head".into())
+    }
+}
+
+/// The declared acceptance crates must be among the crates the committed change selects:
+/// the lane runs the suites of the crates that changed (its reverse-dependency expansion
+/// only widens that set), so a declaration the head does not touch has no evidence of
+/// having run. The refusal names every uncovered crate.
+fn declared_covered_by_selection(
+    declared: &[String],
+    selected: &std::collections::BTreeSet<String>,
+) -> Result<()> {
+    let uncovered: Vec<&str> = declared
+        .iter()
+        .filter(|name| !selected.contains(*name))
+        .map(String::as_str)
+        .collect();
+    if uncovered.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the lane run does not select the declared acceptance crates: {}; touch each declared crate in the task diff or the work stays unverified",
+            uncovered.join(", ")
+        ))
+    }
+}
+
 /// Check the saved commit while the caller holds the task lock.
 pub(crate) fn verify_commit(
     repo: &Path,
@@ -80,6 +119,20 @@ pub(crate) fn verify_commit(
     policy: &RunPolicy,
     saved: &state::State,
     lock: &File,
+) -> Result<Export> {
+    verify_commit_with(repo, binary, policy, saved, lock, false)
+}
+
+/// As `verify_commit`; `collecting_lane` lets a lane task's own exact-head lane run
+/// stand in for the hosted evidence its Rust changes require, so that run can be
+/// started. A saved green lane run at the head counts the same way.
+pub(crate) fn verify_commit_with(
+    repo: &Path,
+    binary: &Path,
+    policy: &RunPolicy,
+    saved: &state::State,
+    lock: &File,
+    collecting_lane: bool,
 ) -> Result<Export> {
     // Explicit saved-work verification has its own budget. It may run long
     // after the original worker attempt's deadline has passed.
@@ -139,16 +192,50 @@ pub(crate) fn verify_commit(
         return Err("clean acceptance checkout is dirty".into());
     }
     // A local compile plan cannot verify saved Rust work for publication.
-    let commands: Vec<(CheckOrigin, String)> = execution
+    let mut commands: Vec<(CheckOrigin, String)> = execution
         .commands
         .iter()
         .map(|command| (CheckOrigin::Settings, command.clone()))
         .collect();
+    commands.extend(
+        execution
+            .derived_commands
+            .iter()
+            .cloned()
+            .map(|command| (CheckOrigin::Derived, command)),
+    );
     let requires_hosted = derived::committed_requires_hosted(policy, &export.tree, base, head)
         .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
     let declared = execution.declared.as_deref().unwrap_or_default();
-    if requires_hosted || !declared.is_empty() {
+    let lane_evidence = saved.task.lane_ci && (collecting_lane || require_lane_evidence(saved).is_ok());
+    if requires_hosted && !lane_evidence {
         return Err(crate::HOSTED_TEST_EVIDENCE_REQUIRED.into());
+    }
+    if !declared.is_empty() && !lane_evidence {
+        return Err(crate::HOSTED_TEST_EVIDENCE_REQUIRED.into());
+    }
+    if lane_evidence {
+        // A green lane run only counts for what it actually ran. The lane coverage data
+        // (`tools/ci/lane_coverage.json`, read from the trusted base, the same file
+        // `tools/ci/lane_select.py` selects from) says which changed paths that is: engine
+        // suites outside the portable crates, engine fixtures and shared inputs, `fuzz/` and
+        // any crate the lane does not know have no lane evidence.
+        let coverage = crate::lane::coverage::Coverage::load(policy, &export.tree, base);
+        let changed = derived::committed_changed_paths(policy, &export.tree, base, head)
+            .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
+        let uncovered = coverage.uncovered(&changed, |path| {
+            derived::has_cargo_ancestor(policy, &export.tree, base, path)
+        });
+        if let Some(path) = uncovered.first() {
+            return Err(coverage.refusal(path));
+        }
+        if !declared.is_empty() {
+            let selected = derived::committed_packages(policy, &export.tree, base, head)
+                .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
+            // A declaration the head does not touch has no evidence of having run, so
+            // the work stays unverified rather than guessed.
+            declared_covered_by_selection(declared, &selected)?;
+        }
     }
     if commands.is_empty() {
         return Err(crate::NO_ACCEPTANCE_CHECKS.into());
@@ -258,7 +345,13 @@ impl Drop for Export {
     }
 }
 impl Export {
-    fn create(policy: &RunPolicy, source: &Path, head: &str, tree: &str, base: &str) -> Result<Self> {
+    pub(crate) fn create(
+        policy: &RunPolicy,
+        source: &Path,
+        head: &str,
+        tree: &str,
+        base: &str,
+    ) -> Result<Self> {
         for oid in [head, tree, base] {
             if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err("acceptance requires full object identities".into());
@@ -509,9 +602,15 @@ mod tests {
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,
                 offline: true,
+                gh_binary: None,
+                push_approved: false,
+                content_scan: None,
                 runner_owns_github: false,
+                github_token_command: Vec::new(),
+                github_token_write_paths: Vec::new(),
                 autonomy: Default::default(),
-                autonomy_now: None,
+                worker_github: Default::default(),
+                authority_now: None,
                 storage,
             };
             checked(private_git(
@@ -684,6 +783,7 @@ mod tests {
             prompt: "Synthetic task".into(),
             max_time: 2700,
             reviewed_pull_request: None,
+            lane_ci: false,
         };
         assert!(tree::prepare(
             &fixture.source,
@@ -699,6 +799,21 @@ mod tests {
         assert!(
             !retained.exists(),
             "corrupt base objects must block before worktree creation"
+        );
+    }
+
+    #[test]
+    fn a_lane_run_only_covers_the_declared_crates_the_diff_selects() {
+        let selected = std::collections::BTreeSet::from(["one".to_owned(), "two".to_owned()]);
+        // Every declared crate is selected: the green run's suites cover the declarations.
+        assert!(declared_covered_by_selection(&["one".into(), "two".into()], &selected).is_ok());
+        // A declaration the diff does not select has no evidence of having run, and the
+        // refusal names it so the worker knows what to touch or withdraw.
+        let error = declared_covered_by_selection(&["two".into(), "three".into()], &selected).unwrap_err();
+        assert_eq!(
+            error,
+            "the lane run does not select the declared acceptance crates: three; \
+             touch each declared crate in the task diff or the work stays unverified"
         );
     }
 }

@@ -21,6 +21,68 @@ pub struct Status {
     #[serde(flatten)]
     pub record: Record,
     pub liveness: Liveness,
+    /// A projection of local evidence, not a live check of the branch or PR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication: Option<PublicationStatus>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublicationStatus {
+    pub phase: &'static str,
+    pub age_secs: Option<u64>,
+    pub disposition: &'static str,
+}
+
+impl PublicationStatus {
+    fn read(record: &Record, now_ms: u64) -> Option<Self> {
+        use crate::Divergence;
+        let head = record.head_sha.as_deref()?;
+        if record.base_sha.as_deref()? == head {
+            return None;
+        }
+        let receipt = record.publish_receipt.as_ref().filter(|r| r.requested == head);
+        let pushed = match receipt {
+            Some(r) => r.class == Divergence::Published && r.remote.as_deref() == Some(head),
+            // A terminal lane verdict is obtained only after a successful exact-tip readback.
+            None => record.lane.as_ref().is_some_and(|lane| lane.head == head),
+        };
+        if pushed && record.pull_request.as_deref().is_some_and(|url| !url.is_empty()) {
+            return None;
+        }
+        let (phase, disposition) = if pushed {
+            (
+                "branch_without_pr_receipt",
+                "Check for an existing PR, then resume through the authorized publication path; do not wait for lane CI just to look up the PR.",
+            )
+        } else if receipt.is_some_and(|r| !matches!(r.class, Divergence::Absent | Divergence::RemoteBehind)) {
+            (
+                "push_unconfirmed",
+                "Check the destination and reconcile the branch tip before retrying; do not force-push.",
+            )
+        } else {
+            (
+                "committed_no_push_recorded",
+                if crate::completed_execution(record.step)
+                    && matches!(
+                        record.acceptance_outcome.unwrap_or(record.outcome),
+                        Outcome::Done | Outcome::NothingToDo
+                    )
+                {
+                    "Use the authorized publication path for the saved task; acceptance and approval still apply."
+                } else {
+                    "Inspect the task checks or let the current execution finish before publishing."
+                },
+            )
+        };
+        Some(Self {
+            phase,
+            age_secs: record
+                .head_saved_at_ms
+                .and_then(|at| now_ms.checked_sub(at))
+                .map(|ms| ms / 1000),
+            disposition,
+        })
+    }
 }
 
 /// A bounded projection of one saved task, with no worker receipt or private paths.
@@ -72,6 +134,7 @@ pub fn status(storage: &Path, binary: &Path) -> Result<Vec<Status>> {
         Err(error) => return Err(error.to_string()),
     };
     let locks = fs::read_to_string("/proc/locks");
+    let now_ms = state::now_ms();
     let mut records = Vec::new();
     for entry in directory {
         let path = entry.map_err(|e| e.to_string())?.path();
@@ -95,7 +158,12 @@ pub fn status(storage: &Path, binary: &Path) -> Result<Vec<Status>> {
                 None => Liveness::Unknown,
             }
         };
-        records.push(Status { record, liveness });
+        let publication = PublicationStatus::read(&record, now_ms);
+        records.push(Status {
+            record,
+            liveness,
+            publication,
+        });
     }
     records.sort_by(|a, b| a.record.id.cmp(&b.record.id));
     Ok(records)
@@ -232,9 +300,15 @@ mod tests {
             host_path: "/usr/bin".into(),
             terminate_binary: None,
             offline: true,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             runner_owns_github: true,
+            github_token_command: Vec::new(),
+            github_token_write_paths: Vec::new(),
             autonomy: Default::default(),
-            autonomy_now: None,
+            worker_github: Default::default(),
+            authority_now: None,
             storage: directory.path().into(),
         };
         let lease = Lease {

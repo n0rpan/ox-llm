@@ -137,12 +137,13 @@ pub(crate) fn report_semantic(
         let facts = RunFacts::new(dirs, &Env::from_pairs(&[]), settings);
         let (draft, _, _) =
             save_draft(&title, &occurrence, dirs, ctx, &facts).map_err(|err| err.to_string())?;
+        let mut gate = report_cmd::LocalGate::new(ctx, confirm, "\n\nType yes to post: ");
         let submission = report_cmd::submit_record(
             &draft,
             &report_cmd::report_ledger(dirs),
             settings,
             ctx,
-            confirm,
+            &mut gate,
             runner,
             &mut std::io::sink(),
         )
@@ -226,7 +227,7 @@ fn report_legacy(
             note.keywords.join("\n")
         )) != Some(true)
         {
-            return Err("search requires controlling-terminal confirmation; draft retained locally".into());
+            return Err("search was not authorized by the owner; draft retained locally".into());
         }
         let mut candidates = vec![];
         for query in &note.keywords {
@@ -297,7 +298,6 @@ fn report_legacy(
             result.url = value["url"].as_str().map(str::to_string);
             return Ok(());
         }
-        let body_path = result.draft.with_extension("work-body.md");
         if let Some((_, number, value)) = read
             .iter()
             .find(|(kind, _, v)| *kind == "issue" && matches(&note, v))
@@ -313,9 +313,11 @@ fn report_legacy(
                     note.notes
                 )) != Some(true)
                 {
-                    return Err("problem report requires confirmation through the controlling terminal; draft retained locally".into());
+                    return Err(
+                        "problem report was not authorized by the owner; draft retained locally".into(),
+                    );
                 }
-                oxa_resources::write_atomic(&body_path, note.notes.as_bytes()).map_err(|e| e.to_string())?;
+                let approved = report_cmd::ApprovedBody::stage(&note.notes).map_err(|e| e.to_string())?;
                 call(
                     runner,
                     &words(&[
@@ -325,7 +327,7 @@ fn report_legacy(
                         "--repo",
                         &repo,
                         "--body-file",
-                        &body_path.to_string_lossy(),
+                        &approved.path(),
                     ]),
                 )?;
             }
@@ -348,9 +350,9 @@ fn report_legacy(
                 note.title
             )) != Some(true)
             {
-                return Err("problem report requires confirmation through the controlling terminal; draft retained locally".into());
+                return Err("problem report was not authorized by the owner; draft retained locally".into());
             }
-            oxa_resources::write_atomic(&body_path, body.as_bytes()).map_err(|e| e.to_string())?;
+            let approved = report_cmd::ApprovedBody::stage(&body).map_err(|e| e.to_string())?;
             let url = call(
                 runner,
                 &words(&[
@@ -361,13 +363,12 @@ fn report_legacy(
                     "--title",
                     &note.title,
                     "--body-file",
-                    &body_path.to_string_lossy(),
+                    &approved.path(),
                 ]),
             )?;
             result.disposition = "filed".into();
             result.url = Some(url.trim().into());
         }
-        let _ = std::fs::remove_file(body_path);
         Ok(())
     })();
     if let Err(error) = attempt {

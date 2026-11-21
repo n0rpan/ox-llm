@@ -74,9 +74,8 @@ pub const RULE_SUBAGENT_CHECK: &str =
 /// done check: the model runs the project's checks, or says it did not).
 pub const RULE_VERIFY: &str =
     "Before you call a task done, run the project's own tests or checks and report the result; if you ran none, say so";
-/// Added with the output diet when `wait` is declared (a goal is pursued).
-pub const RULE_WAIT: &str =
-    "To wait for CI, a merge or anything else, call wait (with until when a probe fits); never sleep or poll in a loop";
+/// Added with the output diet when `wait` is declared (every session, unless `oxa.tools.wait` is off).
+pub const RULE_WAIT: &str = "Use wait, never sleep-poll";
 /// L4-SUBVERIFY: added after [`RULES_DIET_OUTPUT`] only with the output diet
 /// on, and only in a subagent child (the child verifies what it reports).
 pub const RULE_CHILD_VERIFY: &str = "Before you answer, check every claim about the code with a tool; give path:line for each, and write \"not verified\" for anything you did not check";
@@ -587,15 +586,30 @@ pub const TOOL_INTERRUPTED: &str = "Tool call was interrupted: oxa stopped befor
 pub const REPEAT_NOTICE_HEAD: &str = "Not repeated:";
 
 /// The tool result that replaces a call whose identical result is already in the context
-/// `identical` times in a row (the newest one is the previous result of this call).
-/// Deterministic (W4): the call is quoted as the model wrote it.
-pub fn repeat_notice(name: &str, args_raw: &str, identical: u32) -> String {
-    format!(
-        "{REPEAT_NOTICE_HEAD} this exact call ({name} {args_raw}) already returned the same result \
-         {identical} times in a row; it is unchanged and is in the earlier tool results above. Do \
-         not call it again. Change your approach and continue the task: make the edit the task \
-         needs, run a different command, or read a different range or file."
-    )
+/// `identical` times in a row (the newest one is the previous result of this call). `attempt`
+/// counts the calls of this loop so far: the identical results and the notices before this one,
+/// plus this one. The change-of-approach suggestion is written once, on the first notice; each
+/// later notice stays short, names its attempt and points back to that suggestion, so a loop gets
+/// a new number every time instead of the same paragraph again. Deterministic (W4): the call is
+/// quoted as the model wrote it.
+pub fn repeat_notice(name: &str, args_raw: &str, identical: u32, attempt: u32) -> String {
+    let unchanged = format!(
+        "this exact call ({name} {args_raw}) already returned the same result {identical} times in a row"
+    );
+    if attempt <= identical + 1 {
+        format!(
+            "{REPEAT_NOTICE_HEAD} {unchanged}; it is unchanged and is in the earlier tool results \
+             above. Do not call it again. Change your approach and continue the task: make the edit \
+             the task needs, run a different command, or read a different range or file. \
+             (Attempt {attempt}.)"
+        )
+    } else {
+        format!(
+            "{REPEAT_NOTICE_HEAD} {unchanged}; attempt {attempt} of this call, and it is still \
+             unchanged and in the earlier results. The change-of-approach suggestion above still \
+             stands: do not call it again."
+        )
+    }
 }
 
 // ---- T2: the tool-call repair turn (oxa only; pi never sees a malformed call) ----
@@ -659,12 +673,115 @@ pub fn repair_wrong_type(tool: &str, param: &str, expected: &str) -> String {
 pub const REPAIR_FORMAT: &str = "The call does not follow the format <tool_call><function=NAME><parameter=NAME>value</parameter></function></tool_call>.";
 
 /// Appended as a user message at the safe boundary of a soft termination request (W1/W3).
-pub(crate) const WRAP_UP: &str = "Wrap up now: this run is ending. Use this one short final turn to commit only changes made during this run if appropriate, or summarize the current state and remaining work. Leave pre-existing changes alone. Do not start new work.";
+pub(crate) const WRAP_UP: &str = "Wrap up now: this run is ending. Use this one final turn to commit what works from the changes made during this run if appropriate, and state what is unfinished. Leave pre-existing changes alone. Do not start new work.";
 
 pub(crate) const LENGTH_CONTINUE_LOCAL: &str = "The reply reached its output limit. Continue from the cutoff and finish the original task. Do not repeat completed work.";
 pub(crate) const LENGTH_RETRY_REMOTE: &str = "The previous reply reached its output limit and was discarded. Complete the original task with a shorter, complete answer.";
 
+/// FH-N2: the `<autonomy>` block of the preamble in a headless run. Frozen text: a change moves
+/// the prefix hash of headless sessions only.
+pub const HEADLESS_AUTONOMY: &str = "Nobody is watching this run and nobody can answer: do not ask questions, ask for confirmation or offer options. Pick the most reasonable choice, state it in one line and continue.
+Keep working until the task is done or something only the owner can fix blocks you. Never end a reply on a plan, a promise or a next step (\"I will\", \"next I would\", \"let me\"): do that step now with a tool call. Reply without a tool call only when the work is finished or you are blocked.
+Before you stop, check the result with the project's own tests or commands and read what they print. If a check fails, fix it or report that it fails.
+Report honestly: what you changed, what you ran, what still fails or is unchecked. Never claim a success you did not see.";
+
+/// FH-N2: the one nudge of a headless run whose final reply ended on a plan, a promise or a
+/// question (see [`ends_unfinished`]).
+pub const HEADLESS_NUDGE: &str = "Nobody can answer you and the task is not finished. Do not stop on a plan, a promise or a question: do the next step now with a tool call. If something blocks you, say what blocks you and what you tried; if you are done, say what you ran to check it.";
+
+/// The finish decision's nudge for a run that changed files and ran no passing check since
+/// (`oxa.done.proveIt`). One per run.
+pub const PROVE_IT_NUDGE: &str = "You changed files and no check has passed since your last change. Run the project's check for what you changed (tests, build or lint) and fix what fails, or say in one line why no check exists. Then finish.";
+
+/// The finish decision's nudge for a run whose task names the tool its acceptance runs through
+/// (T6) and that never ran it. One per run; never a refusal, and nothing is installed for it.
+pub fn toolchain_nudge(tool: &str, tries: &[String]) -> String {
+    let tried = if tries.is_empty() {
+        String::new()
+    } else {
+        format!(" The run named {tool} in: {}.", tries.join(" · "))
+    };
+    format!(
+        "This task's acceptance names {tool}, and no command in this run ran it.{tried} \
+         Say which check did not run with {tool} and what that leaves unverified. If you can \
+         obtain it here (its package manager or a container), do that and run the acceptance \
+         with it; use a substitute only when it cannot be run. Then finish."
+    )
+}
+
+/// The finish decision's nudge for a run that read an image file and changed files with no
+/// check since the image was read (`oxa.done.imageCrossCheck`). One per run.
+pub const IMAGE_CROSS_CHECK_NUDGE: &str = "You read an image and wrote files, but nothing has checked your reading of the image independently. State the assumption your reading depends on (glyph set, font, grid, colour mapping) and run one concrete check that could falsify it: re-render your result and diff it against the source image, compare against an independent reader (such as OCR) if one is available, or test an invariant that must hold (counts, sums, a checksum against a hint already in the task). Fix what the check contradicts, or say in your final message which image-derived claim stays unverified and why. Then finish.";
+
+/// The finish decision's nudge for background jobs still running when a goal completes or a
+/// headless run ends (`oxa.done.waitForJobs`). One per run.
+pub fn jobs_nudge(ids: &[String], headless: bool) -> String {
+    let names = ids.join(", ");
+    let ends = if headless {
+        " This run is headless: the jobs are stopped when it ends."
+    } else {
+        ""
+    };
+    let first = &ids[0];
+    format!(
+        "Background jobs are still running: {names}.{ends} Either wait for them (`wait` with until {{\"kind\":\"job_done\",\"job\":\"{first}\"}}, or `bash` with {{\"job\":\"{first}\",\"wait_s\":60}}) and use their result, or stop them with `bash` {{\"job\":\"{first}\",\"kill\":true}} if they are not needed. Then finish."
+    )
+}
+
+/// FH-N2: whether a final reply ends on a plan or a promise ("I will ...", "let me ...", "next
+/// step ...", a line ending in a colon), or on a question when `edited` is false (no file
+/// changed in the run: after edits a closing "anything else?" is politeness, not an open
+/// task). Looks at the last sentence only.
+pub fn ends_unfinished(text: &str, edited: bool) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if t.ends_with('?') {
+        return !edited;
+    }
+    if t.ends_with(':') {
+        return true;
+    }
+    let last_line = t.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(t);
+    let last = last_line
+        .trim()
+        .trim_end_matches(['.', '!'])
+        .rsplit(['.', '!'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches(['-', '*', ' '])
+        .to_ascii_lowercase();
+    [
+        "i will ",
+        "i'll ",
+        "let me ",
+        "now i ",
+        "now let me ",
+        "next, i ",
+        "next i ",
+        "next step",
+        "next, let me ",
+        "i am going to ",
+        "i'm going to ",
+        "i plan to ",
+        "my plan",
+        "here's my plan",
+        "here is my plan",
+    ]
+    .iter()
+    .any(|p| last.starts_with(p))
+}
+
 /// Goal controls are declared only for an explicitly active stored goal.
+/// The continuation after a reply that matched the output schema while the goal is still pursued:
+/// the answer is recorded and does not end the goal.
+pub const GOAL_CONTINUE_AFTER_ANSWER: &str = "Your answer was recorded; it does not end the goal. Next, call wait (until something changes), do the next piece of work, or call goal_done with evidence if the goal is complete or blocked.";
+
+/// The one nudge after a second reply in a row without an action.
+pub const GOAL_IDLE_NUDGE: &str = "Two replies in a row had no action. Do one of these now: make a tool call for the next piece of work; call wait with seconds and a reason if you are waiting for something; or call goal_done with evidence if the goal is complete or blocked.";
+
 pub const GOAL_CONTINUE: &str = "Continue pursuing the stored goal. Use wait when no work is available. Call goal_done with evidence only when complete or blocked.";
 pub fn goal_start(objective: &str) -> String {
     format!("Pursue this stored goal until complete or blocked. Use wait when no work is available; call goal_done with evidence to finish.\n\n{objective}")
@@ -672,8 +789,43 @@ pub fn goal_start(objective: &str) -> String {
 pub const GOAL_DONE_DESCRIPTION: &str =
     "End the active goal with a complete or blocked status and concrete evidence.";
 pub const GOAL_DONE_SCHEMA: &str = r#"{"type":"object","properties":{"status":{"type":"string","enum":["complete","blocked"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["status","evidence"],"additionalProperties":false}"#;
-pub const GOAL_WAIT_DESCRIPTION: &str = "Wait without polling for 1 to 86400 seconds, capped by oxa.wait.maxSeconds and bounded by the remaining goal time budget. Cancellation interrupts the wait. With `until`, the wait checks that condition every oxa.wait.pollSeconds and returns its evidence once it is met; it ends early at the deadline or when input arrives. Kinds from the GitHub probes: `{kind:\"ci\", sha:<40 hex>, workflow:<name>}` (the run of that workflow for exactly that commit completed) and `{kind:\"pr_merged\", pr:<number>}`. Read probes answer at once from the host, which holds the GitHub login a sandboxed bash lacks: `{kind:\"pr_view\", pr:<number>}`, `{kind:\"pr_checks\", pr:<number>}`, `{kind:\"run_log_failed\", run:<id>}` (the tail of the failed-step log, secrets removed) and `{kind:\"issue_view\", issue:<number>}`. The repository is always the origin remote.";
-pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":86400},"reason":{"type":"string","minLength":1,"maxLength":1024},"until":{"type":"object","properties":{"kind":{"type":"string","minLength":1,"maxLength":64}},"required":["kind"]}},"required":["seconds","reason"],"additionalProperties":false}"#;
+pub const GOAL_WAIT_DESCRIPTION: &str = "Wait 1-86400 s; typed input ends it. until: ci{sha,workflow} and pr_merged{pr} first, then pr_view/pr_checks{pr}, pr_activity{pr,head}, job_done{job}, run_log_failed{run}, issue_view{issue}. E.g. {\"seconds\":3600,\"until\":{\"kind\":\"ci\",\"sha\":\"<40-hex>\",\"workflow\":\"lane\"}}.";
+pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer"},"reason":{"type":"string"},"until":{"type":"object"}},"required":["seconds","reason"]}"#;
+
+#[cfg(test)]
+mod headless_tests {
+    use super::*;
+
+    #[test]
+    fn plans_promises_and_open_questions_are_unfinished() {
+        assert!(ends_unfinished(
+            "I found the bug.\nNext, I will fix the parser.",
+            true
+        ));
+        assert!(ends_unfinished("Let me run the tests", false));
+        assert!(ends_unfinished("Here is my plan:", true));
+        assert!(ends_unfinished("Which file should I change?", false));
+        assert!(ends_unfinished("- I'll start with the config loader.", false));
+    }
+
+    #[test]
+    fn finished_reports_and_polite_questions_after_edits_are_not() {
+        assert!(!ends_unfinished("", false));
+        assert!(!ends_unfinished("Fixed the parser. All 12 tests pass.", false));
+        assert!(!ends_unfinished("Done. Do you want anything else?", true));
+        assert!(!ends_unfinished(
+            "I will not be able to run the tests: no network. They are unchecked.",
+            false
+        ));
+    }
+
+    #[test]
+    fn autonomy_text_is_stable_and_avoids_the_banned_words() {
+        assert!(!HEADLESS_AUTONOMY.contains("date"));
+        assert!(!HEADLESS_NUDGE.contains("date"));
+        assert!(HEADLESS_AUTONOMY.len() < 1100);
+    }
+}
 
 #[cfg(test)]
 mod tests {

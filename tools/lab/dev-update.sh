@@ -497,7 +497,8 @@ promote_gate() {
 denied_get() {
   local status
   status=$(curl -q --silent --show-error --output /dev/null --write-out '%{http_code}' \
-    --noproxy '*' --proto '=http' --connect-timeout 5 --max-time 10 "$lead_url") || return 1
+    --noproxy '*' --proto '=http' --connect-timeout 5 --max-time 10 \
+    --retry 10 --retry-connrefused --retry-delay 1 --retry-max-time 15 "$lead_url") || return 1
   [[ $status == 403 ]]
 }
 
@@ -622,7 +623,7 @@ activate() {
     write_receipt promoted verified "$sha" "$digest" "$new_digest" "$old_sha" "$old_binary"
     prune_stage
     printf 'Promoted dev %s (%s); binary %s; previous %s preserved; running digest verified; direct GET refused\n' \
-      "$version" "$sha" "$new_digest" "$old_binary"
+      "$semver" "$sha" "$new_digest" "$old_binary"
     test "$sampler" = inactive ||
       printf 'A board sample ran during the activation; the verified binary serves the next sample\n'
     exit 0
@@ -638,11 +639,11 @@ if test "$mode" = promote; then
   # Unchanged and older sources are decided here, before any artifact download.
   promote_gate
 fi
-archive=$(jq -er --arg suffix "-dev.${sha:0:7}-linux-$arch.tar.gz" \
-  '[.assets[]|select(.state=="uploaded" and (.name|startswith("ox-llm-v")) and (.name|endswith($suffix)))|.name] | select(length==1) | .[0]' "$work/release.json")
-version=${archive#ox-llm-}
-version=${version%-linux-"$arch".tar.gz}
-[[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*-dev\.[0-9a-f]{7}$ ]]
+archive=$(jq -er --arg suffix ".${sha:0:7}-linux-$arch.tar.gz" \
+  '[.assets[]|select(.state=="uploaded" and (.name|startswith("ox-llm-v")) and (.name|endswith($suffix)))|.name] | select(length>0) | sort_by((sub("^ox-llm-v";"")|split("-")[0]|split(".")|map(tonumber)) + [([capture("-dev\\.(?<n>[0-9]+)\\.[0-9a-f]{7}-")|.n|tonumber]|.[0] // 0)]) | .[-1]' "$work/release.json")
+version=${archive#ox-llm-}; version=${version%-linux-"$arch".tar.gz}
+[[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*-dev\.([0-9]+\.)?[0-9a-f]{7}$ ]]
+semver=$(sed -E 's/(-dev\.[0-9]+)\.([0-9a-f]{7})$/\1+\2/' <<<"$version")  # file names use '.', the version uses '+'
 download() {
   local url
   url=$(jq -er --arg name "$1" '[.assets[]|select(.state=="uploaded" and .name==$name)|.browser_download_url] | select(length==1) | .[0]' "$work/release.json")
@@ -672,7 +673,7 @@ tar -xzf "$work/$archive" -C "$work/payload" --no-same-owner --no-same-permissio
 # their own digest, kept beside the release for activation and rollback.
 binary_digest=$(digest_of "$work/payload/usr/bin/oxa")
 printf '%s  %s\n' "$binary_digest" usr/bin/oxa >"$work/payload/binary.sha256"
-jq -n --arg sha "$sha" --arg version "$version" --arg digest "$digest" \
+jq -n --arg sha "$sha" --arg version "$semver" --arg digest "$digest" \
   --arg time "$(date -u +%FT%TZ)" --arg archive "$archive" \
   '{channel:"dev",source_sha:$sha,version:$version,archive:$archive,sha256:$digest,installed_at:$time}' \
   >"$work/payload/receipt.json"
@@ -721,4 +722,4 @@ fi
 if test "$mode" = promote; then
   activate
 fi
-printf 'Installed dev %s (%s); receipt: %s/current/receipt.json\n' "$version" "$sha" "$prefix"
+printf 'Installed dev %s (%s); receipt: %s/current/receipt.json\n' "$semver" "$sha" "$prefix"

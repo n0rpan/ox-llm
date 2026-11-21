@@ -847,3 +847,111 @@ fn real_worktree_cannot_change_its_commondir_or_gitdir() {
     let log = git(&main, &env, &["log", "--format=%s", "feature"]);
     assert_eq!(String::from_utf8_lossy(&log.stdout), "outside\ninside\ninit\n");
 }
+
+// ------------------------------------------------------------------ #639: the git config guard
+
+/// A session sandbox with the git config guard on, as the CLI builds it.
+fn guarded(env: &TestEnv, cwd: &Path, allow: Option<Vec<String>>) -> Option<Bwrap> {
+    let mut b = detect(env)?;
+    b.layout.scratch_root = Some(env.root().join("scratch"));
+    b.layout.git_config_allow = allow;
+    Some(b.with_git_dirs(cwd).session())
+}
+
+fn default_allow() -> Option<Vec<String>> {
+    Some(
+        ["branch.*", "user.*", "remote.*.fetch"]
+            .map(String::from)
+            .to_vec(),
+    )
+}
+
+fn host_get(repo: &Path, env: &TestEnv, key: &str) -> String {
+    String::from_utf8_lossy(&git(repo, env, &["config", "--get", key]).stdout)
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn git_branch_rename_works_with_the_config_guard() {
+    let env = TestEnv::new();
+    let repo = env.work().join("plain");
+    init_repo(&repo, &env);
+    assert_git(&repo, &env, &["config", "branch.main.remote", "origin"]);
+    let Some(sb) = guarded(&env, &repo, default_allow()) else {
+        return;
+    };
+    let (exit, out) = run(&sb, "git branch -m renamed", &repo, true);
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(!out.contains("restored"), "{out}");
+    let shown = git(&repo, &env, &["branch", "--show-current"]);
+    assert_eq!(String::from_utf8_lossy(&shown.stdout).trim(), "renamed");
+    assert_eq!(host_get(&repo, &env, "branch.renamed.remote"), "origin");
+    assert_eq!(host_get(&repo, &env, "branch.main.remote"), "");
+
+    // A linked worktree: its config is the shared common-dir one.
+    let main = env.work().join("main");
+    init_repo(&main, &env);
+    let wt = add_worktree(&main, &env);
+    let Some(sb) = guarded(&env, &wt, default_allow()) else {
+        return;
+    };
+    let (exit, out) = run(&sb, "git branch -m feature2", &wt, true);
+    assert_eq!(exit, Some(0), "{out}");
+    let shown = git(&wt, &env, &["branch", "--show-current"]);
+    assert_eq!(String::from_utf8_lossy(&shown.stdout).trim(), "feature2");
+}
+
+#[test]
+fn forbidden_config_changes_are_reverted_and_reported() {
+    let env = TestEnv::new();
+    let repo = env.work().join("plain");
+    init_repo(&repo, &env);
+    let Some(sb) = guarded(&env, &repo, default_allow()) else {
+        return;
+    };
+    let (exit, out) = run(
+        &sb,
+        "git config core.hooksPath /tmp/x && git config alias.st '!sh -c true'",
+        &repo,
+        true,
+    );
+    assert_eq!(exit, Some(0), "the command's own exit code is unchanged: {out}");
+    assert!(
+        out.contains("restored") && out.contains("oxa.sandbox.gitConfigAllow"),
+        "{out}"
+    );
+    assert_eq!(host_get(&repo, &env, "core.hookspath"), "");
+    assert_eq!(host_get(&repo, &env, "alias.st"), "");
+
+    // One allowed and one refused key in the same command: the whole file is restored.
+    let (exit, out) = run(
+        &sb,
+        "git config user.name Changed && git config core.hooksPath /tmp/x",
+        &repo,
+        true,
+    );
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(out.contains("restored"), "{out}");
+    assert_eq!(host_get(&repo, &env, "user.name"), "Oxa Test");
+    assert_eq!(host_get(&repo, &env, "core.hookspath"), "");
+
+    // An allowed key alone stays.
+    let (exit, out) = run(&sb, "git config user.name Changed", &repo, true);
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(!out.contains("restored"), "{out}");
+    assert_eq!(host_get(&repo, &env, "user.name"), "Changed");
+}
+
+#[test]
+fn without_the_guard_config_stays_read_only() {
+    let env = TestEnv::new();
+    let repo = env.work().join("plain");
+    init_repo(&repo, &env);
+    let Some(sb) = guarded(&env, &repo, None) else {
+        return;
+    };
+    let (exit, out) = run(&sb, "git config user.name Changed", &repo, true);
+    assert_ne!(exit, Some(0), "{out}");
+    assert_eq!(host_get(&repo, &env, "user.name"), "Oxa Test");
+}

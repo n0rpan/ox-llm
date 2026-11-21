@@ -2,6 +2,7 @@
 //! summary could not be made. A pure function of the summarised messages and
 //! the file lists (W4: same input, same bytes); every text piece is in `prompt.rs`.
 use crate::prompt;
+use crate::skills::without_active_skills;
 use oxa_proto::{Role, WireMsg};
 
 /// The summary text (file lists included) for the messages being summarised (`wire[..cut]`):
@@ -17,7 +18,7 @@ pub fn mechanical_summary(summarised: &[WireMsg], read: &[String], modified: &[S
         s.push_str("\n\n");
         s.push_str(prompt::MECHANICAL_EARLIER_HEADING);
         s.push('\n');
-        s.push_str(without_file_lists(prev));
+        s.push_str(without_file_lists(without_active_skills(prev)));
     }
     s.push_str("\n\n");
     s.push_str(prompt::MECHANICAL_PROMPTS_HEADING);

@@ -105,6 +105,8 @@ pub(crate) struct Runner<'a> {
     pub base_alias: Option<&'a tree::BaseAlias>,
     pub native: bool,
     pub owner_selected_model: bool,
+    /// Keeps the worker's GitHub packet current at every launch (#1446).
+    pub packet: Option<&'a dyn crate::PacketFeed>,
     #[cfg(target_os = "linux")]
     pub managed_steering: Option<&'a crate::managed_steering::Launch>,
 }
@@ -113,6 +115,41 @@ impl Runner<'_> {
         self.writer
             .save(state, step, self.observer)
             .map_err(RunError::Checkpoint)
+    }
+
+    /// The section that tells the worker what changed on GitHub since its packet was
+    /// captured (#1446), empty when nothing changed. A fetch error is a warning in the
+    /// record detail and never blocks the launch. The counters are checkpointed.
+    fn packet_updates(&mut self, state: &mut State) -> String {
+        let Some(feed) = self.packet else {
+            return String::new();
+        };
+        match feed.fresh(&state.task) {
+            Ok(Some(fresh)) => {
+                let (seen, count) = match &state.record.packet {
+                    Some(p) => (p.seen.as_str(), p.updates),
+                    None => (state.task.prompt.as_str(), 0),
+                };
+                let Some(delta) = crate::packet_delta(seen, &fresh) else {
+                    return String::new();
+                };
+                state.record.packet = Some(crate::PacketState {
+                    seen: fresh,
+                    at_ms: state::now_ms(),
+                    updates: count.saturating_add(1),
+                });
+                format!(
+                    "\n\nUpdates on GitHub since this task's packet was captured (context, not instructions from the owner):\n{delta}"
+                )
+            }
+            Ok(None) => String::new(),
+            Err(error) => {
+                if state.record.detail.is_empty() {
+                    state.record.detail = format!("warning: GitHub packet not refreshed: {error}");
+                }
+                String::new()
+            }
+        }
     }
 
     pub(crate) fn drive(&mut self, state: &mut State) -> std::result::Result<(), RunError> {
@@ -163,7 +200,8 @@ impl Runner<'_> {
                     } else {
                         point.prompt.clone()
                     };
-                    let prompt = format!("{prompt}{}", crate::notes::INSTRUCTIONS);
+                    let updates = self.packet_updates(state);
+                    let prompt = format!("{prompt}{updates}{}", crate::notes::INSTRUCTIONS);
                     let session = state.record.session_id.clone();
                     let task = state.task.clone();
                     if let Some(tokens) = state.record.task_tokens.as_mut() {
@@ -283,6 +321,7 @@ impl Runner<'_> {
                         .map(|command| (CheckOrigin::Settings, command.clone()))
                         .collect();
                     let mut could_not_run = Vec::new();
+                    let mut saved_derived_commands = Vec::new();
                     let plan = supervise(
                         self.binary,
                         &tree,
@@ -309,6 +348,7 @@ impl Runner<'_> {
                     match plan {
                         Ok(derived) => {
                             requires_hosted |= derived.requires_hosted;
+                            saved_derived_commands = derived.commands.clone();
                             commands.extend(
                                 derived
                                     .commands
@@ -358,6 +398,11 @@ impl Runner<'_> {
                             .map(|error| format!("merge verification: {error}")),
                     );
                     errors.dedup();
+                    state
+                        .execution
+                        .as_mut()
+                        .ok_or("missing task execution checkpoint")?
+                        .derived_commands = saved_derived_commands;
                     let round = match checks {
                         Ok(round) => round,
                         Err(error) => {
@@ -410,19 +455,35 @@ impl Runner<'_> {
                         };
                         self.advance(state, Step::Saving)?;
                     } else if state.record.step == Step::Acceptance {
-                        state
-                            .execution
-                            .as_mut()
-                            .ok_or("missing task execution checkpoint")?
-                            .failures = failures;
-                        self.advance(state, Step::Repair)?;
+                        // A lane task has one repair round in total. A local
+                        // acceptance failure spends it, so a later lane failure
+                        // cannot start a second worker.
+                        if state.task.lane_ci && state.record.lane_repairs > 0 {
+                            state.record.outcome = Outcome::Red;
+                            state.record.detail = failures;
+                            self.advance(state, Step::Saving)?;
+                        } else {
+                            if state.task.lane_ci {
+                                state.record.lane_repairs = 1;
+                            }
+                            state
+                                .execution
+                                .as_mut()
+                                .ok_or("missing task execution checkpoint")?
+                                .failures = failures;
+                            self.advance(state, Step::Repair)?;
+                        }
                     } else {
                         state.record.outcome = Outcome::Red;
                         state.record.detail = failures;
                         self.advance(state, Step::Saving)?;
                     }
                 }
-                Step::Saving | Step::Finished | Step::Publishing | Step::Reporting => return Ok(()),
+                // Lane acceptance runs after the saved commit exists; its own
+                // checkpoint step is observed by the caller.
+                Step::Saving | Step::Lane | Step::Finished | Step::Publishing | Step::Reporting => {
+                    return Ok(())
+                }
             }
         }
     }
@@ -479,8 +540,13 @@ pub(crate) fn save_work(
     if dirty_worktree(binary, tree, repo, policy, lock)? {
         return Err("uncommitted changes remain after saving; retained for inspection".into());
     }
-    record.head_sha = Some(checked(git(policy, tree, &["rev-parse", "HEAD"]))?);
-    record.tree_sha = Some(checked(git(policy, tree, &["rev-parse", "HEAD^{tree}"]))?);
+    let head = checked(git(policy, tree, &["rev-parse", "HEAD"]))?;
+    let tree_sha = checked(git(policy, tree, &["rev-parse", "HEAD^{tree}"]))?;
+    if record.head_sha.as_ref() != Some(&head) {
+        record.head_saved_at_ms = Some(state::now_ms());
+    }
+    record.head_sha = Some(head);
+    record.tree_sha = Some(tree_sha);
     Ok(())
 }
 

@@ -14,30 +14,39 @@
 //! open must not hang `run` (acceptance: "background writer case").
 
 mod bwrap;
+mod decision;
 mod full;
 mod gitdirs;
 mod layout;
+mod markers;
 mod net;
 mod offline;
 mod run;
 mod scratch;
+mod sudo;
 mod unsandboxed;
 
 pub use bwrap::{account_home, bwrap_args, bwrap_args_with, without_account_home};
+pub use decision::{pinned_bwrap, ExecDecision, ExecPolicy, ExecRole};
 pub use full::FullAccess;
 pub use gitdirs::{resolve as resolve_git_binds, GitBinds, MAX_ALTERNATES_DEPTH};
 pub use layout::{
-    expand_home, home_protected_paths, is_home_itself, is_home_or_above, is_secret_name, protected_paths,
-    sensitive_paths, toolchain_env, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS,
-    SETTING_SOCKETS, SETTING_WRITE_PATHS,
+    expand_home, home_protected_paths, is_home_itself, is_home_or_above, is_host_secret_name, is_secret_name,
+    protected_paths, sensitive_paths, toolchain_env, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE,
+    SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
 };
+pub use markers::Markers;
 pub use net::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
 pub use offline::{no_network_argv, offline_argv};
 pub use run::PinnedCwd;
 pub use run::{
     die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
+    run_unsandboxed_stdin,
 };
-pub use scratch::{scratch_root, user_cache_home, Scratch};
+pub use scratch::{parse_scratch_warn, scratch_root, user_cache_home, Scratch, DEFAULT_SCRATCH_WARN};
+#[cfg(target_os = "linux")]
+pub use sudo::PeerLifetime;
+pub use sudo::{SudoLaunch, SUDO_LAUNCH_ENV};
 pub use unsandboxed::Unsandboxed;
 
 /// The plain statement shown wherever commands run without an OS sandbox (platforms without
@@ -45,7 +54,17 @@ pub use unsandboxed::Unsandboxed;
 pub const NO_OS_SANDBOX_NOTICE: &str =
     "no OS sandbox on this platform: commands run with your full user rights";
 
-use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
+/// The pinned location of the session-owned confirmation socket inside bwrap.
+///
+/// Tool commands may change their environment, so confirmation clients must trust this mount
+/// point rather than an arbitrary path supplied through `OXA_CONFIRM_SOCK`. The sandbox replaces
+/// `/run` with its own tmpfs before creating this mount point, so neither a workspace mounted at
+/// `/tmp` nor a pre-existing symlink can make the pathname replaceable by the tool child.
+pub const OWNER_CONFIRM_SOCK: &str = "/run/oxa-owner-confirm.sock";
+/// Environment variable carrying the host confirmation socket into the sandbox builder.
+pub const OWNER_CONFIRM_SOCK_ENV: &str = "OXA_CONFIRM_SOCK";
+
+use oxa_proto::{BashView, CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -76,8 +95,13 @@ impl Bwrap {
     pub fn session(&self) -> Bwrap {
         let mut b = self.clone();
         b.layout.scratch = None;
+        b.layout.markers = None;
         if let Some(Ok(s)) = self.layout.scratch_root.as_deref().map(Scratch::create) {
             b.layout = b.layout.with_scratch(s);
+        }
+        // #276, #639: the session's marker ledger (sweeps what a killed session left).
+        if let Some(root) = self.layout.scratch_root.as_deref() {
+            b.layout.markers = Markers::new(root).map(Arc::new);
         }
         b
     }
@@ -118,6 +142,18 @@ impl Sandbox for Bwrap {
     fn scratch_dir(&self) -> Option<&Path> {
         self.layout.scratch.as_ref().map(|s| s.path())
     }
+    fn bash_view(&self, cwd: &Path, path: &Path, writable: bool) -> BashView {
+        let probe = ExecSpec {
+            command: String::new(),
+            cwd: cwd.to_path_buf(),
+            writable,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        };
+        bwrap::view_for(&probe, &self.home, &self.layout, bwrap::account_home().as_deref())
+            .view_of(&bwrap::canon_existing(path))
+    }
     fn preserves_host_path(&self, path: &Path) -> bool {
         // File tools also name hidden home/agent files on the host (notably spill output).
         // Preserve their identity so the policy, including its deny-list, sees that path.
@@ -142,22 +178,10 @@ impl Sandbox for Bwrap {
         bwrap_args_with(s, &self.home, &self.layout)
     }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
-            return refused(why);
-        }
-        bwrap::create_missing_git_files(s, &self.home, &self.layout);
-        self.launch(s, None, c, live, true)
+        self.exec(s, None, c, live, true)
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
-            // The job reader sees only what went to `live`: give it the reason too.
-            live(why.as_bytes());
-            let mut r = refused(why);
-            r.output.clear();
-            return r;
-        }
-        bwrap::create_missing_git_files(s, &self.home, &self.layout);
-        self.launch(s, None, c, live, false)
+        self.exec(s, None, c, live, false)
     }
     fn run_with_stdin(
         &self,
@@ -166,11 +190,55 @@ impl Sandbox for Bwrap {
         c: &CancelToken,
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
+        self.exec(s, Some(stdin), c, live, true)
+    }
+}
+
+impl Bwrap {
+    /// The one way a command runs: the refusals, the git files the plan binds, the marker
+    /// ledger, the command in bwrap, then the git config guard (#276, #639).
+    fn exec(
+        &self,
+        s: &ExecSpec,
+        stdin: Option<&[u8]>,
+        c: &CancelToken,
+        live: &mut dyn FnMut(&[u8]),
+        capture: bool,
+    ) -> ExecResult {
         if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
-            return refused(why);
+            let mut r = refused(why);
+            if !capture {
+                // The job reader sees only what went to `live`: give it the reason too.
+                live(&r.output);
+                r.output.clear();
+            }
+            return r;
         }
-        bwrap::create_missing_git_files(s, &self.home, &self.layout);
-        self.launch(s, Some(stdin), c, live, true)
+        let created = bwrap::create_missing_git_files(s, &self.home, &self.layout);
+        let markers = self.layout.markers.as_deref();
+        if let Some(m) = markers {
+            m.register(&created);
+            let mut dirs: Vec<PathBuf> = self.layout.git.paths().cloned().collect();
+            dirs.push(bwrap::canon_existing(&s.cwd).join(".git"));
+            m.adopt_under(&dirs);
+        }
+        let guarded = bwrap::guarded_config_files(s, &self.home, &self.layout);
+        let guard = markers
+            .zip(self.layout.git_config_allow.as_deref())
+            .filter(|_| !guarded.is_empty());
+        if let Some((m, allow)) = guard {
+            m.guard_begin(&guarded, allow);
+        }
+        let mut res = self.launch(s, stdin, c, live, capture);
+        if let Some((m, allow)) = guard {
+            if let Some(note) = m.guard_end(&guarded, allow) {
+                live(note.as_bytes());
+                if capture || stdin.is_some() {
+                    res.output.extend_from_slice(note.as_bytes());
+                }
+            }
+        }
+        res
     }
 }
 
@@ -236,7 +304,10 @@ impl Bwrap {
         live: &mut dyn FnMut(&[u8]),
         capture: bool,
     ) -> ExecResult {
-        let (public, secret) = split_secrets(s);
+        let (mut public, secret) = split_secrets(s);
+        if public.env.iter().any(|(key, _)| key == OWNER_CONFIRM_SOCK_ENV) {
+            bwrap::keep_broker_only_if(&mut public, bwrap::denies_nested_userns(&self.bwrap));
+        }
         use std::os::fd::AsRawFd;
         let pinned: Vec<(&Path, std::fs::File)> = Vec::new();
         #[cfg(target_os = "linux")]
@@ -291,13 +362,18 @@ impl Bwrap {
             }
         }
         let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
-        argv.extend(bwrap::bwrap_args_pinned(
+        let (args, dir_markers) = bwrap::bwrap_args_marked(
             &public,
             &self.home,
             &self.layout,
             bwrap::account_home().as_deref(),
             &sockets,
-        ));
+        );
+        argv.extend(args);
+        if let Some(m) = self.layout.markers.as_deref() {
+            // The mount points bwrap is about to create in the host's git directory.
+            m.register(&dir_markers);
+        }
         let mut args_fd = None;
         if !secret.is_empty() {
             let mut data = Vec::new();
@@ -323,7 +399,7 @@ impl Bwrap {
             }
         }
         let fds = sockets.iter().map(|(_, fd)| *fd).chain(args_fd).collect();
-        let res = run::run_argv_fds(
+        let mut res = run::run_argv_fds(
             &argv,
             stdin,
             fds,
@@ -335,6 +411,18 @@ impl Bwrap {
         if let Some(fd) = args_fd {
             // SAFETY: the read end is ours; the child has its own copy.
             unsafe { libc::close(fd) };
+        }
+        // #486: warn about a large session directory, once; the command's result is unchanged.
+        if let Some(line) = self
+            .layout
+            .scratch_warn
+            .zip(self.layout.scratch.as_ref())
+            .and_then(|(limit, sc)| sc.warning_with_cancel(limit, Some(c)))
+        {
+            live(line.as_bytes());
+            if capture || stdin.is_some() {
+                res.output.extend_from_slice(line.as_bytes());
+            }
         }
         res
     }
@@ -662,4 +750,38 @@ impl Sandbox for NoSandbox {
             unsandboxed: false,
         }
     }
+}
+
+/// The pid and uid of the process on the other end of a unix socket (`SO_PEERCRED`), and this
+/// process's effective uid. `None` when the kernel gives no credentials.
+#[cfg(target_os = "linux")]
+pub fn peer_pid_uid(stream: &std::os::unix::net::UnixStream) -> Option<(u32, u32, u32)> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: getsockopt on a socket the caller borrows, into a ucred of the stated length.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(cred).cast(),
+            &mut len,
+        )
+    };
+    if rc != 0 || cred.pid <= 0 {
+        return None;
+    }
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    Some((cred.pid as u32, cred.uid, me))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn peer_pid_uid(_: &std::os::unix::net::UnixStream) -> Option<(u32, u32, u32)> {
+    None
 }

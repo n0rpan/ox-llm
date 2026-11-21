@@ -28,7 +28,7 @@ Fixture: `status.json`. `oxa status <session>` keeps its meaning (one session's 
 | `default_model` | The model used when none is named. |
 | `local.state` | `off`, `not_wired`, `ready`, `running` or `error`. `engine_binary` is `found` or `missing`. `running` lists `{model, sessions}` for engines that a live session proves. |
 | `cloud.state` | `off`, `ready`, `no_credentials` or `error`. `key_file` is `present`, `missing` or `unsafe_mode`; `chatgpt_login` is `present` or `missing`. Both come from `stat` only. |
-| `lead.state` | `off`, `idle`, `pursuing`, `awaiting_owner`, `paused`, `stalled` or `unknown`. `open_asks` is a count; ask text is never included. `serve.url` is the loopback address of the lead page. |
+| `lead.state` | `off`, `idle`, `pursuing`, `awaiting_owner`, `paused`, `stalled` or `unknown`. `open_asks` is a count; ask text is never included. `serve.url` is the loopback address of the lead page. `capacity` is the owner's user-only per-host worker capacity map (`{"<host>": <count>}`), or `null` when unset; display only. |
 | `sessions` | Session status files whose recorded process is alive. |
 | `workers` | Counts by state and up to the newest rows. A finished row carries `outcome`. |
 | `usage_state` | The worst pool state from `usage`, or `unknown`. |
@@ -37,7 +37,7 @@ Each `fix` field names the one action that helps: `local_add`, `enable_local`, `
 
 ## `oxa models --json`
 
-Fixture: `models.json`. Plain `oxa models` prints the same rows as a table.
+Fixture: `models.json`. Plain `oxa models` prints the same models as a table: where each runs (`local` or `cloud · <provider>`), its limits and which one is the default.
 
 - `models[].kind` is `cloud` or `local`. `billing` is `metered`, `subscription` or `local`. `pool` names the usage pool the model draws from, so the panel can join it with `usage`.
 - `models[].state` is `ready`, `no_credentials`, `unpriced`, `not_wired`, `engine_missing` or `unavailable`.

@@ -9,6 +9,9 @@ use crate::{
 use anthropic::{MockAnthropic, Reply, CREDENTIAL};
 
 fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
+    gateway_with(mock, None)
+}
+fn gateway_with(mock: &MockAnthropic, provider: Option<Value>) -> (Gateway, skeleton::Fixture) {
     let fixture = skeleton::Fixture::new(mock);
     std::fs::write(
         &fixture.key_path,
@@ -24,7 +27,7 @@ fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
         16,
     )
     .unwrap();
-    let runtime = Runtime::new(
+    let mut runtime = Runtime::new(
         [(
             model,
             Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).map(Billing::Metered),
@@ -39,6 +42,9 @@ fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
         },
     )
     .unwrap();
+    if let Some(provider) = provider {
+        runtime = runtime.with_openrouter_provider(&provider).unwrap();
+    }
     (Gateway::new(runtime).unwrap(), fixture)
 }
 #[test]
@@ -200,9 +206,9 @@ async fn openrouter_privacy_redaction_and_settlement_before_done() {
         );
         assert!(request.header("x-api-key").is_none());
         assert_eq!(request.body["model"], "synthetic-router");
-        assert_eq!(
-            request.body["provider"],
-            json!({"zdr":true,"data_collection":"deny"})
+        assert!(
+            request.body.get("provider").is_none(),
+            "default adds no provider routing; the caller's own value is never forwarded"
         );
         assert_eq!(request.body["reasoning"], json!({"enabled":false}));
         assert!(request.body.get("reasoning_effort").is_none());
@@ -1011,4 +1017,287 @@ async fn openrouter_normalized_tool_objects_still_refuse_held_key_atomically() {
         assert_eq!(rows(&fixture)[0]["settled"], "reserved");
         mock.finish();
     }
+}
+
+#[tokio::test]
+async fn openrouter_provider_preferences_follow_the_owner_setting() {
+    for (setting, expected) in [
+        (None, None),
+        (Some(json!({})), None),
+        (Some(json!({"zdr":true})), Some(json!({"zdr":true}))),
+        (Some(json!({"zdr":false})), Some(json!({"zdr":false}))),
+        (
+            Some(json!({"zdr":true,"data_collection":"deny"})),
+            Some(json!({"zdr":true,"data_collection":"deny"})),
+        ),
+    ] {
+        let mock = MockAnthropic::start(vec![wire(chunks(), true)]);
+        let (gateway, _fixture) = gateway_with(&mock, setting.clone());
+        gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .unwrap();
+        let request = mock.requests().pop().unwrap();
+        assert_eq!(request.body.get("provider").cloned(), expected, "{setting:?}");
+        mock.finish();
+    }
+}
+#[test]
+fn invalid_openrouter_provider_preferences_are_refused() {
+    let mock = MockAnthropic::start(vec![]);
+    for bad in [
+        json!(true),
+        json!({"zdr":"yes"}),
+        json!({"data_collection":"maybe"}),
+        json!({"sort":"price"}),
+    ] {
+        let fixture = skeleton::Fixture::new(&mock);
+        let runtime = Runtime::new(
+            Vec::<(Model, Option<Billing>)>::new(),
+            fixture.key_path.clone(),
+            fixture.ledger_dir.clone(),
+            Options::default(),
+        )
+        .unwrap();
+        assert!(runtime.with_openrouter_provider(&bad).is_err(), "{bad}");
+    }
+    mock.finish();
+}
+
+fn named_gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
+    named_gateway_with_billing(mock, Billing::Subscription, Some(1.0))
+}
+
+fn named_gateway_with_billing(
+    mock: &MockAnthropic,
+    billing: Billing,
+    daily_budget_usd: Option<f64>,
+) -> (Gateway, skeleton::Fixture) {
+    let fixture = skeleton::Fixture::new(mock);
+    std::fs::write(&fixture.key_path, json!({"demo-plan": CREDENTIAL}).to_string()).unwrap();
+    let source = Source::named(
+        "demo",
+        Provider::OpenRouter,
+        "https://example.invalid",
+        "demo-plan",
+        true,
+    )
+    .unwrap()
+    .with_mock_base(&mock.base_url());
+    let model = source
+        .model("demo/deepseek-v4-flash", "deepseek-v4-flash", 4096, 128)
+        .unwrap();
+    let runtime = Runtime::new(
+        [(model, Some(billing))],
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        Options {
+            access: Access::Enabled,
+            daily_budget_usd,
+            ledger_enabled: true,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    (Gateway::new(runtime).unwrap(), fixture)
+}
+
+#[tokio::test]
+async fn named_deepseek_tool_turn_replays_reasoning_and_settles_tokens_only() {
+    named_deepseek_tool_round_trip(true).await;
+}
+
+#[tokio::test]
+async fn named_deepseek_tool_turn_without_usage_completes_and_reserves_tokens() {
+    named_deepseek_tool_round_trip(false).await;
+}
+
+async fn named_deepseek_tool_round_trip(with_usage: bool) {
+    let mut tool = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"synthetic-call","function":{"name":"read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]});
+    let mut stop = chunks();
+    if with_usage {
+        tool["usage"] = json!({"prompt_tokens":21,"completion_tokens":5,"cost":0.25});
+    } else {
+        stop.pop().unwrap();
+    }
+    let mock = MockAnthropic::start(vec![
+        wire(
+            vec![
+                json!({"choices":[{"index":0,"delta":{"reasoning_content":"Check the file."},"finish_reason":null}]}),
+                tool,
+            ],
+            true,
+        ),
+        wire(stop, true),
+    ]);
+    let (gateway, fixture) = named_gateway(&mock);
+    let mut request = json!({"model":"demo/deepseek-v4-flash","reasoning_effort":"high",
+        "stream_options":{"include_usage":true},
+        "messages":[{"role":"user","content":"Read the file"}],
+        "tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}]});
+    let mut streamed_tool = false;
+    let mut streamed_usage = false;
+    let completed = gateway
+        .chat_payload(
+            &request,
+            Context::default(),
+            &Cancellation::default(),
+            &mut |event| {
+                if let Event::Chunk(chunk) = event {
+                    streamed_tool |=
+                        chunk.pointer("/choices/0/delta/tool_calls/0/id") == Some(&json!("synthetic-call"));
+                    streamed_usage |= chunk.get("usage").is_some();
+                }
+                Control::Continue
+            },
+        )
+        .await
+        .unwrap();
+    assert!(streamed_tool);
+    assert_eq!(streamed_usage, with_usage);
+    assert_eq!(completed.usage.is_some(), with_usage);
+    assert_eq!(completed.finish_reason, "tool_calls");
+    assert_eq!(completed.assistant["tool_calls"][0]["id"], "synthetic-call");
+    let mut assistant = completed.assistant;
+    assistant["role"] = json!("assistant");
+    request["messages"].as_array_mut().unwrap().extend([
+        assistant,
+        json!({"role":"tool","tool_call_id":"synthetic-call","content":"found"}),
+    ]);
+    gateway
+        .chat_payload(
+            &request,
+            Context::default(),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap();
+    let requests = mock.requests();
+    assert_eq!(requests[0].target, "/v1/chat/completions");
+    assert_eq!(requests[0].body["thinking"]["type"], "enabled");
+    assert!(requests[0].body.get("reasoning").is_none());
+    assert_eq!(
+        requests[1].body["messages"][1]["reasoning_content"],
+        "Check the file."
+    );
+    let ledger = rows(&fixture);
+    assert_eq!(ledger.len(), 2);
+    for row in ledger {
+        assert_eq!(row["remote_provider"], "demo");
+        assert_eq!(row["configured_provider"], true);
+        assert_eq!(row["billing"], "subscription");
+        assert_eq!(row["cost_usd"], 0.0);
+        assert_eq!(row["subscription_requests"], 1);
+        if with_usage {
+            assert_eq!(row["completion_tokens"], 5);
+            assert_eq!(row["settled"], "usage");
+        } else {
+            assert!(row.get("completion_tokens").is_none());
+            assert_eq!(row["usage_missing"], true);
+            assert_eq!(row["settled"], "reserved");
+            assert_eq!(row["subscription_tokens"], 4096 + 128);
+        }
+    }
+    mock.finish();
+}
+
+#[tokio::test]
+async fn named_unpriced_chat_completes_with_unknown_cost_without_usage() {
+    let mock = MockAnthropic::start(vec![wire(
+        vec![json!({"choices":[{"index":0,"delta":{"content":"Hello!"},"finish_reason":"stop"}]})],
+        true,
+    )]);
+    let (gateway, fixture) = named_gateway_with_billing(&mock, Billing::Metered(Price::unpriced()), None);
+    let request = json!({"model":"demo/deepseek-v4-flash","messages":[{"role":"user","content":"Hello"}]});
+    let completed = gateway
+        .chat_payload(
+            &request,
+            Context::default(),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap();
+    assert_eq!(completed.assistant["content"], "Hello!");
+    assert!(completed.usage.is_none());
+    let row = rows(&fixture).pop().unwrap();
+    assert_eq!(row["settled"], "reserved");
+    assert_eq!(row["cost_unknown"], true);
+    assert_eq!(row["usage_missing"], true);
+    assert!(row.get("completion_tokens").is_none());
+    mock.finish();
+}
+
+#[tokio::test]
+async fn named_chat_without_usage_still_requires_a_valid_terminal_tool_call() {
+    let tool = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"synthetic-call",
+        "function":{"name":"read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]});
+    let mut malformed = tool.clone();
+    malformed["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] = json!("{");
+    let mut unfinished = tool.clone();
+    unfinished["choices"][0]["finish_reason"] = Value::Null;
+    let mut invalid_usage = tool.clone();
+    invalid_usage["usage"] = json!({"prompt_tokens":-1,"completion_tokens":5});
+    for reply in [
+        wire(vec![tool], false),
+        wire(vec![unfinished], true),
+        wire(vec![malformed], true),
+        wire(vec![invalid_usage], true),
+    ] {
+        let mock = MockAnthropic::start(vec![reply]);
+        let (gateway, _fixture) = named_gateway(&mock);
+        let request =
+            json!({"model":"demo/deepseek-v4-flash","messages":[{"role":"user","content":"Hello"}]});
+        let error = gateway
+            .chat_payload(
+                &request,
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    match event {
+                        Event::Done => panic!("incomplete response signalled done"),
+                        Event::Chunk(chunk) => {
+                            assert!(chunk.pointer("/choices/0/delta/tool_calls").is_none())
+                        }
+                        Event::Warning(_) => {}
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.refusal().code, "cloud_upstream_stream_broken");
+        mock.finish();
+    }
+}
+
+#[tokio::test]
+async fn named_chat_does_not_follow_a_cross_origin_redirect() {
+    let other = MockAnthropic::start(vec![]);
+    let mock = MockAnthropic::start(vec![Reply::redirect(&format!(
+        "{}/chat/completions",
+        other.base_url()
+    ))]);
+    let (gateway, _fixture) = named_gateway(&mock);
+    let request = json!({"model":"demo/deepseek-v4-flash","messages":[{"role":"user","content":"Hello"}]});
+    let result = gateway
+        .chat_payload(
+            &request,
+            Context::default(),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(mock.requests().len(), 1);
+    assert!(other.requests().is_empty());
+    mock.finish();
+    other.finish();
 }

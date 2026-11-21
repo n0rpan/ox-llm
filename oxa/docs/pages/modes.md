@@ -17,9 +17,11 @@ The status bar always shows the mode. In print, JSON and RPC mode it is written 
 
 ## standard
 
-Work inside the project runs without a routine question: reading, editing, and bash. In an interactive CLI session, bash runs with your user rights and dangerous commands require approval. In an unattended standard run, bash uses the OS sandbox. oxa also asks before it reads or writes outside the project and before an extension command that wants the network. It offers "Allow once", "Allow for this session", "Always allow" and "Deny". A session grant is kept in memory and is gone when the session ends.
+Work inside the project runs without a routine question: reading, editing, and bash. In an interactive CLI session, bash runs with your user rights and dangerous commands require approval. In an unattended standard run, bash uses the OS sandbox. oxa also asks before it reads or writes outside the project and before an extension command that wants the network. An extension command that runs in a directory outside the project asks too, like a write there (yolo does not ask). It offers "Allow once", "Allow for this session", "Always allow" and "Deny". A session grant is kept in memory and is gone when the session ends.
 
 Choose it when you want to see each step that leaves the project.
+
+When you explicitly ask to keep work ("keep commit abc123 exactly as it is", "preserve the data file"), oxa remembers that requirement for the session, and a resumed session restores it. If a dangerous command that destroys state then needs approval — a recursive delete outside the project, a force push, a disk write, a SQL DROP, or one of your own `oxa.approval.dangerous` command rules — the existing question gains one sentence: it quotes your requirement and recommends a reversible checkpoint first (a backup branch or ref, a copy, or a dry run) and a check that the kept objects survive. The note is advice only. It adds no question, refusal or limit, and your answer decides exactly as before; the same sentence appears in an unattended run's refusal or approval request.
 
 ## auto
 

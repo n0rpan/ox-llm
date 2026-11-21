@@ -7,27 +7,39 @@
 //! * **Concurrency 1 on the local engine.** A lock held for the whole call serialises calls that
 //!   arrive concurrently (e.g. from codemode). A `tasks` call whose children all run locally
 //!   runs them in call order and shows the rest as `subagent k/n, queued`; when some child runs
-//!   on a remote (cloud) model, up to `oxa.subagent.remoteConcurrency` (default 4) children run
+//!   on a remote (cloud) model, up to `oxa.subagent.remoteConcurrency` (default 8) children run
 //!   at once, local ones still one at a time, and results come back in call order (#458);
-//!   more than [`MAX_PARALLEL_TASKS`] tasks are refused with pi's text. Depth 1: a child gets
-//!   `OXA_SUBAGENT_DEPTH=1` and the binary then does not build this hook set.
-//! * **Eight children per parent session, over the whole tree (O-146).** The cap is not per
-//!   `tasks` array: a `chain` longer than eight steps is refused too, and children that run
-//!   or wait are counted per parent session over every call in flight (a call queued behind
-//!   the running one has reserved its tasks), so several calls cannot add up to more than
-//!   eight. Children cannot spawn (depth 1), so these are all descendants. A refusal is a
-//!   tool error to the model and starts nothing.
-//! * **Own session per child.** Child `n` of parent session `P` gets the hint `P.s<n>` (env
+//!   more than [`MAX_PARALLEL_TASKS`] tasks run anyway, with a warning in the result. Depth 1: a
+//!   child gets `OXA_SUBAGENT_DEPTH=1` and the binary then does not build this hook set.
+//! * **Eight children per parent session, over the whole tree (O-146).** `oxa.subagent.maxChildren`
+//!   (default 8) is a warning threshold, not a refusal: a longer `tasks` array or `chain`, or
+//!   more children than that running or waiting per parent session over every call in flight
+//!   (a call queued behind the running one has reserved its tasks), still runs, queued, and
+//!   the result ends with a warning that names the setting. Children cannot spawn (depth 1).
+//! * **Own session id per child.** Child `n` of parent session `P` gets the hint `P.s<n>` (env
 //!   `OXA_SESSION_HINT`); the child binary sends it as `X-Session-Id` / `X-Oxe-Session` with
 //!   `X-Oxe-Priority: background` and `X-Oxe-Turn-Kind: subagent` (`oxa-cli/src/child.rs`).
-//!   `n` counts up per parent session id inside this process.
-//! * **Park first.** Before the first child of a call: `HostAction::ParkSession` (one H6 + H4
-//!   request over the parent's wire; `{parked: false}` without H6). Nothing else is sent on the
-//!   parent session while children run (the parent is blocked inside this tool call).
+//!   `n` counts up per parent session id inside this process. The id names the child's own
+//!   session state; it is not what the engine keys the shared prefix by (that is the token
+//!   chain, so a fork child's continuation still continues the parent's).
+//! * **Fork on a local model (#1844 PR 2).** A local child forks by default: `HostAction::ForkSeed`
+//!   gives the session's frozen prefix and its whole wire, which is written to an owner-only
+//!   file ([`crate::fork`]) and handed to the child as `OXA_CHILD_FORK`; the child installs it
+//!   before its first prompt (`Session::adopt_fork`), so its first request continues the parent's
+//!   prompt with the task appended. The engine then keeps the session's state instead of
+//!   evicting it, and the parent's next turn reuses its context. The agent's system prompt goes
+//!   into the task (the prefix is the parent's) and its `tools:` still decides what the child may
+//!   run (the prefix's tool list is the parent's, so anything else is an unknown tool). A cloud
+//!   child, a cloud session and `oxa.subagent.isolated: true` keep the isolated child below.
+//! * **Park first (the isolated path).** Before the first isolated child of a call:
+//!   `HostAction::ParkSession` (one H6 + H4 request over the parent's wire; `{parked: false}`
+//!   without H6). A fork child needs no park: it continues the state. Nothing else is sent on
+//!   the parent session while children run (the parent is blocked inside this tool call).
 //! * **Cleanup (EG5).** After each child (success, failure or abort):
 //!   `HostAction::ClearEngineHint(hint)`; a failure is a warning notice, never a tool failure.
 //! * **Child limits.** `oxa.subagent.softTokens` (default 24000), never above the parent's
 //!   `compactAt` and below the context window, handed to the child as `OXA_CHILD_SOFT_TOKENS`.
+//!   A fork child starts at the parent's context, so it takes the parent's `compactAt` instead.
 //! * **Child model.** The child gets `--model <the session's model>`, or the agent's own
 //!   `model:` when that model is remote or the session's is (#458; `HostAction::ModelInfo`).
 //!   A local `model:` under a local session is ignored with a warning notice (one model is
@@ -116,7 +128,11 @@ pub const SETTING_SMALL_CONTEXT: &str = "oxa.subagent.smallContext";
 pub const DEFAULT_SOFT_TOKENS: u32 = 24_000;
 pub const DEFAULT_RESULT_CAP: usize = 6144;
 pub const SETTING_REMOTE_CONCURRENCY: &str = "oxa.subagent.remoteConcurrency";
-pub const DEFAULT_REMOTE_CONCURRENCY: usize = 4;
+pub const DEFAULT_REMOTE_CONCURRENCY: usize = 8;
+/// #1844 PR 2: `true` runs every local child in its own session and prefix (the behaviour before
+/// the fork), at the cost of the parent's cache: the engine parks the parent's state and the
+/// child prefills its own context. Default `false`: a local child forks.
+pub const SETTING_ISOLATED: &str = "oxa.subagent.isolated";
 
 /// pi's limit on `tasks`, and the default of `oxa.subagent.maxChildren`: the most children one
 /// parent session runs or queues over every call in flight, and the most steps one call takes.
@@ -158,6 +174,12 @@ pub const NOTICE_PARK_FAILED: &str =
     "subagent: parking the session before the child failed ({error}); its cache may be prefilled again";
 /// `{hint}`, `{error}`.
 pub const NOTICE_CLEAR_FAILED: &str = "subagent: clearing the engine state of {hint} failed ({error})";
+/// `{error}`: the fork seed could not be read from the session, so the child runs isolated.
+pub const NOTICE_FORK_FAILED: &str =
+    "subagent: a fork child needs the session's prefix and conversation ({error}); this child runs isolated and prefills its own context";
+/// The honest cost of choosing isolated children on a local model (#1844 PR 2).
+pub const NOTICE_ISOLATED_COST: &str =
+    "subagent: oxa.subagent.isolated is on: each local child runs in its own session, so the engine parks the session's state and the child prefills its own context instead of continuing this one";
 
 /// One agent definition (`agents/*.md` with frontmatter `name`, `description`, `tools`,
 /// `model`; the body is its system prompt).
@@ -276,6 +298,10 @@ struct Config {
     remote_concurrency: usize,
     /// `oxa.subagent.maxChildren`: children per parent session and tasks or steps per call.
     max_children: usize,
+    /// `oxa.onExceed.subagentChildren` is not `warn`: a call above the cap is refused.
+    enforce_children: bool,
+    /// `oxa.subagent.isolated`: local children run in their own session and prefix (#1844).
+    isolated: bool,
 }
 
 impl Default for Config {
@@ -287,6 +313,8 @@ impl Default for Config {
             small_context: false,
             remote_concurrency: DEFAULT_REMOTE_CONCURRENCY,
             max_children: MAX_PARALLEL_TASKS,
+            enforce_children: false,
+            isolated: false,
         }
     }
 }
@@ -297,6 +325,9 @@ struct Inner {
     agents: Vec<AgentDef>,
     excluded_tools: Mutex<Vec<String>>,
     config: Mutex<Config>,
+    /// The settings the config came from: a cloud model's window scales the result cap and the
+    /// child compaction point unless the owner set them ([`Settings::cloud_caps`]).
+    settings: Mutex<Settings>,
     host: Mutex<Option<Arc<dyn Host>>>,
     /// The context window of the session's model, as last learned through the host.
     context_window: Mutex<Option<u32>>,
@@ -332,7 +363,9 @@ struct Inner {
 /// <session model> --permission-mode <mode> [--standard|--auto|--yolo] [--tools ..] [--append-system-prompt <agent
 /// prompt>] "Task: <task>"` (the parent's autonomy level, when it handed its switch in) in its own
 /// process group, with the environment of the module docs.
-/// Before the first child starts, the parent parks its state (`HostAction::ParkSession`).
+/// A local child forks the session's prefix and wire by default (`HostAction::ForkSeed`); an
+/// isolated child gets its own session, and before the first of those starts the parent parks
+/// its state (`HostAction::ParkSession`).
 /// Child JSON records stream to `live` as progress lines; abort kills the child's process
 /// group. The tool result is the final assistant text of each child (W4: no timings).
 pub struct SubagentHooks {
@@ -348,6 +381,7 @@ impl SubagentHooks {
             agents,
             excluded_tools: Mutex::new(Vec::new()),
             config: Mutex::new(Config::default()),
+            settings: Mutex::new(Settings::default()),
             host: Mutex::new(None),
             context_window: Mutex::new(None),
             flash: Mutex::new(false),
@@ -428,7 +462,12 @@ impl SubagentHooks {
                 as usize)
                 .clamp(1, max_children),
             max_children,
+            enforce_children: settings
+                .on_exceed(oxa_config::Budget::SubagentChildren)
+                .enforces(),
+            isolated: settings.bool(SETTING_ISOLATED, false),
         };
+        *lock(&self.inner.settings) = settings.clone();
         self
     }
 
@@ -720,6 +759,54 @@ fn parse_limits(v: &Value) -> Limits {
     }
 }
 
+/// #1512 S3: the environment of a subagent child. Every child is unattended (`OXA_UNATTENDED=1`):
+/// no person watches it, so the OS sandbox stays on by default. A fork child also gets the path
+/// of its seed ([`ENV_CHILD_FORK`]).
+fn child_env(hint: &str, soft: u32, fork: Option<&Path>) -> Vec<(String, String)> {
+    let mut env = vec![
+        (ENV_SESSION_HINT.to_string(), hint.to_string()),
+        (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
+        (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
+        (oxa_proto::names::ENV_UNATTENDED.to_string(), "1".to_string()),
+    ];
+    if let Some(path) = fork {
+        env.push((
+            crate::fork::ENV_CHILD_FORK.to_string(),
+            path.display().to_string(),
+        ));
+    }
+    env
+}
+
+#[cfg(test)]
+mod child_env_tests {
+    use super::child_env;
+
+    #[test]
+    fn subagent_child_env_sets_oxa_unattended() {
+        let env = child_env("sess.s1", 24000, None);
+        assert!(
+            env.contains(&("OXA_UNATTENDED".to_string(), "1".to_string())),
+            "{env:?}"
+        );
+        assert!(
+            env.contains(&("OXA_SUBAGENT_DEPTH".to_string(), "1".to_string())),
+            "{env:?}"
+        );
+        assert!(
+            !env.iter().any(|(k, _)| k == "OXA_CHILD_FORK"),
+            "no seed, no fork"
+        );
+        let with = child_env("sess.s1", 24000, Some(std::path::Path::new("/tmp/seed.json")));
+        assert_eq!(
+            with.iter()
+                .find(|(k, _)| k == "OXA_CHILD_FORK")
+                .map(|(_, v)| v.as_str()),
+            Some("/tmp/seed.json")
+        );
+    }
+}
+
 /// The child's soft compaction limit: the setting, never above the parent's `compactAt` and
 /// always below the context window.
 fn child_soft_tokens(setting: u32, l: &Limits) -> u32 {
@@ -829,10 +916,24 @@ impl Tool for SubagentTool {
         if modes != 1 {
             return ToolOutput::error(T::INVALID_MODE.replace("{available}", &available_list(&inner.agents)));
         }
-        let max = lock(&inner.config).max_children;
+        let (max, enforce) = {
+            let config = lock(&inner.config);
+            (config.max_children, config.enforce_children)
+        };
+        // `oxa.subagent.maxChildren` is a warning threshold: a call above it runs (children go
+        // one after another or at the remote concurrency) and the result carries the warning.
+        // The owner can make it a refusal with `oxa.onExceed.subagentChildren`.
+        let mut warnings: Vec<String> = Vec::new();
+        let asked = chain.len().max(tasks.len());
+        if enforce && asked > max {
+            let text = T::REFUSED_TOO_MANY
+                .replace("{n}", &asked.to_string())
+                .replace("{max}", &max.to_string());
+            return ToolOutput::error(text.clone()).exceeded("subagentChildren", &text);
+        }
         let (shape, items) = if !chain.is_empty() {
             if chain.len() > max {
-                return ToolOutput::error(
+                warnings.push(
                     TOO_MANY_CHAIN
                         .replace("{n}", &chain.len().to_string())
                         .replace("{max}", &max.to_string()),
@@ -841,7 +942,7 @@ impl Tool for SubagentTool {
             (Shape::Chain, chain)
         } else if !tasks.is_empty() {
             if tasks.len() > max {
-                return ToolOutput::error(
+                warnings.push(
                     TOO_MANY
                         .replace("{n}", &tasks.len().to_string())
                         .replace("{max}", &max.to_string()),
@@ -882,20 +983,29 @@ impl Tool for SubagentTool {
             Ok(v) => parse_limits(&v),
             Err(e) => return ToolOutput::error(T::FAILED.replace("{error}", &e.message)),
         };
-        // O-146: at most eight children per parent session, running or waiting, over every
-        // call in flight. Reserved before this call waits for its turn, so a call queued
-        // behind the running one counts too; refused calls start nothing.
-        let budget = match Budget::reserve(inner, &limits.session_id, items.len()) {
-            Ok(b) => b,
+        // O-146: children per parent session, running or waiting, over every call in flight,
+        // counted against `oxa.subagent.maxChildren`. Reserved before this call waits for its
+        // turn, so a call queued behind the running one counts too. Above the limit the call
+        // still runs, queued, with a warning.
+        let (budget, over) = match Budget::reserve(inner, &limits.session_id, items.len(), enforce) {
+            Ok(reserved) => reserved,
             Err(pending) => {
-                return ToolOutput::error(
-                    TOO_MANY_SESSION
-                        .replace("{pending}", &pending.to_string())
-                        .replace("{n}", &items.len().to_string())
-                        .replace("{max}", &lock(&inner.config).max_children.to_string()),
-                )
+                let text = T::REFUSED_TOO_MANY_SESSION
+                    .replace("{pending}", &pending.to_string())
+                    .replace("{n}", &items.len().to_string())
+                    .replace("{max}", &max.to_string());
+                return ToolOutput::error(text.clone()).exceeded("subagentChildren", &text);
             }
         };
+        // A call whose own size passed the limit already carries that warning.
+        if let Some(pending) = over.filter(|pending| *pending > 0) {
+            warnings.push(
+                TOO_MANY_SESSION
+                    .replace("{pending}", &pending.to_string())
+                    .replace("{n}", &items.len().to_string())
+                    .replace("{max}", &lock(&inner.config).max_children.to_string()),
+            );
+        }
         // Concurrency 1: one call (and so one child) at a time.
         let _running = lock(&inner.running);
         inner.abort.store(false, Ordering::SeqCst);
@@ -909,6 +1019,7 @@ impl Tool for SubagentTool {
             ui,
             live,
             parked: false,
+            warned_isolated: false,
             warned_models: Vec::new(),
             remote_models: HashMap::new(),
             n: items.len(),
@@ -996,11 +1107,25 @@ impl Tool for SubagentTool {
             })).collect::<Vec<_>>(),
             "isError": is_error,
         });
-        ToolOutput {
+        let result_cap = lock(&inner.settings)
+            .cloud_caps(run.limits.remote, run.limits.context_window)
+            .subagent_result
+            .unwrap_or(config.result_cap);
+        let mut text = cap_result(&text, result_cap, cx.spill_dir);
+        for warning in &warnings {
+            text.push_str("\n\n");
+            text.push_str(warning);
+        }
+        let out = ToolOutput {
             images: Vec::new(),
-            text: cap_result(&text, config.result_cap, cx.spill_dir),
+            text,
             is_error,
             ui: details,
+        };
+        if warnings.is_empty() {
+            out
+        } else {
+            out.exceeded("subagentChildren", &warnings.join(" "))
         }
     }
 }
@@ -1074,6 +1199,8 @@ struct Run<'a, 'b> {
     ui: &'a mut dyn Ui,
     live: &'a mut dyn FnMut(&str),
     parked: bool,
+    /// `oxa.subagent.isolated` was already named once in this call (#1844).
+    warned_isolated: bool,
     warned_models: Vec<String>,
     /// #458: whether a model runs remotely, as the host said during this call.
     remote_models: HashMap<String, bool>,
@@ -1100,21 +1227,36 @@ struct Budget<'a> {
 }
 
 impl<'a> Budget<'a> {
-    /// Reserve `n` children for `session`, or `Err(children already running or waiting)`
-    /// when that would pass `oxa.subagent.maxChildren`.
-    fn reserve(inner: &'a Inner, session: &str, n: usize) -> Result<Budget<'a>, usize> {
+    /// Reserve `n` children for `session`. The second value is `Some(children already running
+    /// or waiting)` when that passes `oxa.subagent.maxChildren`: a warning, the reservation
+    /// still stands.
+    ///
+    /// With `enforce` (`oxa.onExceed.subagentChildren`) an over-cap reservation is not made:
+    /// `Err(children already running or waiting)`.
+    fn reserve(
+        inner: &'a Inner,
+        session: &str,
+        n: usize,
+        enforce: bool,
+    ) -> Result<(Budget<'a>, Option<usize>), usize> {
         let max = lock(&inner.config).max_children;
         let mut pending = lock(&inner.pending);
         let now = pending.get(session).copied().unwrap_or(0);
-        if now.saturating_add(n) > max {
+        if enforce && now.saturating_add(n) > max {
             return Err(now);
         }
-        pending.insert(session.to_string(), now + n);
-        Ok(Budget {
-            inner,
-            session: session.to_string(),
-            left: n,
-        })
+        // The warning names what was already in flight: with nothing pending, this call's own
+        // size is the per-call warning's business, not a session one.
+        let over = now > 0 && now.saturating_add(n) > max;
+        pending.insert(session.to_string(), now.saturating_add(n));
+        Ok((
+            Budget {
+                inner,
+                session: session.to_string(),
+                left: n,
+            },
+            over.then_some(now),
+        ))
     }
 
     fn release(&mut self, n: usize) {
@@ -1148,6 +1290,28 @@ struct Prepared {
     hint: String,
     /// Its model runs at a cloud provider (it does not take the local engine's slot).
     remote: bool,
+    /// #1844 PR 2: the fork seed written for this child. Held, never read: it removes itself
+    /// when the child is gone.
+    _fork: SeedFile,
+}
+
+/// The fork seed file of one child. It holds the session's conversation, so it goes as soon as
+/// the child does, also when preparing it failed after the write.
+#[derive(Default)]
+struct SeedFile(Option<PathBuf>);
+
+impl SeedFile {
+    fn path(&self) -> Option<&Path> {
+        self.0.as_deref()
+    }
+}
+
+impl Drop for SeedFile {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 impl Prepared {
@@ -1324,8 +1488,56 @@ impl Run<'_, '_> {
             }
         }
 
-        // Park the parent once per call, right before its first child.
-        if !self.parked {
+        // #1844 PR 2: a local child forks by default: its prompt continues this session's, so
+        // the engine keeps the state (nothing is parked) and the child prefills nothing of the
+        // parent's context. A cloud child, a remote session and `oxa.subagent.isolated` keep the
+        // isolated path below.
+        let fork_wanted = !self.config.isolated && !remote && !self.limits.remote;
+        let mut fork_seed = None;
+        if fork_wanted {
+            // A host that cannot hand over the head (a host without the session, or a session
+            // before its first epoch) costs the child its fork, never the call: it runs
+            // isolated from here, which needs no warning of its own (the owner did not choose
+            // it; `oxa.subagent.isolated` is the choice, and it is named below).
+            fork_seed = self
+                .host
+                .call(HostAction::ForkSeed)
+                .and_then(|v| crate::fork::ForkSeed::from_host(&v))
+                .ok();
+        }
+        if self.config.isolated && !remote && !self.limits.remote && !self.warned_isolated {
+            self.warned_isolated = true;
+            self.notify(NOTICE_ISOLATED_COST.to_string());
+        }
+        let hint = {
+            let mut counters = lock(&self.inner.counters);
+            let n = counters.entry(self.limits.session_id.clone()).or_insert(0);
+            *n += 1;
+            format!("{}.s{}", self.limits.session_id, n)
+        };
+        // The seed holds the session's conversation: owner-only, in the session's spill
+        // directory, removed when the child is gone (the `Prepared` drop). A seed that cannot
+        // be written is no seed: the child then runs isolated, with the argv of that path.
+        let mut seed_file = SeedFile::default();
+        if let Some(seed) = &fork_seed {
+            // The process id keeps a file a killed run left behind from blocking this one.
+            let path = self
+                .cx
+                .spill_dir
+                .join(format!("subagent-fork-{}-{hint}.json", std::process::id()));
+            match seed.write(&path) {
+                Ok(()) => seed_file = SeedFile(Some(path)),
+                Err(e) => {
+                    fork_seed = None;
+                    let text = NOTICE_FORK_FAILED.replace("{error}", &e.message);
+                    self.notify(text);
+                }
+            }
+        }
+        let forks = fork_seed.is_some();
+        // Park the parent once per call, right before its first isolated child: a fork child
+        // continues the parked state instead, so parking it first would cost a request.
+        if !self.parked && !forks {
             self.parked = true;
             self.progress(k, "parking the session");
             if let Err(e) = self.host.call(HostAction::ParkSession) {
@@ -1337,14 +1549,18 @@ impl Run<'_, '_> {
                 return Err(Box::new(self.finish(k, r)));
             }
         }
-
-        let hint = {
-            let mut counters = lock(&self.inner.counters);
-            let n = counters.entry(self.limits.session_id.clone()).or_insert(0);
-            *n += 1;
-            format!("{}.s{}", self.limits.session_id, n)
+        // A cloud model's window scales the child's compaction point unless the owner set it.
+        let setting = match lock(&self.inner.settings)
+            .cloud_caps(remote && self.limits.remote, self.limits.context_window)
+            .child_soft_tokens
+        {
+            Some(scaled) => scaled,
+            // A fork child starts at the parent's context, so its own limit is the parent's
+            // compaction point, not the smaller `oxa.subagent.softTokens` (#1844).
+            None if forks => u32::MAX,
+            None => self.config.soft_tokens,
         };
-        let soft = child_soft_tokens(self.config.soft_tokens, &self.limits);
+        let soft = child_soft_tokens(setting, &self.limits);
         let mut argv: Vec<String> = vec!["--mode".into(), "json".into(), "-p".into(), "--no-session".into()];
         if !model.is_empty() {
             argv.push("--model".into());
@@ -1367,16 +1583,20 @@ impl Run<'_, '_> {
             argv.push(excluded.join(","));
         }
         drop(excluded);
-        if !agent.system_prompt.trim().is_empty() {
-            argv.push("--append-system-prompt".into());
-            argv.push(agent.system_prompt.clone());
+        // A fork child's prefix is the parent's (the tool list is part of it), so the agent's
+        // own prompt goes into its task instead, where it does not break the shared prefix.
+        let mut task_line = T::TASK.replace("{task}", task);
+        let prompt = agent.system_prompt.trim();
+        if !prompt.is_empty() {
+            if forks {
+                task_line = T::FORK_PROMPT.replace("{prompt}", prompt).replace("{task}", task);
+            } else {
+                argv.push("--append-system-prompt".into());
+                argv.push(agent.system_prompt.clone());
+            }
         }
-        argv.push(T::TASK.replace("{task}", task));
-        let env = vec![
-            (ENV_SESSION_HINT.to_string(), hint.clone()),
-            (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
-            (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
-        ];
+        argv.push(task_line);
+        let env = child_env(&hint, soft, seed_file.path());
         let expected = &self.cwds[k];
         let current = child_cwd(self.cx.cwd, item.cwd.as_deref().unwrap_or("."));
         if &current != expected {
@@ -1397,6 +1617,7 @@ impl Run<'_, '_> {
             cwd,
             hint,
             remote,
+            _fork: seed_file,
         })
     }
 
@@ -1833,5 +2054,41 @@ mod limit_tests {
             assert_eq!(config.max_children, expected);
             assert_eq!(config.remote_concurrency, expected);
         }
+    }
+
+    #[test]
+    fn children_above_the_limit_are_reserved_with_a_warning_not_refused() {
+        let settings = Settings::from_values(json!({"oxa": {"subagent": {"maxChildren": 3}}}), json!({}));
+        let hooks = SubagentHooks::new(PathBuf::from("unused"), Vec::new()).with_settings(&settings);
+        let (first, over) = Budget::reserve(&hooks.inner, "s", 3, false).unwrap();
+        assert_eq!(over, None, "at the limit is not above it");
+        let (second, over) = Budget::reserve(&hooks.inner, "s", 2, false).unwrap();
+        assert_eq!(over, Some(3), "two more on top of three running or queued warn");
+        assert_eq!(
+            lock(&hooks.inner.pending).get("s").copied(),
+            Some(5),
+            "both reservations stand"
+        );
+        drop(second);
+        drop(first);
+        assert!(lock(&hooks.inner.pending).get("s").is_none());
+    }
+
+    #[test]
+    fn an_enforcing_owner_refuses_children_above_the_cap_and_reserves_nothing() {
+        let user = json!({"oxa": {"subagent": {"maxChildren": 3}, "onExceed": {"subagentChildren": "stop"}}});
+        // A project file cannot switch enforcement on or off.
+        let project = json!({"oxa": {"onExceed": {"subagentChildren": "warn"}}});
+        let settings = Settings::from_values(user, project);
+        let hooks = SubagentHooks::new(PathBuf::from("unused"), Vec::new()).with_settings(&settings);
+        assert!(lock(&hooks.inner.config).enforce_children);
+        let (first, _) = Budget::reserve(&hooks.inner, "s", 2, true).unwrap();
+        assert_eq!(Budget::reserve(&hooks.inner, "s", 2, true).err(), Some(2));
+        assert_eq!(
+            lock(&hooks.inner.pending).get("s").copied(),
+            Some(2),
+            "the refused call reserved nothing"
+        );
+        drop(first);
     }
 }

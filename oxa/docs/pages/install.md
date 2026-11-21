@@ -1,5 +1,36 @@
 # Install
 
+## The portable Linux x86_64 binary
+
+The `release-build` workflow also builds one `oxa` binary for Linux x86_64 that does not depend on the distribution's newest C library. It is built on Debian 11 and needs glibc 2.31 or newer, so the same file starts on Debian 11 and newer, Ubuntu 22.04 and newer, the `python:3.12-slim` image, Arch and Fedora. It needs no Python, no controller and no other runtime library than glibc.
+
+The workflow artifact is named `oxa-portable-linux-x86_64`. It holds `oxa` and `oxa.sha256`. Check the file before use:
+
+```text
+sha256sum -c oxa.sha256
+```
+
+GitHub artifact downloads do not preserve executable permissions. After each fresh
+download, restore the permission before putting `oxa` anywhere on `PATH` or running
+it by its full path:
+
+```console
+$ chmod +x oxa
+$ ./oxa --version
+```
+
+The portable binary is the agent only, for hosts that talk to an engine or a cloud model that is already configured.
+
+### What CI proves
+
+The job `portable_binary_starts_in_three_images` starts the binary in `debian:bullseye-slim`, `ubuntu:22.04` and `python:3.12-slim`. In each image it runs `oxa --version` and one `-p` prompt against the fake engine, and the reply must come back. The build step also fails when the binary needs a glibc symbol newer than 2.31 or links `libstdc++`.
+
+### Limits
+
+- x86_64 only. ARM uses the release archive or the Arch packages above.
+- Not statically linked: a system with a glibc older than 2.31, or a musl distribution such as Alpine, is not covered.
+- The sandbox still needs `bwrap` from the host when you use the default permission mode.
+
 The ox suite ships as one release: `oxa` (the agent), and `oxe` with `oxe-server` (the engine for local models). There is no Python, no service and no daemon to install. This page covers the stable release, the dev build, a build from source, and updating or removing an install.
 
 ## What you need
@@ -7,13 +38,14 @@ The ox suite ships as one release: `oxa` (the agent), and `oxe` with `oxe-server
 - Linux on ARM64 or x86_64, with glibc.
 - `bubblewrap` (`bwrap`) and unprivileged user namespaces, for the bash sandbox.
 - For local models: a Snapdragon X laptop under Linux. The x86_64 build carries the agent and an engine that runs no model, so use cloud models there.
-- macOS (Apple silicon) support is in progress: cloud models only, no OS sandbox, and no published build yet. See [macOS](#macos) below.
+- macOS (Apple silicon) dev builds are available on a best-effort basis: cloud models only and no OS sandbox. See [macOS](#macos) below.
 
 ## Stable release
 
 Each release on the project's Releases page attaches, for each architecture:
 
 - `ox-llm-<version>-linux-aarch64.tar.gz` and `ox-llm-<version>-linux-x86_64.tar.gz`;
+- from the next release on, `ox-llm-<version>-macos-arm64.tar.gz` (`usr/bin/oxa` only, Apple silicon);
 - `SHA256SUMS`, an SBOM (`.sbom.cdx.json`) and build provenance.
 
 Download the archive for your machine and `SHA256SUMS` from the same release, then check them:
@@ -25,7 +57,12 @@ $ gh attestation verify ox-llm-<version>-linux-aarch64.tar.gz --repo oxstack/ox-
 
 The checksum shows that the download is intact. The attestation shows that this repository's release workflow built it.
 
-The archive holds one `usr/` tree. Extract it into a fresh directory of its own:
+The combined archive holds one `usr/` tree. Its commands are `oxa`, `oxe`,
+`oxe-server` and `local-ai-memlat-boot`; it also contains licence files and four
+inert MEMLAT templates. Standalone `oxe` is included for using the engine tools
+with other clients or sharing on a LAN without running the `oxa` agent.
+Both Arch recipes install the same commands. Extract the archive into a fresh
+directory of its own:
 
 ```console
 $ mkdir ~/ox-llm-<version>
@@ -57,7 +94,10 @@ Every push to `main` publishes a rolling `dev` prerelease, built with the same r
 ```console
 $ tools/lab/dev-update.sh
 $ ~/.local/state/oxc/dev-builds/default/bin/oxa --version
+oxa 0.2.2-dev.29+1d3c121
 ```
+
+A dev build reports the full release version: the number of main commits since the last stable tag and the source commit. `oxe --version`, `oxe-server --version`, `oxa status --json` and the report-issue system facts print the same value.
 
 The script needs Linux, Bash, `curl`, `jq`, `tar` and the GitHub CLI (`gh`). It uses no login. It checks the sums and the provenance against this repository's `main` and its dev workflow before it switches to the new build. It keeps the current build and the one before it, and it changes no stable install, no service and no `PATH`. The details are in [DEV.md](../../../docs/DEV.md).
 
@@ -65,7 +105,7 @@ Use the dev build to try what is on `main`. Use the stable release for everythin
 
 ### macOS
 
-`tools/lab/dev-update-macos.sh` is the same installer for macOS on Apple silicon. It needs `gh` (`brew install gh`) and installs to the same place under your home directory. No macOS build is published yet, and `main` does not build on macOS yet, so the script has nothing to install until the dev asset exists.
+`tools/lab/dev-update-macos.sh` installs the native Apple silicon dev asset to the same place under your home directory. It needs `gh` (`brew install gh`) and verifies both the versioned checksum and build provenance before switching builds. The macOS dev build is best effort: if it fails, Linux still publishes, the macOS asset is absent until a later successful `main` build, and a p1 issue tracks the breakage. Stable releases require the macOS archive.
 
 On macOS there is no local engine and no OS sandbox. Read [modes.md](modes.md#macos) before the first run.
 

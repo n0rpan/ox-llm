@@ -330,6 +330,11 @@ pub enum HostAction {
     /// E11 / EG5: clear the engine state of a finished child session by its session hint
     /// (`<session id>.s<n>`; any other hint is refused). -> `{cleared: bool}`.
     ClearEngineHint(String),
+    /// #1844 PR 2: the session's head for a fork child: its frozen prefix and its whole wire as
+    /// session-file lines (the entry codec), so the child's first request continues it and the
+    /// engine reuses its state. -> `{sessionId, model, entries}`, or an error when the session
+    /// has no prefix yet (no fork possible; the caller runs an isolated child instead).
+    ForkSeed,
     /// -> `{sessionId, model, remote, contextWindow, maxOutput, compactAt, softTokens, hintClear,
     /// prefillOnly, remainingTokens}`: the limits of the session's model as the session uses
     /// them (E11 child limits). `remainingTokens` is null without a run token budget.
@@ -487,6 +492,12 @@ pub trait Hooks: Send + Sync {
         _budget: std::time::Duration,
     ) -> Option<Result<Option<String>, String>> {
         None
+    }
+    /// The access a wait `until` condition makes when this set answers it (#1919): a probe that
+    /// runs `gh` declares `Access::Net`, so plan denies it and ask asks once per host. A probe
+    /// that answers from local state, or that is not this set's kind, declares nothing.
+    fn poll_access(&self, _until: &Value) -> Vec<crate::Access> {
+        Vec::new()
     }
 }
 

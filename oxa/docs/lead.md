@@ -4,8 +4,8 @@ The lead is an ordinary oxa session with an embedded, lead-only `lead` skill.
 Its instructions are exported as `oxa_resources::LEAD_SKILL` for the preset;
 ordinary sessions neither discover nor install this skill. It does not enable
 runner access by itself.
-Shadow is disabled by default. Enable `"oxa.lead.shadow": true` in the user's
-`settings.json`; project settings cannot enable it. Then `oxa lead --shadow`
+Shadow is on by default. `"oxa.lead.shadow": false` in the user's
+`settings.json` turns it off; project settings cannot change it. `oxa lead --shadow`
 opens an ordinary TUI or print session restricted to
 `read`, `grep`, `find` and `ls`. It embeds the lead instructions in every prefix
 epoch and enforces the proposal schema. For example:
@@ -43,6 +43,21 @@ effective tool registry, including tools supplied by hooks, extensions, MCP and
 codemode; merely setting a default tool list is insufficient. Keep the lead
 instructions in the system prefix on continuation and reopen. The skill text is
 guidance, not the enforcement mechanism.
+
+## Model per job
+
+The lead passes the job `kind` (for example `review`, `docs`, `tests`) and a stable
+`job` key (for example `pr-2127`) with each `worker start`, plus a one-line `reason`
+when it overrides the owner's choice with an explicit `model`. Without `model`, the
+owner's `oxa.workers.models` policy picks the id: an explicit model first, then the
+escalation floor (after `escalateAfter` failed workers on the same job, the next
+worker gets an `escalateTo` id), then the row of the kind, then `default`, then the
+session model. The lead records how a worker's work turned out with
+`worker result {name, result: ok|failed, reason}`; a worker that ended `done` but
+whose PR failed review or CI must be recorded `failed`, otherwise only dead or
+not-done workers count toward escalation. `worker list` ends with the shared build cache path and its size (a warning only when you set `oxa.workers.cacheWarnGb`) and shows each worker's model,
+the why-line of the choice and the recorded result. A model id the live catalog does
+not know only warns. History is per lead session for now.
 
 ## Runner boundary
 
@@ -142,6 +157,70 @@ the card must say so, rather than manufacture runner facts.
 unsupported observation keeps the saved asks, falls back to an empty board and
 reports a fixed `cause` with a recovery `hint`; raw paths and file contents
 never appear in output.
+
+## Stuck-work signals in the loop
+
+Each pass also derives the record's stuck-work signals: main required-check
+failures, no verified main merge for 45 minutes, over-age merge-queue
+membership, workflow runs queued over 15 minutes, and — through the runner
+situation named by `OXA_LEAD_SITUATION` — a locally accepted commit with no
+publication. A signal never becomes a silent wait. In the same pass the loop
+states the reason per blocking PR, assigns a red item to its own lease holder
+or an idle known worker, and escalates a durable ask to the owner only when no
+worker can take it. Unobserved and stale sources produce no signal: the loop
+never invents a stall. The pass's state line reports `stuck_escalated` when it
+wrote a new ask and `stuck_assigned` when assignments covered every signal,
+alongside the `stuck` object carrying the signal names, the per-PR report and
+the ask ids written this pass.
+
+The loop reads one observation per pass (the Board sample and the runner
+situation) and every rule is a derivation over it:
+
+- `overdue_queue` escalates only a PR that is still in the merge queue at the
+  alarmed head; an unobserved queue or a PR that left it gives no ask.
+- `publish_pending` counts a local acceptance as published only when the
+  publication's PR head is the accepted commit.
+- `review_held` reports each PR with unresolved review threads (queued PRs first,
+  then oldest thread first, within the report bound): exact head, thread counts,
+  oldest thread age, authors, `incomplete` when the thread page was cut off, and
+  the assignee. Only a current thread holds landing or escalates: an
+  outdated-only hold is reported and never asks. `queued_findings:<pr>` and the
+  ask `lead:stuck:queued-findings:<pr>` mark such a PR in the queue at its exact
+  head; the signal ending on a later pass is the recorded dequeue.
+- A stall with no report row that has an assignee and no escalation does not end
+  the pass: it still proposes the next Board action, with `stuck.signals` attached.
+
+A current (not outdated) unresolved review thread holds landing in the Reader's
+plan ahead of enqueue, retry and already-queued, and proposes a dequeue for a
+queued PR.
+
+Three more rules close the loop on what the Lead cannot see or send:
+
+- **GitHub reserve.** The owner setting `oxa.lead.github_reserve` (user settings
+  only, unset = no gate) keeps requests back per App resource. With it,
+  `oxa work board --app-quota-shadow` reads one free `rate_limit` per sample for
+  fresh core and graphql windows, and runs only its optional reads (`lead_panels`,
+  `queued_run_pages`, `sample_test_reports`) while the window stays above the
+  reserve. The gate sits in the Reader's two transports before a request is
+  launched or charged, so required reads are never held. Each deferral is a
+  warning and a `quota_deferred` entry in the sample (`awaiting_observation` or the
+  reset time); the Lead state repeats it. Model and subscription limits are untouched.
+- **Receipts.** `oxa send` and the worker tool's `send` return a receipt id
+  (`delivered`, `not_delivered` or `queued`) because the owner removes the inbox
+  file only after accepting it. `retry` checks the same message again and
+  `withdraw` removes it, so a retry never creates a second writer. Worker `start`
+  and `stop` results carry the same `receipt <id>: ...` line.
+- **Refused review identity.** When the reviewer account answers a review request
+  with its account-not-connected refusal and posts no summary afterwards, the
+  decision is `requester_rejected`: nothing is re-sent under that identity, and the
+  Lead escalates `lead:stuck:review-identity:<pr>` (signal `review_rejected:<pr>`).
+
+
+- **Worker gone.** The loop reads the Lead session's worker registry with each pass. A
+  stall-report assignee whose worker is Dead or Stopped adds `worker_gone:<name>` and
+  gets no assignee, so the existing no-worker escalation asks the owner instead of
+  reporting `stuck_assigned`.
+
 
 ## Event integration after L1
 

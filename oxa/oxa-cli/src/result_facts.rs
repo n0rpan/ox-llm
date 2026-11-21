@@ -4,6 +4,7 @@ use oxa_proto::OxaError;
 use oxa_proto::{TurnKind, Usage};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -14,12 +15,18 @@ struct Call {
     request: u64,
     turn: u64,
     started: Instant,
+    prefix: Option<(String, usize)>,
 }
 
 #[derive(Debug)]
 struct State {
     opened: bool,
     goal: Option<Value>,
+    /// The finish decision's facts: whether the last edit was proved (`None`: no edit), how
+    /// many background jobs were still running at the end, the acceptance tool the task names
+    /// that never ran (T6), and whether an image-derived deliverable ended without an independent
+    /// check.
+    finish: Option<(Option<bool>, u32, Option<String>, bool)>,
     finished: bool,
     session_id: Option<String>,
     requests: Option<u64>,
@@ -34,12 +41,22 @@ struct State {
     pending: VecDeque<Call>,
     log_failed: bool,
     lookups: u64,
+    /// (sha256 hex, bytes) of the frozen prefix announced for the next request.
+    prefix: Option<(String, usize)>,
+    /// What ended the run early: `time`, `tokens` or `signal`.
+    limit: Option<&'static str>,
+    /// `bash` results that polled for CI (`ci_polls`); `None` until the driver reports it.
+    ci_polls: Option<u32>,
+    /// Raw path arguments of the run's successful `edit`/`write` calls (#2297), in first-use
+    /// order, as the end-of-run observation reported them. Empty until then.
+    changed_paths: Vec<String>,
 }
 impl Default for State {
     fn default() -> Self {
         Self {
             opened: false,
             goal: None,
+            finish: None,
             finished: false,
             session_id: None,
             requests: Some(0),
@@ -54,6 +71,10 @@ impl Default for State {
             pending: VecDeque::new(),
             log_failed: false,
             lookups: 0,
+            prefix: None,
+            limit: None,
+            ci_polls: None,
+            changed_paths: Vec::new(),
         }
     }
 }
@@ -67,6 +88,9 @@ pub(crate) struct ResultFacts {
     status: Option<Arc<crate::status::StatusWriter>>,
     billing: Option<oxc_gateway::diagnostics::Diagnostics>,
     usage_log: Option<crate::usage_log::UsageLog>,
+    /// Acceptance scope (#2297): the run's cwd and the allowed changed-file set the task
+    /// supplied. `None` keeps `files_changed` unavailable (no added cost for other tasks).
+    changed_file_scope: Option<(PathBuf, Vec<String>)>,
 }
 impl ResultFacts {
     pub(crate) fn with_billing(mut self, billing: oxc_gateway::diagnostics::Diagnostics) -> Self {
@@ -75,6 +99,10 @@ impl ResultFacts {
     }
     pub(crate) fn with_usage_log(mut self, log: Option<crate::usage_log::UsageLog>) -> Self {
         self.usage_log = log;
+        self
+    }
+    pub(crate) fn with_changed_file_scope(mut self, cwd: PathBuf, allowed: Vec<String>) -> Self {
+        self.changed_file_scope = Some((cwd, allowed));
         self
     }
 
@@ -97,6 +125,18 @@ impl ResultFacts {
             "unknown_requests":g.unknown_requests,
             })
         });
+    }
+    pub(crate) fn finish(&self, stats: oxa_core::Stats) {
+        let finish = (
+            stats.proved,
+            stats.jobs_left,
+            stats.verifier,
+            stats.image_unverified,
+        );
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).finish = Some(finish);
+    }
+    pub(crate) fn ci_polls(&self, polls: u32) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).ci_polls = Some(polls);
     }
     pub(crate) fn session(&self, saved_id: Option<&str>) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -121,6 +161,7 @@ impl ResultFacts {
                 request: state.requests.unwrap_or(0),
                 turn: state.turns.unwrap_or(0),
                 started: Instant::now(),
+                prefix: state.prefix.take(),
             };
             state.pending.push_back(call);
         }
@@ -193,14 +234,67 @@ impl ResultFacts {
         if let Some(goal) = state.as_ref().and_then(|state| state.goal.as_ref()) {
             record["goal"] = goal.clone();
         }
+        if let Some(limit) = state.as_ref().and_then(|state| state.limit) {
+            record["limit"] = json!(limit);
+        }
+        if let Some(finish) = state.as_ref().and_then(|state| state.finish.clone()) {
+            let (proved, jobs, verifier, image_unverified) = finish;
+            record["proved"] = json!(proved);
+            record["jobs_running"] = json!(jobs);
+            // T6: the tool the task's acceptance names that no command of this run ran. `null`
+            // when it ran or the task names none; absent when the run never reached the finish.
+            record["verifier_unused"] = json!(verifier);
+            record["image_unverified"] = json!(image_unverified);
+        }
         record["usage_scope"] = json!("process");
         // Web searches this invocation made (FH-N5 integrity report); null when unobserved.
         record["web_lookups"] = state.as_ref().map_or(Value::Null, |state| json!(state.lookups));
-        // Successful tool calls and generated text are not checked workspace/commit evidence.
-        record["files_changed"] = Value::Null;
-        record["files_changed_evidence"] = json!("unavailable");
+        // `bash` calls that polled for CI from a shell loop (#1540); null when unobserved.
+        record["ci_polls"] = state.as_ref().map_or(Value::Null, |state| json!(state.ci_polls));
+        // Changed-file acceptance evidence (#2297): reported only when the task supplied an
+        // allowed set and a session opened. Otherwise successful tool calls and generated text
+        // are not checked workspace/commit evidence, so the record stays explicitly unavailable.
+        let (files, evidence, extra, allowed) = state
+            .and_then(|state| {
+                facts
+                    .and_then(|facts| facts.changed_file_scope.as_ref())
+                    .map(|(cwd, allowed)| changed_file_facts(cwd, allowed, &state.changed_paths))
+            })
+            .unwrap_or((Value::Null, "unavailable", Value::Null, Value::Null));
+        record["files_changed"] = files;
+        record["files_changed_evidence"] = json!(evidence);
+        record["files_changed_extra"] = extra;
+        record["files_changed_allowed"] = allowed;
         record
     }
+}
+
+/// Changed-file acceptance evidence (#2297). `observed` are the raw path arguments of the run's
+/// successful `edit`/`write` calls; both sides are resolved against `cwd` and compared as
+/// workspace-relative names. Tool-observed only: a shell rewrite is not a named file here, and
+/// nothing is refused because of the result.
+fn changed_file_facts(
+    cwd: &Path,
+    allowed: &[String],
+    observed: &[String],
+) -> (Value, &'static str, Value, Value) {
+    let relative = |path: &str| -> String {
+        let resolved = oxa_tools::resolve_path(cwd, path);
+        resolved
+            .strip_prefix(cwd)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| resolved.to_string_lossy().into_owned())
+    };
+    let mut files: Vec<String> = Vec::new();
+    for path in observed {
+        let name = relative(path);
+        if !files.contains(&name) {
+            files.push(name);
+        }
+    }
+    let allowed: Vec<String> = allowed.iter().map(|p| relative(p)).collect();
+    let extra: Vec<String> = files.iter().filter(|p| !allowed.contains(p)).cloned().collect();
+    (json!(files), "tool-observed", json!(extra), json!(allowed))
 }
 
 /// One `--usage-log` line: numbers, ids and timings. No message text, tool output or request body.
@@ -217,6 +311,9 @@ fn call_record(call: &Call, model: Option<&str>, usage: Option<Usage>) -> Value 
         "output": usage.as_ref().map(|u| u.completion),
         "reasoning_tokens": Value::Null,
         "duration_ms": u64::try_from(call.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        // Digest and byte count of the frozen prefix (system prompt + tool list) the call sent.
+        "prefix_sha256": call.prefix.as_ref().map(|p| p.0.as_str()),
+        "prefix_bytes": call.prefix.as_ref().map(|p| p.1),
     })
 }
 
@@ -224,12 +321,28 @@ impl ProgressObserver for ResultFacts {
     fn notify(&self, session: &oxa_session::SessionRef, progress: Progress<'_>) {
         match progress {
             Progress::Session { file } => self.session(file.map(|_| session.id.as_str())),
+            Progress::Prefix { sha256, bytes } => {
+                let hex = sha256.iter().map(|b| format!("{b:02x}")).collect::<String>();
+                self.state.lock().unwrap_or_else(|p| p.into_inner()).prefix = Some((hex, bytes));
+            }
+            Progress::WrapUp { limit } => {
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if !state.finished && state.limit.is_none() {
+                    state.limit = Some(limit);
+                }
+            }
             Progress::RequestStart { kind, .. } => self.request_start(kind),
             Progress::RequestEnd { usage, .. } => self.request_end(usage),
             Progress::ToolStart("web_search") => {
                 let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
                 if !state.finished {
                     state.lookups = state.lookups.saturating_add(1);
+                }
+            }
+            Progress::FilesChanged { paths } => {
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if !state.finished {
+                    state.changed_paths = paths.to_vec();
                 }
             }
             _ => {}
@@ -278,6 +391,25 @@ mod tests {
         );
         assert!(record["files_changed"].is_null());
         assert_eq!(record["files_changed_evidence"], "unavailable");
+    }
+
+    #[test]
+    fn the_result_names_the_limit_that_ended_the_run() {
+        let session = oxa_session::SessionRef {
+            path: std::path::PathBuf::from("mem:s"),
+            id: "s".to_string(),
+        };
+        let plain = Arc::new(ResultFacts::default());
+        plain.session(Some("s"));
+        assert!(ResultFacts::record(RunOutcome::Done, Some(&plain))
+            .get("limit")
+            .is_none());
+        let facts = Arc::new(ResultFacts::default());
+        facts.session(Some("s"));
+        facts.notify(&session, Progress::WrapUp { limit: "time" });
+        facts.notify(&session, Progress::WrapUp { limit: "signal" });
+        let record = ResultFacts::record(RunOutcome::Interrupted, Some(&facts));
+        assert_eq!(record["limit"], "time", "the first limit stays");
     }
 
     #[test]
@@ -438,6 +570,8 @@ mod tests {
             "output",
             "reasoning_tokens",
             "duration_ms",
+            "prefix_sha256",
+            "prefix_bytes",
         ];
         for record in lines(&path) {
             for (key, value) in record.as_object().unwrap() {
@@ -451,6 +585,25 @@ mod tests {
             }
             assert_eq!(record["model"], "model-id");
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn usage_log_records_the_prefix_digest_and_size_only() {
+        let dir = log_dir("prefix");
+        let path = dir.join("usage.jsonl");
+        let facts = logged_facts(&path);
+        let digest = "ab".repeat(32);
+        facts.state.lock().unwrap().prefix = Some((digest.clone(), 1234));
+        facts.request_start(TurnKind::Chat);
+        facts.request_end(Some(usage(7, 3, 1)));
+        // a call with no announced prefix logs nulls, and does not reuse the previous digest
+        facts.request_start(TurnKind::Chat);
+        facts.request_end(Some(usage(7, 3, 1)));
+        let records = lines(&path);
+        assert_eq!(records[0]["prefix_sha256"], digest.as_str());
+        assert_eq!(records[0]["prefix_bytes"], 1234);
+        assert!(records[1]["prefix_sha256"].is_null());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

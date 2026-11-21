@@ -95,6 +95,21 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
             let _ = write!(html, "<dd>Unknown. {reason}</dd>");
         }
     }
+    for deferral in view.quota_deferred {
+        let why = match deferral.until {
+            Some(reset) => format!(
+                "held back until the window resets {}",
+                super::human_time(reset, now)
+            ),
+            None => "held back: no quota window observed".to_owned(),
+        };
+        let _ = write!(
+            html,
+            "<dt>Deferred by the GitHub reserve</dt><dd>{} ({}): {why}</dd>",
+            super::escape(&deferral.work),
+            super::escape(&deferral.resource)
+        );
+    }
     html.push_str("</dl></section>");
 }
 
@@ -207,7 +222,11 @@ mod tests {
         }
         assert!(html.contains("GitHub Owner · GraphQL</dt><dd>Unknown"));
         assert!(!html.contains("fixture-private-field"));
-        assert!(!html.contains("<form") && !html.contains("<button"));
+        // Read-only view: no forms, and the theme toggle is the document's only
+        // button (chrome that writes localStorage, never server state).
+        assert!(!html.contains("<form"));
+        assert_eq!(html.matches("<button").count(), 1);
+        assert!(html.contains("<button id=theme class=iconbtn"));
     }
 
     #[test]

@@ -386,7 +386,11 @@ fn eng_010() {
             "child {n}: {:?}",
             reqs.iter().map(|r| &r.session).collect::<Vec<_>>()
         );
-        let user = c[0].messages[0].content.clone().unwrap_or_default();
+        let user = c[0]
+            .messages
+            .last()
+            .and_then(|m| m.content.clone())
+            .unwrap_or_default();
         assert!(user.contains(task), "child {n} runs {task:?}: {user:?}");
     }
     let order: Vec<String> = any_child(&reqs).iter().map(|r| r.session.clone()).collect();
@@ -434,35 +438,38 @@ fn eng_010() {
     );
 }
 
-/// ENG-011: at most eight children per parent session: more than 8 `tasks` or `chain` steps are
-/// refused as a tool error that starts nothing; eight are accepted.
-/// invariant: O-146 (one engine slot; pi caps only the `tasks` array, oxa caps the chain too and
-/// counts the children that run or wait per parent session).
+/// ENG-011: `oxa.subagent.maxChildren` (8) is a warning threshold: nine `tasks` or `chain` steps
+/// all run, one after another, and the result ends with a warning naming the setting.
+/// invariant: O-146 (one engine slot; pi caps only the `tasks` array; the owner decision of
+/// 2026-11-19 turned the refusal into a warning).
 #[test]
 fn eng_011() {
     let nine: Vec<Value> = (1..=9)
         .map(|i| json!({"agent": "scout", "task": format!("t{i}")}))
         .collect();
     for (shape, want) in [
-        ("tasks", "Too many parallel tasks (9). Max is 8."),
-        ("chain", "Too many chain steps (9). Max is 8."),
+        (
+            "tasks",
+            "Warning: 9 parallel tasks, above oxa.subagent.maxChildren (8).",
+        ),
+        (
+            "chain",
+            "Warning: 9 chain steps, above oxa.subagent.maxChildren (8).",
+        ),
     ] {
         let env = env_with(None);
-        let server = fake(
-            vec![call(json!({ shape: nine })), text("parent done")],
-            FakeOpts::default(),
-        );
+        let mut script = vec![call(json!({ shape: nine }))];
+        script.extend((1..=9).map(|i| text(&format!("r{i}"))));
+        script.push(text("parent done"));
+        let server = fake(script, FakeOpts::default());
         let run = parent(&env, &server.url(), "delegate nine");
         run.ok();
         let reqs = sorted(&server);
-        assert!(any_child(&reqs).is_empty(), "{shape}: no child starts");
-        assert!(
-            !reqs.iter().any(|r| r.max_tokens == 0 && r.snapshot_keep),
-            "{shape}: not even the park"
-        );
-        assert_eq!(tool_result(reqs.last().unwrap()), want, "{shape}");
+        assert_eq!(any_child(&reqs).len(), 9, "{shape}: all nine children run");
+        let result = tool_result(reqs.last().unwrap());
+        assert!(result.contains(want), "{shape}: {result}");
         let end = tool_end(&run.records());
-        assert_eq!(end["isError"], true, "{shape}: a tool error: {end}");
+        assert_eq!(end["isError"], false, "{shape}: not an error: {end}");
     }
     // Exactly eight run, one after another.
     let env = env_with(None);
@@ -517,6 +524,80 @@ fn eng_012() {
     }
 }
 
+/// #1844 PR 2: on a local model a child forks: its request continues the parent's frozen prefix
+/// and its wire with the task appended, so the engine continues this session's state instead of
+/// evicting it, and the parent's next turn still reuses its context. Nothing is parked.
+/// invariant: the engine holds one state; a child with a prefix of its own takes it away from
+/// the parent, which then prefills the whole context again.
+#[test]
+fn fork_child_continues_the_parents_prefix() {
+    let env = env_with(None);
+    let server = fake(
+        vec![
+            call(json!({"agent": "scout", "task": "find the files"})),
+            text("the child found three files"),
+            text("parent done"),
+        ],
+        FakeOpts::default(),
+    );
+    parent(&env, &server.url(), "delegate this").ok();
+    let reqs = sorted(&server);
+    let p = parent_id(&reqs);
+    let first = &reqs[0];
+    let child = child_reqs(&reqs, &p, 1).pop().unwrap_or_else(|| {
+        panic!(
+            "the child's request: {:?}",
+            reqs.iter().map(|r| &r.session).collect::<Vec<_>>()
+        )
+    });
+    let next = reqs
+        .iter()
+        .filter(|r| r.session == p && r.max_tokens > 0)
+        .nth(1)
+        .unwrap_or_else(|| panic!("the parent's next request"));
+
+    // The child continues the parent's prompt: the same frozen prefix, its wire first.
+    assert_eq!(child.system, first.system, "the parent's system text");
+    assert_eq!(child.tools_json, first.tools_json, "the parent's tool list");
+    assert_eq!(
+        child.messages[..first.messages.len()],
+        first.messages[..],
+        "the parent's wire is the child's first messages"
+    );
+    assert!(
+        child.messages.len() > first.messages.len(),
+        "the task is appended to it"
+    );
+    let task = child
+        .messages
+        .last()
+        .and_then(|m| m.content.as_deref())
+        .unwrap_or_default();
+    assert!(task.contains("find the files"), "{task}");
+
+    // The engine's prefix cache shares the parent's anchor, so the child is not cold...
+    let anchor = first.system.len() + first.tools_json.len() + 2;
+    let child_cached = child.usage.expect("the child's usage").cached as usize;
+    assert!(
+        child_cached >= anchor,
+        "the child reuses the parent's anchor ({child_cached} < {anchor})"
+    );
+    // ...and the parent's next turn finds its whole context after the child ran.
+    let cached = next.usage.expect("the parent's next usage").cached;
+    assert!(
+        cached >= first.usage.expect("the parent's usage").prompt,
+        "the parent's next turn reuses its context ({cached} < {})",
+        first.usage.unwrap().prompt
+    );
+    // A fork parks nothing: the child's continuation is the parent's state.
+    assert!(
+        !reqs
+            .iter()
+            .any(|r| r.session == p && r.max_tokens == 0 && first.seq < r.seq && r.seq < child.seq),
+        "no park between the parent's request and the child's"
+    );
+}
+
 /// The session id in the header of the env's one session file.
 fn session_id_of(env: &TestEnv) -> String {
     let files = session_files(&env.agent_dir().join("sessions"));
@@ -546,13 +627,18 @@ fn session_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// ENG-013: depth 1: a child never loads `builtin:subagent`, even where the setting turns the
-/// tool on.
+/// ENG-013: depth 1: an isolated child never loads `builtin:subagent`, even where the setting
+/// turns the tool on, and never declares it.
 /// invariant: a nested child would park its parent's child (one engine slot).
+/// This row runs the isolated path: a fork child sends the parent's frozen prefix, whose tool
+/// list includes `subagent` (it is part of the shared prefix, `tools.md`); depth 1 still refuses
+/// to run it.
 #[test]
 fn eng_013() {
     // A helper agent with the default tool selection (no `tools:` list).
-    let env = env_with(Some(r#"{"oxa": {"subagent": {"enabled": true}}}"#));
+    let env = env_with(Some(
+        r#"{"oxa": {"subagent": {"enabled": true, "isolated": true}}}"#,
+    ));
     env.write(
         "home/.oxa/agent/agents/helper.md",
         "---\nname: helper\ndescription: Helps\n---\nYou help.\n",
@@ -650,9 +736,14 @@ fn eng_015() {
     /// reply, whether it compacted, the child's requests).
     fn one(soft_tokens: Option<u32>, task_len: usize) -> (u64, bool, Vec<Recorded>) {
         // A one-token kept tail, so a two-message conversation has something to summarise.
-        let mut settings = json!({"compaction": {"keepRecentTokens": 1}});
+        // The isolated path: a fork child starts at the parent's context, so it takes the
+        // parent's compaction point instead of `oxa.subagent.softTokens` (#1844 PR 2).
+        let mut settings = json!({
+            "compaction": {"keepRecentTokens": 1},
+            "oxa": {"subagent": {"isolated": true}},
+        });
         if let Some(n) = soft_tokens {
-            settings["oxa"] = json!({"subagent": {"softTokens": n}});
+            settings["oxa"] = json!({"subagent": {"isolated": true, "softTokens": n}});
         }
         let env = env_with(Some(&settings.to_string()));
         let task = "x".repeat(task_len);
@@ -830,7 +921,10 @@ fn eng_017() {
 /// invariant: H6 + H4 park, EG5 hint clear.
 #[test]
 fn eng_018() {
-    let env = env_with(None);
+    // The isolated path: a fork child continues the session's state, so nothing is parked
+    // (#1844 PR 2; `fork_child_continues_the_parents_prefix` covers it).
+    const ISOLATED: Option<&str> = Some(r#"{"oxa": {"subagent": {"isolated": true}}}"#);
+    let env = env_with(ISOLATED);
     let server = fake(
         vec![
             call(json!({"tasks": [
@@ -892,7 +986,7 @@ fn eng_018() {
     assert!(!clears.contains(&p), "the parent's state stays");
 
     // Without H6 (an engine that advertises nothing) there is no park.
-    let env = env_with(None);
+    let env = env_with(ISOLATED);
     let server = fake(
         vec![
             call(json!({"agent": "scout", "task": "look"})),
@@ -1061,7 +1155,7 @@ fn sigterm_finishes_the_active_subagent_before_wrap_up() {
     assert_eq!(parent_requests.len(), 2, "one final parent turn after the tool");
     let summary = parent_requests[1];
     assert!(tool_result(summary).contains("CHILD-FINISHED"));
-    assert!(summary.max_tokens <= 1024);
+    assert!(summary.max_tokens <= 4096);
     assert!(!summary.thinking);
     assert!(server.clears().contains(&format!("{p}.s1")));
     assert!(

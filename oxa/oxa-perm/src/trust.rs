@@ -66,9 +66,8 @@ impl TrustStore {
         Ok(())
     }
 
-    /// B4: the saved decision trusts `cwd` and its executable files match the approval (or
-    /// nothing was recorded yet). The subcommands (`oxa mcp`, `oxa install -l`) load project
-    /// files on this answer.
+    /// The saved decision trusts `cwd` and its executable files match the approval (or
+    /// nothing was recorded yet). Folder policy need only check the saved decision.
     pub fn trusted_as_approved(&self, cwd: &Path) -> bool {
         self.lookup(cwd) == Some(true) && !matches!(self.approval(cwd), Approval::Changed(_))
     }
@@ -119,16 +118,7 @@ impl TrustStore {
         let Some(record) = self.approved.get(&key_string(cwd)) else {
             return Approval::NoRecord;
         };
-        let now = manifest(cwd);
-        let changed: Vec<Changed> = now
-            .iter()
-            .filter(|(path, hash)| record.get(*path) != Some(*hash))
-            .map(|(path, _)| Changed {
-                path: PathBuf::from(path),
-                new: !record.contains_key(path),
-                summary: summary(Path::new(path)),
-            })
-            .collect();
+        let changed = changes(record, manifest(cwd));
         if changed.is_empty() {
             Approval::Matches
         } else {
@@ -136,16 +126,57 @@ impl TrustStore {
         }
     }
 
-    /// #201: when nothing was recorded for `cwd` yet, record its current executable project
-    /// files (possibly none) as the baseline, so what a session's tools create or change
-    /// afterwards is new or changed at the next start instead of becoming the first record.
-    /// Returns whether a record was written. Call it only for a project the user trusts.
+    /// Report differences without granting content approval or printing file contents.
+    pub fn folder_changes_notice(&self, cwd: &Path) -> Option<String> {
+        let record = self.approved.get(&key_string(cwd))?;
+        let mut changed = changes(record, manifest(cwd));
+        if record.contains_key(NOTICE_BASELINE) {
+            let extra = notice_fingerprints(cwd);
+            for (key, stamp) in extra {
+                if record.get(&key) != Some(&stamp) {
+                    let path = PathBuf::from(key.strip_prefix(NOTICE_PREFIX).expect("notice key"));
+                    if !changed.iter().any(|item| item.path == path) {
+                        changed.push(Changed {
+                            path,
+                            new: !record.contains_key(&key),
+                        });
+                    }
+                }
+            }
+        }
+        if changed.is_empty() {
+            return None;
+        }
+        let paths: Vec<_> = changed.iter().map(Changed::path_line).collect();
+        Some(format!(
+            "Project config loaded under folder trust: {}",
+            paths.join(", ")
+        ))
+    }
+
+    /// Record the first baseline before tools run. For older records, add only the
+    /// notice fingerprints, never replacing the hashes used by content policy.
     pub fn record_baseline(&mut self, file: &Path, cwd: &Path) -> Result<bool, OxaError> {
-        if self.approval(cwd) != Approval::NoRecord {
+        let key = key_string(cwd);
+        if self
+            .approved
+            .get(&key)
+            .is_some_and(|r| r.contains_key(NOTICE_BASELINE))
+        {
             return Ok(false);
         }
-        self.approve(file, cwd)?;
-        Ok(true)
+        let _lock = lock_file(file)?;
+        let entries = read_entries(file)?;
+        let mut approved = read_approved(file);
+        let record = approved.entry(key).or_insert_with(|| manifest(cwd));
+        let changed = !record.contains_key(NOTICE_BASELINE);
+        if changed {
+            record_notice_baseline(record, cwd);
+            write_entries(file, &entries, &approved)?;
+        }
+        self.entries = entries;
+        self.approved = approved;
+        Ok(changed)
     }
 
     /// B4: record the current content of the executable project files of `cwd` as approved
@@ -154,7 +185,9 @@ impl TrustStore {
         let _lock = lock_file(file)?;
         let entries = read_entries(file)?;
         let mut approved = read_approved(file);
-        approved.insert(key_string(cwd), manifest(cwd));
+        let mut record = manifest(cwd);
+        record_notice_baseline(&mut record, cwd);
+        approved.insert(key_string(cwd), record);
         write_entries(file, &entries, &approved)?;
         self.entries = entries;
         self.approved = approved;
@@ -188,8 +221,68 @@ pub enum Approval {
     NoRecord,
     /// Every file matches the record.
     Matches,
-    /// Files that are new or changed since the user approved them: not loaded until approved.
+    /// Files that are new or changed since the baseline. Only content policy gates on this.
     Changed(Vec<Changed>),
+}
+
+fn changes(record: &BTreeMap<String, String>, now: BTreeMap<String, String>) -> Vec<Changed> {
+    now.into_iter()
+        .filter_map(|(path, hash)| {
+            let prior = record.get(&path);
+            (prior != Some(&hash)).then_some(Changed {
+                path: PathBuf::from(path),
+                new: prior.is_none(),
+            })
+        })
+        .collect()
+}
+
+// Notice-only slots are not absolute paths, so they can never satisfy a content or
+// managed-worktree check. Stat rather than reading extra project-controlled files.
+const NOTICE_BASELINE: &str = "notice";
+const NOTICE_PREFIX: &str = "notice:";
+
+fn record_notice_baseline(record: &mut BTreeMap<String, String>, cwd: &Path) {
+    record.insert(NOTICE_BASELINE.into(), String::new());
+    record.extend(notice_fingerprints(cwd));
+}
+
+fn notice_fingerprints(cwd: &Path) -> BTreeMap<String, String> {
+    use std::os::unix::fs::MetadataExt;
+    let config = key_for(cwd).join(names::PROJECT_DIR);
+    let mut paths = vec![config.join("settings.json")];
+    let themes = config.join("themes");
+    if std::fs::symlink_metadata(&themes).is_ok_and(|m| m.is_dir()) {
+        if let Ok(entries) = std::fs::read_dir(&themes) {
+            paths.extend(
+                entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|ext| ext == "json")),
+            );
+        }
+    }
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let meta = std::fs::symlink_metadata(&path).ok()?;
+            (meta.is_file() || meta.is_symlink()).then(|| {
+                (
+                    format!("{NOTICE_PREFIX}{}", path.display()),
+                    format!(
+                        "{}:{}:{}:{}:{}:{}:{}",
+                        meta.dev(),
+                        meta.ino(),
+                        meta.size(),
+                        meta.mtime(),
+                        meta.mtime_nsec(),
+                        meta.ctime(),
+                        meta.ctime_nsec()
+                    ),
+                )
+            })
+        })
+        .collect()
 }
 
 /// One project file that changed since the approval (B4).
@@ -198,15 +291,30 @@ pub struct Changed {
     pub path: PathBuf,
     /// Not in the record at all.
     pub new: bool,
-    /// What it would run, in one line.
-    pub summary: String,
 }
 
 impl Changed {
-    /// One line for the trust question and the notices: `<path> (new|changed: <summary>)`.
+    /// Identify the change without displaying project-controlled contents.
+    pub fn path_line(&self) -> String {
+        format!("{} ({})", self.path.to_string_lossy().escape_debug(), self.kind())
+    }
+
+    /// One line for the content approval question.
     pub fn line(&self) -> String {
-        let what = if self.new { "new" } else { "changed" };
-        format!("{} ({what}: {})", self.path.display(), self.summary)
+        format!(
+            "{} ({}: {})",
+            self.path.display(),
+            self.kind(),
+            summary(&self.path)
+        )
+    }
+
+    fn kind(&self) -> &'static str {
+        if self.new {
+            "new"
+        } else {
+            "changed"
+        }
     }
 }
 
@@ -269,8 +377,8 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
             let p = e.path();
             match e.file_type() {
                 Ok(t) if t.is_dir() => stack.push(p),
-                Ok(_) => out.push(p),
-                Err(_) => {}
+                Ok(t) if t.is_file() || t.is_symlink() => out.push(p),
+                _ => {}
             }
         }
     }
@@ -531,14 +639,18 @@ fn outcome(trusted: bool) -> TrustOutcome {
 }
 
 /// flag > extension > saved (closest parent) > `defaultProjectTrust`. Nothing gated =
-/// `Trusted` without asking. `Ask` when not interactive = `Untrusted` (gated resources are
+/// `Trusted` without asking unless there is a saved denial. `Ask` when not interactive = `Untrusted` (gated resources are
 /// skipped, with one notice).
 pub fn resolve_trust(i: &TrustInputs) -> TrustOutcome {
     if let Some(flag) = i.flag {
         return outcome(flag);
     }
     if !i.has_gated {
-        return TrustOutcome::Trusted;
+        return if i.saved == Some(false) {
+            TrustOutcome::Untrusted
+        } else {
+            TrustOutcome::Trusted
+        };
     }
     if let Some(extension) = i.extension {
         return outcome(extension);

@@ -169,6 +169,7 @@ fn gated_prompt_with_cancel(
         gated: Vec::new(),
         engine_status: None,
         yolo: None,
+        os_sandbox: false,
     };
     let mut terminal = TestTerminal::new(100, 30);
     let (cmd_tx, cmd_rx) = mpsc::channel();
@@ -380,7 +381,6 @@ fn gated_prompt_with_cancel(
         );
         return;
     }
-    let stopped_outcome = *session.outcome();
     let mut reply = VecSink::default();
     for command in commands {
         execute(&mut session, command, &mut reply, &mut ui, &ui_tx, &out_tx)
@@ -392,28 +392,8 @@ fn gated_prompt_with_cancel(
         .into_iter()
         .filter(|r| r.max_tokens > 0)
         .collect();
-    if window == Window::FailingPrompt {
-        assert_eq!(
-            requests.len(),
-            3,
-            "a failed prompt must not automatically launch its retained follow-up"
-        );
-        assert_eq!(
-            *session.outcome(),
-            stopped_outcome,
-            "wake must preserve the unsuccessful outcome"
-        );
-        assert_eq!(
-            session.handle().queued(),
-            if follow_up {
-                (Vec::new(), vec!["third".into()])
-            } else {
-                (vec!["third".into()], Vec::new())
-            },
-            "retain input for explicit user recovery"
-        );
-        return;
-    }
+    // #2183: input queued behind a failed request is sent once the session is idle; it is not
+    // left queued at READY. The failing request itself is not sent again.
     assert_eq!(requests.len(), before_wake + 1, "exactly one next chat request");
     assert!(requests[before_wake]
         .messages
@@ -469,12 +449,12 @@ fn stale_steering_wake_preserves_rebound_destination() {
 }
 
 #[test]
-fn failed_prompt_retains_follow_up_without_automatic_retry() {
+fn follow_up_queued_behind_a_failed_prompt_is_sent_when_idle() {
     gated_prompt(Window::FailingPrompt, None, true, false);
 }
 
 #[test]
-fn failed_prompt_retains_steering_without_automatic_retry() {
+fn steering_queued_behind_a_failed_prompt_is_sent_when_idle() {
     gated_prompt(Window::FailingPrompt, None, false, false);
 }
 

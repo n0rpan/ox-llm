@@ -267,9 +267,9 @@ pub mod errors {
     pub const BASH_NO_OUTPUT: &str = "(no output)";
     pub const BASH_ABORTED: &str = "Command aborted";
     pub const BASH_NO_EXIT_CODE: &str = "Command terminated without an exit code";
-    /// Appended to a result when the command looked backgrounded (a line ending in `&`, or `nohup`).
-    pub const BASH_BACKGROUND_STOPPED: &str =
-        "If this command started background processes (nohup or a trailing &), they were stopped when the call ended. Run long jobs in the foreground within the timeout.";
+    /// Appended to a result when part of the command ran detached (`&`, `nohup`, `setsid`, `disown`).
+    pub const BASH_DETACHED: &str =
+        "Part of this command ran in the background (an `&`, `nohup`, `setsid` or `disown`). Its output and exit status are not in this result. A `cd` before the `&` applies only to the backgrounded part; later commands ran in the session folder. In the OS sandbox the background process ends with the call; without it (yolo, or no sandbox) it keeps running and oxa does not track it. To run something that can be read, waited for or stopped, use bash with {\"background\":true}.";
     pub const BASH_BAD_TIMEOUT: &str = "Invalid timeout: must be a finite number of seconds";
     pub fn bash_exit(code: i32) -> String {
         format!("Command exited with code {code}")
@@ -398,12 +398,17 @@ pub mod subagent {
     /// pi's parameter schema without `agentScope` / `confirmProjectAgents` (the agents are the
     /// user's and, in a trusted project, the project's).
     pub const SCHEMA: &str = r#"{"type":"object","properties":{"agent":{"type":"string","description":"Name of the agent to invoke (for single mode)"},"task":{"type":"string","description":"Task to delegate (for single mode)"},"tasks":{"type":"array","description":"Array of {agent, task} for parallel execution","items":{"type":"object","properties":{"agent":{"type":"string","description":"Name of the agent to invoke"},"task":{"type":"string","description":"Task to delegate to the agent"},"cwd":{"type":"string","description":"Working directory for the agent process"}},"required":["agent","task"]}},"chain":{"type":"array","description":"Array of {agent, task} for sequential execution","items":{"type":"object","properties":{"agent":{"type":"string","description":"Name of the agent to invoke"},"task":{"type":"string","description":"Task with optional {previous} placeholder for prior output"},"cwd":{"type":"string","description":"Working directory for the agent process"}},"required":["agent","task"]}},"cwd":{"type":"string","description":"Working directory for the agent process (single mode)"}}}"#;
-    /// `{n}` = the number of tasks (pi's text).
-    pub const TOO_MANY: &str = "Too many parallel tasks ({n}). Max is {max}.";
-    /// A chain is the same eight children, one after another (O-146).
-    pub const TOO_MANY_CHAIN: &str = "Too many chain steps ({n}). Max is {max}.";
-    /// The cap is per parent session, over every call in flight.
-    pub const TOO_MANY_SESSION: &str = "Too many subagent tasks for this session ({pending} running or queued, {n} more requested). Max is {max}. Wait for the running subagent call to finish, or ask for fewer tasks.";
+    /// `{n}` = the number of tasks. A warning appended to the result: the tasks run anyway.
+    pub const TOO_MANY: &str =
+        "Warning: {n} parallel tasks, above oxa.subagent.maxChildren ({max}). All of them ran.";
+    /// A chain is the same count, one step after another.
+    pub const TOO_MANY_CHAIN: &str =
+        "Warning: {n} chain steps, above oxa.subagent.maxChildren ({max}). The chain ran anyway.";
+    /// The count is per parent session, over every call in flight.
+    pub const TOO_MANY_SESSION: &str = "Warning: {pending} subagent tasks were already running or queued for this session and {n} more were added, above oxa.subagent.maxChildren ({max}). They were queued, not refused.";
+    /// The owner chose to refuse (`oxa.onExceed.subagentChildren`): nothing ran.
+    pub const REFUSED_TOO_MANY: &str = "Refused: {n} subagent tasks in one call, above the owner's limit oxa.subagent.maxChildren ({max}) with oxa.onExceed.subagentChildren set to stop. Nothing ran; send at most {max} at a time.";
+    pub const REFUSED_TOO_MANY_SESSION: &str = "Refused: {pending} subagent tasks are already running or queued for this session and {n} more would pass the owner's limit oxa.subagent.maxChildren ({max}) with oxa.onExceed.subagentChildren set to stop. Nothing ran; wait for the running ones to finish.";
     pub const NOT_ATTACHED: &str = "Subagent failed: the session host is not attached";
     pub const NOT_STARTED: &str = "Subagent was aborted before starting";
     pub const ABORTED: &str = "Subagent was aborted";
@@ -442,6 +447,10 @@ pub mod subagent {
     pub const SINGLE_FAILED: &str = "Agent {why}: {output}";
     /// The task line of a child's prompt: `{task}`.
     pub const TASK: &str = "Task: {task}";
+    /// A fork child's task line when its agent has a system prompt: the child continues the
+    /// parent's conversation (its frozen prefix and wire), which cannot carry an agent system
+    /// prompt of its own, so the prompt leads the task instead. `{prompt}`, `{task}`.
+    pub const FORK_PROMPT: &str = "{prompt}\n\nTask: {task}";
 }
 
 /// The `web_search` tool (wave H lane `search`, O-169; oxa-only, pi has no built-in search):

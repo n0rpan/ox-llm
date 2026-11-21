@@ -59,11 +59,16 @@ enum Msg {
     StopAll {
         reply: Sender<io::Result<()>>,
     },
+    Exited {
+        pgid: u32,
+        reply: Sender<Option<ExitStatus>>,
+    },
 }
 
 /// Handle to the supervisor thread. Dropping it stops every live worker.
 pub struct Supervisor {
     tx: Sender<Msg>,
+    kill: PathBuf,
 }
 
 impl Supervisor {
@@ -79,10 +84,17 @@ impl Supervisor {
         }
         require_procfs(cfg!(target_os = "linux"))?;
         let (tx, rx) = mpsc::channel();
+        let helper = kill.clone();
         thread::Builder::new()
             .name("oxa-workers".into())
-            .spawn(move || run(rx, grace, kill))?;
-        Ok(Supervisor { tx })
+            .spawn(move || run(rx, grace, helper))?;
+        Ok(Supervisor { tx, kill })
+    }
+
+    pub(super) fn kill_is_trusted_in(&self, project: &Path, home: &Path) -> bool {
+        self.kill.parent().is_some_and(|dir| {
+            kill_helper(dir.as_os_str(), project, home).as_deref() == Some(self.kill.as_path())
+        })
     }
 
     /// Start `argv[0]` with `argv[1..]` in a new process group, stdin null, stdout and stderr
@@ -115,6 +127,13 @@ impl Supervisor {
         let (reply, rx) = mpsc::channel();
         self.send(Msg::StopAll { reply })?;
         rx.recv().map_err(|_| gone())?
+    }
+
+    /// Take the exit status once the owned group is empty and its leader is reaped.
+    pub(super) fn exited(&self, pgid: u32) -> io::Result<Option<ExitStatus>> {
+        let (reply, rx) = mpsc::channel();
+        self.send(Msg::Exited { pgid, reply })?;
+        rx.recv().map_err(|_| gone())
     }
 
     fn send(&self, msg: Msg) -> io::Result<()> {
@@ -201,6 +220,9 @@ fn run(rx: Receiver<Msg>, grace: Duration, kill: PathBuf) {
             }
             Ok(Msg::StopAll { reply }) => {
                 let _ = reply.send(table.stop_all());
+            }
+            Ok(Msg::Exited { pgid, reply }) => {
+                let _ = reply.send(table.done.remove(&pgid));
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
@@ -399,6 +421,17 @@ fn signal(kill: &Path, target: &str, sig: &str) -> io::Result<()> {
     }
 }
 
+/// Read-only liveness for a recorded worker, including surviving group members.
+pub(super) fn recorded_group_alive(pgid: u32) -> io::Result<bool> {
+    if pgid == 0 || pgid > i32::MAX as u32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid worker process group",
+        ));
+    }
+    group_alive(pgid)
+}
+
 /// Whether the leader `pid` is still running (not a zombie), from its procfs state.
 #[cfg(target_os = "linux")]
 fn leader_running(pid: u32) -> io::Result<bool> {
@@ -504,26 +537,36 @@ fn thread_group_alive(pgid: u32) -> io::Result<bool> {
 }
 
 /// [`group_alive`] without procfs: ask the kernel whether the group has a member. `ESRCH` is an
-/// empty group; `EPERM` is a member we may not signal, which the Linux path treats the same way.
-/// This probe must not be short-circuited by the leader's exit: another member can survive it.
+/// empty group. `EPERM` is a member we may not signal: on macOS that is also what a group of
+/// only zombies answers (#1754), so an exited, unreaped leader plus `EPERM` is a finished
+/// group. This probe must not be short-circuited by the leader's exit alone: another member
+/// can survive it, and then the probe succeeds.
 #[cfg(not(target_os = "linux"))]
 fn group_alive(pgid: u32) -> io::Result<bool> {
     // SAFETY: killpg only inspects the group; signal 0 delivers nothing.
-    if unsafe { libc::killpg(pgid as libc::pid_t, 0) } == 0 {
-        return group_alive_from_probe(Ok(()), libc::ESRCH, libc::EPERM);
-    }
-    group_alive_from_probe(Err(io::Error::last_os_error()), libc::ESRCH, libc::EPERM)
+    let probe = if unsafe { libc::killpg(pgid as libc::pid_t, 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    };
+    group_alive_from_probe(probe, libc::ESRCH, libc::EPERM, || leader_exited(pgid))
 }
 
-/// Interpret the portable signal-0 process-group probe.
+/// Interpret the portable signal-0 process-group probe. `leader_exited` is asked only when the
+/// probe answers `denied`: an exited, unreaped leader then means a zombie-only group.
 #[cfg(any(test, not(target_os = "linux")))]
-fn group_alive_from_probe(probe: io::Result<()>, missing: i32, denied: i32) -> io::Result<bool> {
+fn group_alive_from_probe(
+    probe: io::Result<()>,
+    missing: i32,
+    denied: i32,
+    leader_exited: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<bool> {
     let Err(error) = probe else {
         return Ok(true);
     };
     match error.raw_os_error() {
         Some(code) if code == missing => Ok(false),
-        Some(code) if code == denied => Ok(true),
+        Some(code) if code == denied => Ok(!leader_exited()?),
         _ => Err(error),
     }
 }
@@ -681,7 +724,20 @@ mod tests {
     /// its process group still contains a surviving child.
     #[test]
     fn successful_group_probe_reports_survivors_after_leader_exit() {
-        assert!(group_alive_from_probe(Ok(()), ESRCH, 1).expect("group probe"));
+        assert!(group_alive_from_probe(Ok(()), ESRCH, 1, || Ok(true)).expect("group probe"));
+    }
+
+    /// #1754: the probe's answers, with the leader state injected so Linux CI covers them.
+    #[test]
+    fn group_probe_rules_cover_zombie_only_groups() {
+        const EPERM: i32 = 1;
+        let err = |code: i32| Err(io::Error::from_raw_os_error(code));
+        assert!(!group_alive_from_probe(err(ESRCH), ESRCH, EPERM, || Ok(false)).unwrap());
+        assert!(!group_alive_from_probe(err(EPERM), ESRCH, EPERM, || Ok(true)).unwrap());
+        assert!(group_alive_from_probe(err(EPERM), ESRCH, EPERM, || Ok(false)).unwrap());
+        assert!(group_alive_from_probe(err(99), ESRCH, EPERM, || Ok(false)).is_err());
+        // The leader is only asked when EPERM answered.
+        assert!(group_alive_from_probe(Ok(()), ESRCH, EPERM, || panic!("not asked")).unwrap());
     }
 
     #[test]

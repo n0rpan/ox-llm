@@ -1,13 +1,11 @@
 //! The owner-side handoff for a trusted frontend carrying a bounded control request.
 
-#[cfg(feature = "a2a-control")]
 use oxa_core::{goal::GoalControl, Session};
 use oxa_core::{
     goal::{GoalSteering, SteeringAuthority, SteeringBinding, SteeringLease},
     Handle,
 };
 use oxa_orchestrator::control::Request;
-#[cfg(feature = "a2a-control")]
 use oxa_proto::EventSink;
 use oxa_session::SessionRef;
 use serde_json::{json, Value};
@@ -67,13 +65,11 @@ pub(super) fn queue_steering(
 
 /// A request bound to the frontend's authorized session reference at admission.
 /// The reference is never taken from the packet or included in a receipt.
-#[cfg(feature = "a2a-control")]
 pub(super) struct BoundControl {
     session: SessionRef,
     request: Request,
 }
 
-#[cfg(feature = "a2a-control")]
 impl BoundControl {
     pub(super) fn new(session: SessionRef, request: Request) -> Self {
         Self { session, request }
@@ -81,6 +77,11 @@ impl BoundControl {
 
     pub(super) fn id(&self) -> &str {
         self.request.id()
+    }
+
+    /// A resume: once applied on the idle session it starts one continuation run.
+    pub(super) fn is_resume(&self) -> bool {
+        matches!(self.request, Request::Resume { .. })
     }
 
     /// Return a receipt from the session owner after attempting the durable transition.

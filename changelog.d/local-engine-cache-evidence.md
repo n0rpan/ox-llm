@@ -1,0 +1,1 @@
+Report the local engine's own prefill and checkpoint timings per request in `oxa --wire-evidence`, and say `cache_source: unavailable` instead of guessing where a reused prefix came from.

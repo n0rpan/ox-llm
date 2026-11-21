@@ -1,6 +1,4 @@
 //! B3 acceptance tests: Agent loop.
-//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
-//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_compact::CompactPolicy;
@@ -9,10 +7,11 @@ use oxa_core::{append_entry, run_loop, Queue, RunEnd, SessionState, Shared, Stat
 use oxa_fake::{Recorded, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    codes, miss_cause, shown_why, tool_errors, Access, AgentEvent, AssistantTurn, CancelToken, ChatRequest,
-    CommandSpec, Engine, EngineInfo, Entry, EntryBody, Exposure, Finish, FrozenPrefix, HeadlessUi, HookPoint,
-    HookReply, Hooks, Mode, OxaError, Policy, Source, StreamEvent, ThinkingLevel, Tool, ToolCall, ToolClass,
-    ToolCtx, ToolOutput, ToolSpec, Ui, Value, VecSink, WireMsg,
+    codes, miss_cause, shown_why, tool_errors, Access, AgentEvent, Answer, AssistantTurn, CancelToken,
+    ChatRequest, CommandSpec, DangerAnswer, Engine, EngineInfo, Entry, EntryBody, Exposure, Finish,
+    FrozenPrefix, HeadlessUi, HookPoint, HookReply, Hooks, Mode, OxaError, Placement, Policy, Source,
+    StreamEvent, ThinkingLevel, Tool, ToolCall, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui, Value, VecSink,
+    WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -122,6 +121,7 @@ fn build(
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
+        wake: Default::default(),
     });
     SessionState {
         goal: None,
@@ -712,6 +712,78 @@ fn remote_length_recovery_drops_the_cut_reply() {
         .any(|m| m.content.as_deref() == Some("UNFINISHED_PARTIAL")));
     assert!(!st.stats.output_truncated);
     assert!(st.tree.entries().iter().any(|e| matches!(&e.body, EntryBody::Shown { text, why } if text == "UNFINISHED_PARTIAL" && *why == shown_why::CUT)));
+}
+
+/// An empty cloud reply is asked again once with a fresh key; the empty reply is not kept.
+#[test]
+fn remote_empty_reply_is_retried_once() {
+    let env = TestEnv::new();
+    let eng = Arc::new(
+        ScriptedEngine::new(vec![ScriptTurn::text(""), ScriptTurn::text("real answer")]).with_remote(),
+    );
+    let mut st = build(
+        &env,
+        eng.clone(),
+        Arc::new(MemStore::new()),
+        vec![],
+        Mode::Workspace,
+        vec![],
+    );
+    say(&mut st, "do the task");
+    let (end, _) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    let requests = eng.requests();
+    assert_eq!(requests.len(), 2);
+    assert_ne!(requests[0].idem_key, requests[1].idem_key);
+    assert_eq!(
+        st.transcript.wire().last().unwrap().content.as_deref(),
+        Some("real answer")
+    );
+}
+
+/// Only one empty retry by default: a second empty reply ends the run as before.
+#[test]
+fn remote_empty_reply_retry_is_bounded_and_cloud_only() {
+    let env = TestEnv::new();
+    let eng = Arc::new(
+        ScriptedEngine::new(vec![
+            ScriptTurn::text(""),
+            ScriptTurn::text(""),
+            ScriptTurn::text("late"),
+        ])
+        .with_remote(),
+    );
+    let mut st = build(
+        &env,
+        eng.clone(),
+        Arc::new(MemStore::new()),
+        vec![],
+        Mode::Workspace,
+        vec![],
+    );
+    say(&mut st, "do the task");
+    let _ = run(&mut st);
+    assert_eq!(
+        eng.requests().len(),
+        2,
+        "one retry, then the second empty reply is final"
+    );
+    let env = TestEnv::new();
+    let local = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text(""),
+        ScriptTurn::text("late"),
+    ]));
+    let mut st = build(
+        &env,
+        local.clone(),
+        Arc::new(MemStore::new()),
+        vec![],
+        Mode::Workspace,
+        vec![],
+    );
+    say(&mut st, "do the task");
+    let _ = run(&mut st);
+    assert_eq!(local.requests().len(), 1, "a local model is not asked again");
 }
 
 /// The existing byte-N replay and new length recovery complete one run together.
@@ -1654,6 +1726,148 @@ fn prepare_dangerous_unattended_error_names_rule() {
     assert_ne!(refused, tool_errors::DENIED_BY_USER);
     assert!(
         refused.starts_with("Refused: dangerous command (git-push-force: "),
+        "{refused}"
+    );
+    assert!(
+        refused.ends_with("This run has no one to approve it; nobody declined it."),
+        "{refused}"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 0, "a refused command never runs");
+}
+
+/// #2292: an interactive Ui that records the dangerous-command question and approves it once.
+#[derive(Default)]
+struct DangerUi {
+    reasons: Vec<String>,
+}
+
+impl Ui for DangerUi {
+    fn select(&mut self, _t: &str, _o: &[String], _ms: Option<u32>) -> Option<usize> {
+        None
+    }
+    fn confirm(&mut self, _t: &str, _b: &str, _ms: Option<u32>) -> Option<bool> {
+        None
+    }
+    fn input(&mut self, _t: &str, _p: &str) -> Option<String> {
+        None
+    }
+    fn editor(&mut self, _t: &str, _p: &str) -> Option<String> {
+        None
+    }
+    fn notify(&mut self, _text: &str, _level: oxa_proto::Level) {}
+    fn set_status(&mut self, _k: &str, _t: Option<&str>) {}
+    fn set_widget(&mut self, _k: &str, _l: Option<&[String]>, _at: Placement) {}
+    fn set_title(&mut self, _t: &str) {}
+    fn set_editor_text(&mut self, _t: &str) {}
+    fn ask_access(&mut self, _a: &Access) -> Answer {
+        Answer::Once
+    }
+    fn ask_dangerous(&mut self, _a: &Access, reasons: &[String], _keys: &[String]) -> DangerAnswer {
+        self.reasons.extend(reasons.iter().cloned());
+        DangerAnswer::Once
+    }
+    fn interactive(&self) -> bool {
+        true
+    }
+}
+
+/// #2292: a user message that explicitly asks to keep work adds the reversible-checkpoint
+/// note to the dangerous command's existing question, before the command runs. The owner's
+/// answer still decides: an approval runs the command, nothing new is refused.
+#[test]
+fn preservation_requirement_rides_on_the_dangerous_question() {
+    let env = TestEnv::new();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let r1 = Arc::clone(&runs);
+    let bash = tool_with(
+        "bash",
+        ToolClass::Exec,
+        Box::new(|_a: &Value, _cx: &ToolCtx| {
+            Ok(vec![Access::Exec {
+                command: "git push --force origin main".to_string(),
+                net: false,
+            }])
+        }),
+        Box::new(move |_a: &Value, _c: &ToolCtx| {
+            r1.fetch_add(1, Ordering::SeqCst);
+            ToolOutput::ok("pushed")
+        }),
+    )
+    .0;
+    let turns = vec![
+        turn_calls(vec![("b1", "bash", "{}")]),
+        ScriptTurn::text("understood"),
+    ];
+    let (mut st, _eng) = scripted_state(&env, turns, vec![bash], Mode::Workspace);
+    st.policy =
+        Box::new(ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()));
+    say(
+        &mut st,
+        "remove the secret from history, but keep commit abc123 exactly as it is",
+    );
+    let mut ui = DangerUi::default();
+    let mut sink = VecSink::default();
+    let end = run_loop(&mut st, &mut sink, &mut ui).expect("run_loop");
+    assert_eq!(end, RunEnd::Stopped);
+    assert_eq!(
+        ui.reasons.len(),
+        1,
+        "the existing dangerous-command question asked once"
+    );
+    let reason = &ui.reasons[0];
+    assert!(reason.starts_with("git-push-force: "), "{reason}");
+    assert!(reason.contains("reversible checkpoint"), "{reason}");
+    assert!(reason.contains("keep commit abc123 exactly as it is"), "{reason}");
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "the owner's approval still runs the command"
+    );
+}
+
+/// #2292: with no one to ask, the refusal of a destructive command names the preservation
+/// requirement and the checkpoint; the command never runs.
+#[test]
+fn preservation_requirement_rides_on_the_dangerous_refusal() {
+    let env = TestEnv::new();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let r1 = Arc::clone(&runs);
+    let bash = tool_with(
+        "bash",
+        ToolClass::Exec,
+        Box::new(|_a: &Value, _cx: &ToolCtx| {
+            Ok(vec![Access::Exec {
+                command: "git push --force origin main".to_string(),
+                net: false,
+            }])
+        }),
+        Box::new(move |_a: &Value, _c: &ToolCtx| {
+            r1.fetch_add(1, Ordering::SeqCst);
+            ToolOutput::ok("pushed")
+        }),
+    )
+    .0;
+    let turns = vec![
+        turn_calls(vec![("b1", "bash", "{}")]),
+        ScriptTurn::text("understood"),
+    ];
+    let (mut st, _eng) = scripted_state(&env, turns, vec![bash], Mode::Workspace);
+    st.policy =
+        Box::new(ModePolicy::new().with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()));
+    say(
+        &mut st,
+        "remove the secret from history, but keep commit abc123 exactly as it is",
+    );
+    let (end, _) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    let refused = tool_text(&st.transcript.wire()[2]);
+    assert!(
+        refused.starts_with("Refused: dangerous command (git-push-force: "),
+        "{refused}"
+    );
+    assert!(refused.contains("reversible checkpoint"), "{refused}");
+    assert!(
+        refused.contains("keep commit abc123 exactly as it is"),
         "{refused}"
     );
     assert!(

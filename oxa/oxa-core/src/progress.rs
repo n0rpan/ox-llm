@@ -11,6 +11,13 @@ pub enum Progress<'a> {
         file: Option<&'a Path>,
     },
     RunStart,
+    /// The frozen prefix (system text + tool list) the next request sends: its SHA-256
+    /// (`FrozenPrefix::sha256`) and its byte count. Sent right before `RequestStart`. Digest
+    /// and length only, never content: `--usage-log` records them to show the prefix is stable.
+    Prefix {
+        sha256: [u8; 32],
+        bytes: usize,
+    },
     RequestStart {
         kind: TurnKind,
         remote: bool,
@@ -22,6 +29,12 @@ pub enum Progress<'a> {
     Advanced,
     ToolStart(&'a str),
     ToolEnd,
+    /// The distinct file paths this run's successful `edit`/`write` calls named, in first-use
+    /// order, reported once when the run records its end (#2297). Tool-observed only: a shell
+    /// rewrite names no file here. Acceptance evidence, not a verdict; nothing is refused.
+    FilesChanged {
+        paths: &'a [String],
+    },
     /// A native goal control advanced the revision and the session store confirmed the sync.
     /// The operation may still need a prefix refresh. This is a wake to read the bound owner.
     GoalControlCommitted {
@@ -31,6 +44,10 @@ pub enum Progress<'a> {
     GoalStatus {
         status: &'static str,
         reason: Option<&'a str>,
+    },
+    /// A limit or SIGTERM turned this run into its wrap-up: `time`, `tokens` or `signal`.
+    WrapUp {
+        limit: &'static str,
     },
     /// An operation returned, including an empty queue or a command without an agent turn.
     /// This observation does not imply an AgentSettled event or hook was emitted.
@@ -74,4 +91,12 @@ pub(crate) fn session(st: &SessionState) {
 pub(crate) fn session_file(st: &SessionState) -> Option<&Path> {
     let path = &st.sref.path;
     (!path.as_os_str().is_empty() && !path.to_string_lossy().starts_with("mem:")).then_some(path)
+}
+
+/// The `Prefix` progress of a request: digest and size of the frozen prefix it sends.
+pub(crate) fn prefix_progress(prefix: &oxa_proto::FrozenPrefix) -> Progress<'static> {
+    Progress::Prefix {
+        sha256: prefix.sha256,
+        bytes: prefix.hash_input().len(),
+    }
 }
