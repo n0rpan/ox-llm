@@ -1290,10 +1290,8 @@ fn sampler_line(page: &str) -> String {
         .to_owned()
 }
 
-/// A lead with `configure` written into the user settings, one private board log, and one
-/// sample configuration: a fake `gh`, a mint command that prints a fresh token, and a
-/// one-second interval.
-fn with_sampler(
+/// A lead on the healthy synthetic frame with `configure` written into its user settings.
+fn with_configured_lead(
     configure: impl FnOnce(&mut serde_json::Value, &std::path::Path),
     run: impl FnOnce(u16, &str, &TestEnv, &std::path::Path),
 ) {
@@ -1313,21 +1311,29 @@ fn with_sampler(
     for path in [&gh, &mint] {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    // A private log the service writes itself, with one older sample already in it.
-    let board = test.root().join("inputs").join("board.jsonl");
-    std::fs::create_dir_all(board.parent().unwrap()).unwrap();
-    std::fs::set_permissions(board.parent().unwrap(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::write(
-        &board,
-        b"{\"schema_version\":1,\"observed_at\":10,\"board\":{\"observed_at\":10,\"entries\":[]}}\n",
-    )
-    .unwrap();
+    // A private frame the service reads, with one older sample already in it, and the same
+    // healthy frame the fixture tests use, so a test asserts board rows and not a bare log.
+    let directory = test.root().join("inputs");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let board = directory.join("board.jsonl");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut frame = fixture("healthy");
+    let observed = frame["board_record"]["observed_at"].as_u64().unwrap();
+    shift_timestamps(&mut frame["board_record"], now as i64 - observed as i64);
+    let mut line = serde_json::to_string(&frame["board_record"]).unwrap();
+    line.push('\n');
+    std::fs::write(&board, line).unwrap();
     std::fs::set_permissions(&board, std::fs::Permissions::from_mode(0o600)).unwrap();
     let mut settings = serde_json::json!({"oxa":{
         "defaultProjectTrust":"always",
-        "github":{"tokenCommand":[mint.to_str().unwrap()]},
         "lead":{"serve":{"sample_secs":1,"repo":"example/repo","enabled":true,"port":port}},
     }});
+    // The mint helper answers with the checked token; a configure step may replace it.
+    settings["oxa"]["github"]["tokenCommand"] = serde_json::json!([mint.to_str().unwrap()]);
     configure(&mut settings, &test.home());
     test.write("home/.oxa/agent/settings.json", &settings.to_string());
     drop(reservation);
@@ -1359,36 +1365,46 @@ fn wait_for(mut check: impl FnMut() -> bool) -> bool {
 fn an_unauthorized_retry_starts_no_sample_and_the_top_bar_names_the_timer() {
     with_fixed_chat(|port, authority, _stderr| {
         let page = get(port, "/", authority, "");
-        // The fixture names no token source, so the external timer keeps the board and the
-        // page says so instead of claiming a sample this service does not run.
-        assert_eq!(sampler_line(&page).trim(), "Sampling: external timer");
-        let reply = get_raw(port, "/retry", authority, "");
-        assert!(reply.starts_with("HTTP/1.1 401"), "{reply}");
+        // No token source: the external timer keeps the board and the page says so instead of
+        // claiming a sample this service does not run.
+        let line = sampler_line(&page);
+        assert_eq!(line.trim(), "Sampling: external timer", "{line}");
+        let refused = get_raw(port, "/retry", authority, "");
+        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
     });
 }
 
 #[test]
 fn the_server_samples_retry_samples_at_once_and_a_refused_token_keeps_the_board() {
-    with_sampler(
-        |_, _| {},
+    with_configured_lead(
+        |_, home| std::fs::write(home.join("sampled-at"), "").unwrap(),
         |port, authority, test, board| {
-            // One sample on its own interval, with a fresh token, into the owner's log.
+            // The server samples on its own interval, with a fresh token, into the owner's log.
             assert!(
                 wait_for(|| samples(board) >= 2),
                 "the server did not sample the board"
             );
             let first = std::fs::read_to_string(board).unwrap();
-            assert!(
-                first.lines().last().unwrap().contains("\"observed_at\":"),
-                "{first}"
-            );
+            let rows = |text: &str| {
+                text.lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .filter_map(|v| v["board"]["entries"].as_array().map(Vec::len))
+                    .max()
+                    .unwrap_or(0)
+            };
+            // A sample that ran is a whole record with the frame's rows; the fixture's older
+            // line stays untouched.
+            assert!(rows(&first) > 0, "{first}");
             assert!(
                 !first.contains("synthetic-sampler-token"),
                 "the token reached the log"
             );
             let page = get(port, "/", authority, "");
-            assert!(sampler_line(&page).contains("every second"), "{page}");
-            assert!(sampler_line(&page).contains("Sample "), "{page}");
+            let line = sampler_line(&page);
+            assert!(
+                line.contains("Sample ") && line.contains("every second"),
+                "{line}"
+            );
             // Retry samples now, works without JS, and answers with the page in its new state.
             let before = samples(board);
             let reply = get(port, "/retry", authority, "");
@@ -1407,12 +1423,18 @@ fn the_server_samples_retry_samples_at_once_and_a_refused_token_keeps_the_board(
             for line in text.lines() {
                 assert!(serde_json::from_str::<serde_json::Value>(line).is_ok(), "{line}");
             }
-            // The mint command now prints a token GitHub refuses: the board keeps its last sample
-            // and the top bar says why and when the next attempt is.
-            let mint = test.home().join("tmp/mint-token");
-            std::fs::write(&mint, "#!/bin/sh\nprintf 'revoked-token\\n'\n").unwrap();
-            std::fs::set_permissions(&mint, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let _ = get(port, "/retry", authority, "");
+        },
+    );
+    // The mint helper is replaced for a second lead, so the sample's token is refused.
+    with_configured_lead(
+        |settings, home| {
+            let revoked = home.join("revoked-token");
+            std::fs::write(&revoked, "#!/bin/sh\nprintf 'revoked-token\\n'\n").unwrap();
+            std::fs::set_permissions(&revoked, std::fs::Permissions::from_mode(0o700)).unwrap();
+            settings["oxa"]["github"]["tokenCommand"] = serde_json::json!([revoked.to_str().unwrap()]);
+        },
+        |port, authority, _test, board| {
+            let observed_before = last_observed(&std::fs::read_to_string(board).unwrap());
             assert!(
                 wait_for(|| {
                     let page = get(port, "/", authority, "");
@@ -1426,15 +1448,28 @@ fn the_server_samples_retry_samples_at_once_and_a_refused_token_keeps_the_board(
             assert!(line.contains("next sample"), "{line}");
             assert!(line.contains("every second"), "{line}");
             assert!(!line.contains("revoked-token"), "{line}");
-            assert!(sampler_line(&page).contains("/retry"), "{line}");
+            assert!(line.contains("/retry"), "{line}");
+            // The refused sample wrote nothing: the last good board stays as it was.
+            assert_eq!(
+                last_observed(&std::fs::read_to_string(board).unwrap()),
+                observed_before
+            );
             assert!(page.contains("Board"), "the last board sample stays on the page");
         },
     );
 }
 
+fn last_observed(text: &str) -> u64 {
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|value| value["observed_at"].as_u64())
+        .max()
+        .unwrap_or(0)
+}
+
 #[test]
 fn a_refused_github_read_names_its_cause() {
-    with_sampler(
+    with_configured_lead(
         |_, home| std::fs::write(home.join("rate-limit-unavailable"), "").unwrap(),
         |port, authority, _test, _board| {
             // Without the free rate_limit response the sample's read fails; the page names

@@ -59,6 +59,17 @@ impl ServiceJournal {
         );
     }
 
+    /// The sampler was configured but this service could not start it. One fixed line.
+    fn sampler_off(&self) {
+        let Ok(mut out) = self.out.lock() else {
+            return;
+        };
+        let _ = writeln!(
+            out,
+            "lead sampler off: needs the board log, a repository and a trusted gh"
+        );
+    }
+
     fn sink(&self) -> RefusalLog {
         let journal = self.clone();
         Arc::new(move |fact| journal.log(fact))
@@ -1083,7 +1094,16 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     // The in-process sampler (#2262): it writes the same board log on its own interval, so the
     // board stays fresh with no external timer. No token source means no sampler; the external
     // timer keeps working and the page says so.
+    // One journal line when the owner configured a token source but this start cannot use it
+    // (no board log, no repository or no trusted `gh`): fixed text only, never a path or token.
     let sampler = Sampler::start(dirs, cwd, env);
+    if Settings::load(dirs, cwd, false)
+        .user_value("oxa.github.tokenCommand")
+        .is_some()
+        && sampler.is_none()
+    {
+        journal.sampler_off();
+    }
     source.sampler = sampler.clone();
     let client_token = oxa_mcp::pkce_pair(&oxa_mcp::random_bytes()?).0;
     let local = config.mode() == Mode::Local;

@@ -146,6 +146,12 @@ impl Sampler {
         lock(&self.shared).status.clone()
     }
 
+    /// Whether this lead samples at all. `None` (`Sampler::start` without a token source) means
+    /// the external timer owns the board and there is nothing here to ask for a sample.
+    pub(crate) fn is_none(&self) -> bool {
+        false
+    }
+
     /// A sample now: a running attempt finishes, then one starts at once. This also drops the
     /// back-off of a failing sample.
     pub(crate) fn retry(&self) {
