@@ -280,6 +280,17 @@ fn artifact_line(cwd: &Path, written: &[String]) -> Option<String> {
     ))
 }
 
+/// #2295: `paths` with each file once at its last write, newest [`ARTIFACT_SHOWN`].
+fn newest(paths: &[String]) -> Vec<String> {
+    let mut last: Vec<&str> = Vec::new();
+    for path in paths {
+        last.retain(|p| *p != path.as_str());
+        last.push(path);
+    }
+    let from = last.len().saturating_sub(ARTIFACT_SHOWN);
+    last[from..].iter().map(|p| (*p).to_string()).collect()
+}
+
 /// #2295: the path argument of a successful `write`/`edit` call (`None`: not a string).
 fn written_path(call: &ToolCall) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(&call.args_raw)
@@ -552,23 +563,23 @@ impl DoneState {
     }
 
     /// #2295: with `keep` (the run has `done` checks to run, [`checks_run`]), keep the verified
-    /// paths newest [`ARTIFACT_SHOWN`], each file once at its last write. The failure signal and
-    /// the passing check are judged where the check runs ([`Self::verified_artifacts`]).
+    /// paths newest [`ARTIFACT_SHOWN`], each file once at its last write, and keep the files
+    /// written since the last passing check (a later check still covers them). The failure
+    /// signal and the passing check are judged where the check runs
+    /// ([`Self::verified_artifacts`]).
     pub(crate) fn note_artifacts(&mut self, keep: bool) {
         if !keep {
             self.written.clear();
             self.unchecked_writes.clear();
             return;
         }
-        let mut last: Vec<&str> = Vec::new();
-        for path in &self.written {
-            last.retain(|p| *p != path.as_str());
-            last.push(path);
-        }
-        let from = last.len().saturating_sub(ARTIFACT_SHOWN);
-        self.written = last[from..].iter().map(|p| (*p).to_string()).collect();
-        self.unchecked_writes.clear();
+        self.written = newest(&self.written);
     }
+
+    /// #2295: the verified-artifact line for a failed-check repair. A file is named only when a
+    /// check passed after its last write and a command of the batch failed: the batch is the
+    /// failure signal and the check is this run's verification of the files. A write after the
+    /// last passing check stays out ([`Self::note_proof`]).
 
     /// #2295: the verified-artifact line for a failed-check repair. A file is named only when a
     /// check passed after its last write and a command of the batch failed: the batch is the
@@ -578,7 +589,7 @@ impl DoneState {
         if !self.failed_command || !self.proof.checked() {
             return None;
         }
-        artifact_line(cwd, &self.written)
+        artifact_line(cwd, &newest(&self.written))
     }
 
     /// Start of a run: remember the tree, so a later `bash` change can be told apart.
