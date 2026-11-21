@@ -29,7 +29,18 @@ chain of `env -C`, files read, token-printing commands). `credential-read` and `
 prompts in standard mode, not a sandbox; yolo does not reach them. These rules are hardening, not a security
 boundary: a command that slips past them by obfuscation is P3. A saved unattended grant never covers a
 pipeline fed by anything but a literal `echo`/`printf`, or an input redirect. A `wait` probe that runs `gh`
-is network access (plan denies, ask asks once per session).
+is network access (plan denies, ask asks once per session). The `oxa-self-approve` rule covers `oxa approve`,
+an approval-bearing `oxa send` (`--approve <id> <answer>` or the `--approvals` list) and a write into the agent
+directory; an ordinary `oxa send <session> <text>` (a steer, `--follow-up`, `--retry` or `--withdraw`) is a plain
+inbox message, never an approval, and is not flagged (#2272).
+
+A dangerous-command approval can be saved for the session or always. A session grant ends with the
+run; an always grant is the exact `<rule> <command>` key in the owner's user settings, written under
+the settings write lock. The approval views (dialog, lead page, `oxa approve`) show what runs: named
+assignments (`token=`), flag operands (`--password x`), URL credentials and literals inside parameter
+expansions are masked; executable text (commands, `$(...)`, `${NAME:-` heads) is never masked. A typed
+`yes` for a publication is bound to the session and the exact text that was shown (its digest, single
+use) and is not withdrawn when the session changes.
 
 A desk grant (once or session) of a pushing command in an unattended run is bound to resolved facts:
 the source ref object ids and a digest of origin's URLs (never the URLs), re-read at every decision
@@ -230,6 +241,7 @@ cannot approve. In yolo the broker answers yes, without changing publication sca
 The question is shown as the requesting process's text, not an oxa instruction.
 A broker answer derived from tool, file, web or agent-inbox text is high. A socket readable by another
 user is high. A model-run command that fakes the broker (its own listener or socket) is hardening, P3.
+The child verifies the broker before sending any publication fields. Only the parent posts, once, using the approved bytes. It checks the draft, title, body and preview-only note before showing or verifying them: privacy text is replaced; secrets and control or bidirectional text are refused, even in yolo. Offline refuses both approval and posting. An RPC dialog needs `OXA_RPC_OWNER_PRESENT=1`, never yolo. Do not make the child post or refuse privacy text.
 The broker's state machine, bounds and records do not depend on the extension host pump. A request is a structured, length-prefixed frame (title and body fields); an over-limit length is refused unread with a `reason` (`too_large`, `not_servable`, `closed`, `busy_limit`, `bad_request`). The session thread's `serve` picks a request, creates its per-dialog cancel ticket and marks it shown in one step under the broker's lock, so a typed yes that arrives before the UI has registered the dialog is neither lost nor able to dismiss another dialog. In yolo a request is answered at once, keeps no pending state and leaves a compact record (hash, size, first title line, a count for identical consecutive requests), never the text; a dialog or typed answer keeps the full text, which the owner paced. A finding that asks for yolo to retain every request body is answered here.
 The broker bounds what a request can hold in the oxa process before accepting it for confirmation:
 its size, the time to deliver it and the connections served at once (owner-configurable, generous

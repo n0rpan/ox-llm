@@ -119,8 +119,10 @@ pub(crate) fn board_and_app_quota(path: &Path, uid: u32) -> Result<(Board, Optio
 }
 
 /// Fixed, path-free operator causes for a failed protected observation read.
+/// Exposed to the view (#2342) so every gap names its cause from this allowlist,
+/// never a raw diagnostic, path or file content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BoardCause {
+pub enum BoardCause {
     Missing,
     Changed,
     Unreadable,
@@ -132,7 +134,7 @@ pub(crate) enum BoardCause {
 
 impl BoardCause {
     /// Authenticated operator status text. Never a path, file content or provider error.
-    pub(crate) fn text(self) -> &'static str {
+    pub fn text(self) -> &'static str {
         match self {
             Self::Missing => "the protected Board observation is missing",
             Self::Changed => "the protected Board observation changed while it was being read",
@@ -145,7 +147,7 @@ impl BoardCause {
     }
 
     /// The operator's next step for this cause.
-    pub(crate) fn hint(self) -> &'static str {
+    pub fn hint(self) -> &'static str {
         match self {
             Self::Unreadable => {
                 "check that the observation and its directory are owner-only, then rerun the Lead loop"

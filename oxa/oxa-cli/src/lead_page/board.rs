@@ -1,6 +1,6 @@
 //! Board view: counted filter chips, a desktop table and phone rows (#2350).
 use super::pages;
-use super::{action, escape, human_time, stale, Query, View};
+use super::{action, age, board_gap, escape, human_time, say_why, stale, Query, View};
 use oxa_work::board::Entry;
 use std::fmt::Write;
 
@@ -9,13 +9,16 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64, query: Query)
     if let Some(board) = view.board {
         let _ = write!(
             html,
-            "<p class=muted>{} · observed {}</p>",
-            if stale(board, now) {
+            "<p class=muted>{} · observed {} · {}</p>",
+            if view.board_retained {
+                "Last-good snapshot"
+            } else if stale(board, now) {
                 "Stale snapshot"
             } else {
                 "GitHub snapshot"
             },
-            human_time(board.observed_at, now)
+            human_time(board.observed_at, now),
+            age(board.observed_at, now)
         );
         query.navigation(html, board, view);
         if !query.filter.available(view) {
@@ -74,9 +77,8 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64, query: Query)
             html.push_str("</nav>");
         }
     } else {
-        html.push_str(
-            "<p>Board unavailable. No board observation reached this page; the source did not say why.</p>",
-        );
+        let (cause, next) = board_gap(view);
+        say_why(html, "Board", cause, next, None, now);
     }
     html.push_str("</section>");
 }

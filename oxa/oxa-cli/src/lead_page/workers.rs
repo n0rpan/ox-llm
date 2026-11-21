@@ -1,5 +1,5 @@
 //! Workers view: live bindings and runner facts grouped by host, with state chips (#2350).
-use super::{escape, human_time, View};
+use super::{escape, human_time, say_why, View};
 use oxa_proto::work::{IncidentKind, Subject};
 use std::fmt::Write;
 
@@ -81,7 +81,7 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
             group.sort_by_key(|(stalled, _)| !stalled);
             for (stalled, running) in group {
                 let chip = if stalled {
-                    "<span class=\"chip stall\">Stall reported</span>"
+                    "<span class=\"chip bad\">Stall reported</span>"
                 } else {
                     "<span class=chip>Busy at observation</span>"
                 };
@@ -107,7 +107,14 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
             }
         }
     } else if !live && !matches!(view.workers, Some(Err(BindingsError::Refused))) {
-        html.push_str("<p>Lane status unavailable. No runner observation reached this page, so workers and their state cannot be shown; the source did not say why.</p>");
+        say_why(
+            html,
+            "Lane status",
+            "no runner observation reached this page",
+            "rerun the Lead loop to read a runner situation",
+            None,
+            now,
+        );
     }
     html.push_str("</section>");
 }

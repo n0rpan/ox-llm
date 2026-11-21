@@ -1,14 +1,13 @@
 //! Item view: next action and state, with the absent details named explicitly (#2350).
 use super::board::lease;
-use super::{action, human_time, View};
+use super::{action, board_gap, human_time, say_why, View};
 use std::fmt::Write;
 
 pub(super) fn render(html: &mut String, view: &View<'_>, number: u64, now: u64) {
     html.push_str("<p><a href=/board>Back to Board</a></p>");
     let Some(board) = view.board else {
-        html.push_str(
-            "<p>Board unavailable. No board observation reached this page; the source did not say why.</p>",
-        );
+        let (cause, next) = board_gap(view);
+        say_why(html, "Board", cause, next, None, now);
         return;
     };
     let Some(row) = board.entries.iter().find(|row| row.number == number) else {
