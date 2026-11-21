@@ -54,7 +54,7 @@ pub const BUILTIN_RULES: &[(&str, &str)] = &[
     ),
     (
         "oxa-self-approve",
-        "oxa send or oxa approve, or a write into the agent directory",
+        "oxa approve, an approval-bearing oxa send (--approve or --approvals), or a write into the agent directory",
     ),
     (
         "eval-dynamic",
@@ -838,16 +838,19 @@ impl DangerRules {
                         );
                     k += if takes_value { 2 } else { 1 };
                 }
-                let by_argv = matches!(argv.get(k).map(String::as_str), Some("send") | Some("approve"));
+                let verb_argv = argv.get(k).map(String::as_str);
                 // The CLI also takes leading switches before a subcommand (`oxa --offline send
-                // ..`): a word that is not an option is the subcommand, and either reading marks
-                // the self-approve rule.
-                let by_args = args
-                    .iter()
-                    .map(String::as_str)
-                    .find(|a| !a.starts_with('-'))
-                    .is_some_and(|sub| matches!(sub, "send" | "approve"));
-                if by_argv || by_args {
+                // ..`): a word that is not an option is the subcommand. Either reading is used so
+                // a forged answer cannot hide behind a global flag that takes a value.
+                let verb_args = args.iter().map(String::as_str).find(|a| !a.starts_with('-'));
+                let is_approve = matches!(verb_argv, Some("approve")) || matches!(verb_args, Some("approve"));
+                let is_send = matches!(verb_argv, Some("send")) || matches!(verb_args, Some("send"));
+                // #2272: an ordinary `oxa send <session> <text>` (a steer, a `--follow-up`, a
+                // `--retry` or a `--withdraw`) is a plain inbox message and never an approval, so
+                // it is not the self-approve surface. Only `oxa approve` and an approval-bearing
+                // send (`--approve <id> <answer>` or the `--approvals` list) stay owner-only.
+                let approval_bearing = args.iter().any(|a| a == "--approve" || a == "--approvals");
+                if is_approve || (is_send && approval_bearing) {
                     self.push(hits, "oxa-self-approve", seg);
                 }
             }

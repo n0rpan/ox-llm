@@ -4,6 +4,10 @@ const digest=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
 let runningSha=document.querySelector('meta[name=oxa-running-sha256]')?.content;
 if(!digest(runningSha))runningSha=null;
 let timer,pending,stream,reconnectTimer,streamOk=false,reloadNeeded=false;
+let ageTimer=null;
+function ageText(at,now){if(at>now+60)return 'ahead of this clock';const d=Math.max(0,now-at);if(d<60)return d+' s old';if(d<3600)return Math.floor(d/60)+' min old';if(d<86400)return Math.floor(d/3600)+' h old';return Math.floor(d/86400)+' d old';}
+function tickAges(){if(typeof document.querySelectorAll!=='function')return;const now=Math.floor(Date.now()/1000);document.querySelectorAll('time[data-at]').forEach(el=>{const at=Number(el.getAttribute('data-at'));if(Number.isFinite(at))el.textContent=ageText(at,now);});}
+function scheduleAges(){if(typeof document.querySelectorAll!=='function')return;tickAges();ageTimer=setTimeout(()=>{ageTimer=null;if(!document.hidden)scheduleAges();},10000);}
 function unavailable(){
   badge.textContent='Refresh unavailable';
   const notice=document.getElementById('refresh-error');if(notice)notice.hidden=false;
@@ -39,18 +43,21 @@ async function refresh(){
         if(!nextDraft)return;
         nextDraft.value=draft.value;
       }
-      const currentThread=current.querySelector('.thread');
+      const currentThread=typeof current.querySelector==='function'?current.querySelector('.thread'):null;
       const scroll=currentThread?currentThread.scrollTop:0;
-      for(const box of current.querySelectorAll('details.tools[open],details.sessions[open]')){
-        const key=box.dataset.key;
-        if(!key)continue;
-        const same=next.querySelector(`details[data-key="${key}"]`);
-        if(same)same.open=true;
+      if(currentThread&&typeof current.querySelectorAll==='function'){
+        for(const box of current.querySelectorAll('details.tools[open],details.sessions[open]')){
+          const key=box.dataset.key;
+          if(!key)continue;
+          const same=next.querySelector(`details[data-key="${key}"]`);
+          if(same)same.open=true;
+        }
       }
       current.replaceWith(next);badge.textContent='Connected';
       const fresh=document.querySelector('.thread');
-      if(fresh&&currentThread)fresh.scrollTop=pinned?fresh.scrollHeight:scroll;
-      if(pinned)pill.hidden=true;
+      if(fresh&&currentThread&&pinned)fresh.scrollTop=fresh.scrollHeight;
+      else if(fresh&&currentThread)fresh.scrollTop=scroll;
+      if(pinned&&pill)pill.hidden=true;
       grow(document.getElementById('lead-message'));
     }
   }catch(error){if(!active.signal.aborted)unavailable();}
@@ -84,28 +91,16 @@ function connect(){
 }
 document.addEventListener('visibilitychange',()=>{
   clearTimeout(timer);clearTimeout(reconnectTimer);reconnectTimer=null;if(pending)pending.abort();
+  if(ageTimer){clearTimeout(ageTimer);ageTimer=null;}
   if(stream){stream.close();stream=null;streamOk=false;}
-  if(!document.hidden){if(live&&typeof EventSource==='function')connect();else refresh();}
+  if(!document.hidden){if(live&&typeof EventSource==='function')connect();else refresh();scheduleAges();}
 });
 if(live&&typeof EventSource==='function')connect();else timer=setTimeout(refresh,15000);
+scheduleAges();
 
-// Copy: a code block or a step's output copies its own rendered text. Nothing is read
-// from the network and nothing is stored; the button only fills the clipboard.
-document.addEventListener('click',event=>{
-  const button=event.target.closest&&event.target.closest('.copy[data-copy]');
-  if(!button)return;
-  const box=button.closest('.out')||button.parentElement;
-  const text=box.querySelector('pre,code')?.textContent||box.textContent||'';
-  const done=()=>{
-    button.textContent='Copied';
-    setTimeout(()=>{button.textContent='Copy';},1600);
-  };
-  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(text.replace(/Copy$/,'').trim()).then(done,()=>{});
-});
-
-// Chat (#2341): the composer grows with its text, the thread stays pinned to the newest
-// message unless the reader scrolled up, and a pill says when new messages wait below. The
-// composer still posts the same form; nothing here changes a request.
+// Chat (#2341): the composer grows with its text, the thread stays at the newest message
+// unless the reader scrolled up, and a pill says new messages wait below. The composer
+// still posts the same form; nothing here changes a request.
 const composer=document.getElementById('lead-message'),thread=document.querySelector('.thread');
 const pill=document.createElement('a');pill.className='pill new';pill.href='#thread-end';
 pill.textContent='New messages ↓';pill.hidden=true;
@@ -115,21 +110,20 @@ function grow(box){
   box.style.height='auto';box.style.height=Math.min(Math.max(box.scrollHeight,46),120)+'px';
 }
 function near(){return !thread||thread.scrollHeight-thread.scrollTop-thread.clientHeight<80;}
-if(thread&&thread.parentNode){
+if(thread&&thread.parentNode&&typeof thread.addEventListener==='function'){
   thread.parentNode.appendChild(pill);
   const end=document.createElement('div');end.id='thread-end';thread.appendChild(end);
   thread.addEventListener('scroll',()=>{const at=near();pinned=at;if(at)pill.hidden=true;},{passive:true});
-  // Start at the newest message, after the first layout has given the thread a height.
   if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>{thread.scrollTop=thread.scrollHeight;});
   else thread.scrollTop=thread.scrollHeight;
   pill.addEventListener('click',()=>{thread.scrollTop=thread.scrollHeight;pill.hidden=true;pinned=true;});
   // Every open chat fold keeps its state across a refresh, keyed by what it holds.
-  for(const box of document.querySelectorAll('details.tools,details.sessions')){
+  if(typeof document.querySelectorAll==='function')for(const box of document.querySelectorAll('details.tools,details.sessions')){
     const first=box.querySelector('b,summary span,summary');
     box.dataset.key=(box.className+(first?first.textContent:'')).slice(0,120);
   }
 }
-if(composer){
+if(composer&&typeof composer.addEventListener==='function'){
   grow(composer);
   composer.addEventListener('input',()=>grow(composer));
   composer.addEventListener('keydown',event=>{
@@ -145,3 +139,15 @@ if(composer){
     document.documentElement.style.setProperty('--keyboard',inset+'px');
   },{passive:true});
 }
+// Copy: a code block or a step's output copies its own rendered text.
+document.addEventListener('click',event=>{
+  const button=event.target.closest&&event.target.closest('.copy[data-copy]');
+  if(!button)return;
+  const box=button.closest('.out')||button.parentElement;
+  const text=box.querySelector('pre,code')?.textContent||box.textContent||'';
+  const done=()=>{
+    button.textContent='Copied';
+    setTimeout(()=>{button.textContent='Copy';},1600);
+  };
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(text.replace(/Copy$/,'').trim()).then(done,()=>{});
+});
