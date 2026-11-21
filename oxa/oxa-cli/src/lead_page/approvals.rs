@@ -77,7 +77,7 @@ pub(super) fn scrub_shell(command: &str, ctx: &ScrubCtx) -> String {
 }
 
 /// Whole seconds, minutes or hours since the request was filed. A timestamp ahead of this clock reads as new.
-fn age(now: u64, created_ms: u64) -> String {
+pub(super) fn age(now: u64, created_ms: u64) -> String {
     let seconds = now.saturating_sub(created_ms / 1000);
     match seconds {
         0..=59 => format!("{seconds} s"),
