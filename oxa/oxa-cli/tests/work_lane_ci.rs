@@ -217,7 +217,7 @@ fn configured_github_auth_is_isolated_and_refreshed_at_publication_boundaries() 
         return;
     }
     let env = TestEnv::new();
-    setup(&env, r#"["true"]"#);
+    setup_lane(&env, r#"["true"]"#);
     lane_task(&env);
     let path = configure(&env);
     let project = env.work().join("project");
