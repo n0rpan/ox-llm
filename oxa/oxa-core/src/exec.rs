@@ -198,9 +198,7 @@ pub fn request(
                 if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
                     let first = goal.uncertain_request()?;
                     crate::goal::checkpoint(st, false, sink)?;
-                    if first {
-                        crate::goal::announce_unknown_usage(sink);
-                    }
+                    crate::goal::unknown_usage(st, &goal, first, sink)?;
                 }
             }
             return Err(error);
@@ -217,9 +215,8 @@ pub fn request(
         // The reply carried no usage: its spend is unknown, not zero. The goal records an
         // uncertain request, shown as a warning and never a stop (the answer itself is kept).
         if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
-            if goal.uncertain_request()? {
-                crate::goal::announce_unknown_usage(sink);
-            }
+            let first = goal.uncertain_request()?;
+            crate::goal::unknown_usage(st, &goal, first, sink)?;
         }
     }
     if opts.events {

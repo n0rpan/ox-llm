@@ -2,10 +2,13 @@
 use super::{checked, state, tree, CheckpointObserver, LockedTask, Outcome, Record, Result, RunPolicy, Task};
 use state::Step;
 mod landing;
+mod receipt;
 pub use landing::{
     Admission, AdmissionAcknowledgment, AdmissionReceipt, DeliveryReceipt, LandingPublisher, NoticeIntent,
     RejectedLanding, RetryIntent,
 };
+pub(crate) use receipt::push_with_receipt;
+pub use receipt::{Divergence, PublishReceipt};
 use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
     fs::File,
@@ -858,6 +861,7 @@ fn publish_locked(
     writer.save(&mut value, Step::Publishing, observer)?;
     let git = |repo: &Path, args: &[&str]| super::git(policy, repo, args);
     let gh = |repo: &Path, lock: &File, args: &[&str]| gh(gh_binary, policy, repo, lock, args);
+    let receipt_slot: std::cell::RefCell<Option<PublishReceipt>> = std::cell::RefCell::new(None);
     let result = (|| -> Result<(String, bool)> {
         if policy.offline {
             return Err("publishing is unavailable in offline mode".into());
@@ -940,7 +944,14 @@ fn publish_locked(
                 "PR #{number} is in the merge queue; use a new task branch for follow-up work"
             ));
         }
-        push_head(policy, repo, &head, &task.branch, lock)?;
+        receipt::push_with_receipt(
+            policy,
+            repo,
+            &head,
+            &task.branch,
+            lock,
+            &mut receipt_slot.borrow_mut(),
+        )?;
         let draft = false;
         let body = policy.storage.join(format!("{}.pr-body.md", task.id));
         crate::checkpoint::write_atomic(&body, text.as_bytes(), body.exists())?;
@@ -995,6 +1006,7 @@ fn publish_locked(
         let _ = std::fs::remove_file(body);
         Ok((result.trim().to_string(), draft))
     })();
+    value.record.publish_receipt = receipt_slot.into_inner();
     match result {
         Ok((url, draft)) => {
             value.record.pull_request = Some(url);

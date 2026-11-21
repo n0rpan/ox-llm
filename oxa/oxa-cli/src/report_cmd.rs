@@ -218,7 +218,7 @@ pub fn draft_body(notes: &str, dirs: &Dirs, ctx: &ScrubCtx, _runner: Runner<'_>)
     let mut parts: Vec<String> = Vec::new();
     let notes = clean_notes(notes, ctx);
     parts.push(format!("## What happened\n\n{}", notes));
-    let mut system: Vec<String> = vec![format!("- oxa version: {}", env!("CARGO_PKG_VERSION"))];
+    let mut system: Vec<String> = vec![format!("- oxa version: {}", oxa_proto::BUILD_VERSION)];
     if let Some(identity) = read_identity(dirs) {
         system.extend(
             identity
@@ -576,8 +576,38 @@ pub(crate) fn has_session_broker(env: &Env) -> bool {
 pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     tty_confirm_with(env, |sock, question| {
         // Authenticate and ask on the same connection; never fall back when a broker was exported.
-        oxa_core::owner_confirm::ask_on(connect_verified(sock)?, question)
+        let stream = connect_verified(sock)?;
+        answer_of(
+            oxa_core::owner_confirm::ask_on(stream, &confirm_request(question)),
+            question,
+        )
     })
+}
+
+/// The structured request for a question text: the broker shows the title and the body as
+/// separate fields.
+fn confirm_request(question: &str) -> oxa_core::owner_confirm::Request {
+    oxa_core::owner_confirm::Request::ask("Confirm with the owner", question)
+}
+
+/// The caller's answer from the broker's reply. When nobody answered, the broker's reason is
+/// printed to stderr, so "no answer" is never the only text (a request over the owner's size
+/// limit says its size, the limit and the variable that changes it).
+fn answer_of(reply: oxa_core::owner_confirm::Reply, question: &str) -> Option<bool> {
+    let answer = reply.answer();
+    if answer.is_none() {
+        match reply.reason.as_deref() {
+            Some("too_large") => eprintln!(
+                "Not confirmed: the request is {} bytes and the owner confirm broker accepts at most {} \
+                 (change it with OXA_CONFIRM_MAX_REQUEST_BYTES).",
+                question.len(),
+                reply.limit.unwrap_or_default()
+            ),
+            Some("unreachable") | None => {}
+            Some(reason) => eprintln!("Not confirmed: the owner confirm broker could not ask ({reason})."),
+        }
+    }
+    answer
 }
 
 fn connect_verified(sock: &Path) -> Option<std::os::unix::net::UnixStream> {

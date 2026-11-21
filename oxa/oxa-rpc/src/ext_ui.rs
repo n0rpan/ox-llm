@@ -78,10 +78,6 @@ impl UiRouter {
         // Dropping the senders disconnects the receivers the dialogs wait on.
         waiting.clear();
     }
-    /// Dismiss dialogs waiting now without closing the router to future dialogs.
-    pub fn cancel_waiting(&self) {
-        lock(&self.waiting).clear();
-    }
     /// Drop a dialog that gave up (timeout): a late answer is then not delivered to anyone.
     pub(crate) fn forget(&self, id: &str) {
         lock(&self.waiting).retain(|(w, _)| w != id);
@@ -195,7 +191,29 @@ impl RpcUi {
     /// A dialog: registers the id, writes the request (with `timeout` when given) and waits for
     /// the answer. `None` on timeout, when the router is gone, or when no answer comes.
     fn dialog(&mut self, method: &str, fields: Map<String, Value>, timeout_ms: Option<u32>) -> Option<Value> {
+        self.dialog_with(method, fields, timeout_ms, None)
+    }
+
+    /// [`RpcUi::dialog`] that `cancel` can dismiss. The hook is armed after the id is registered
+    /// and before the request is written, so a cancel that came first is not lost and only this
+    /// dialog is forgotten.
+    fn dialog_with(
+        &mut self,
+        method: &str,
+        fields: Map<String, Value>,
+        timeout_ms: Option<u32>,
+        cancel: Option<&oxa_proto::DialogCancel>,
+    ) -> Option<Value> {
         let (id, rx) = self.router.register();
+        if let Some(cancel) = cancel {
+            let router = self.router.clone();
+            let armed = id.clone();
+            cancel.arm(move || router.forget(&armed));
+            if cancel.is_cancelled() {
+                self.router.forget(&id);
+                return None;
+            }
+        }
         let mut m = request_base(id.clone(), method);
         m.extend(fields);
         if let Some(ms) = timeout_ms {
@@ -244,9 +262,17 @@ impl Ui for RpcUi {
         confirmed(&v)
     }
 
-    fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
-        let router = self.router.clone();
-        Some(Arc::new(move || router.cancel_waiting()))
+    fn confirm_cancellable(
+        &mut self,
+        title: &str,
+        body: &str,
+        cancel: &oxa_proto::DialogCancel,
+    ) -> Option<bool> {
+        let mut f = Map::new();
+        f.insert("title".to_string(), Value::from(title));
+        f.insert("message".to_string(), Value::from(body));
+        let v = self.dialog_with("confirm", f, None, Some(cancel))?;
+        confirmed(&v)
     }
 
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {

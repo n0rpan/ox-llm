@@ -11,7 +11,7 @@ use oxa_proto::{
     ExecSpec, Mode, NullSink, OxaError, Part, Policy, Sandbox, StreamEvent,
 };
 use oxa_rpc::run_json_outcome_with_inbox;
-use oxa_session::{send_inbox, FsStore, Goal, GoalBudget, SessionStore};
+use oxa_session::{send_inbox, send_inbox_steer, FsStore, Goal, GoalBudget, SessionStore};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
@@ -493,4 +493,51 @@ fn refused_at_capacity_is_admitted_during_the_goal_run_that_drained_the_queue() 
     });
     second_out_tx.send(()).unwrap();
     run.join().expect("the run finishes");
+}
+
+/// #2183: a headless goal run takes an `oxa send` steer at its next tool boundary, before the
+/// next model request, while a plain follow-up sent at the same time waits for the reply that
+/// ends the pass.
+#[test]
+fn json_goal_run_takes_a_steer_at_the_next_tool_boundary() {
+    let env = TestEnv::new();
+    let inner = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("a", "peek", "{}"),
+        ScriptTurn::text("noted"),
+        ScriptTurn::text("second answer"),
+    ]));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let engine: Arc<dyn Engine> = Arc::new(HeldFirst {
+        inner: inner.clone(),
+        hold: Mutex::new(vec![("", entered_tx, release_rx)]),
+    });
+    let mut session = open(&env, engine);
+    pursue(&mut session);
+    let id = session.state().session_id;
+    let handle = session.handle();
+    let agent = agent_dir(&env);
+    let run = run_in_background(session, agent.clone());
+    entered_rx
+        .recv_timeout(WAIT)
+        .expect("the run reaches its first model request");
+    send_inbox_steer(&agent, &id, "steer from oxa send").unwrap();
+    send_inbox(&agent, &id, "follow-up from oxa send").unwrap();
+    wait_until("the watcher to admit both messages", || {
+        let (steering, follow_up) = handle.queued();
+        steering.len() == 1 && follow_up.len() == 1
+    });
+    release_tx.send(()).unwrap();
+    run.join().expect("the run finishes");
+    let requests = inner.requests();
+    let second = format!("{:?}", requests[1].messages);
+    assert!(
+        second.contains("steer from oxa send"),
+        "the steer follows the tool result"
+    );
+    assert!(
+        !second.contains("follow-up from oxa send"),
+        "the follow-up waits for the end of the pass"
+    );
+    assert!(received(&inner, "follow-up from oxa send"));
 }

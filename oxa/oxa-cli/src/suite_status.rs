@@ -70,7 +70,7 @@ fn suite_value(user: &Settings, dirs: &Dirs, engine_found: bool, generated_ms: u
         "type": "oxa_suite_status",
         "version": 1,
         "generated_ms": generated_ms,
-        "oxa": {"version": env!("CARGO_PKG_VERSION")},
+        "oxa": {"version": oxa_proto::BUILD_VERSION},
         "capabilities": CAPABILITIES,
         "default_model": user.string("defaultModel"),
         "local": local_section(user, engine_found),
