@@ -42,13 +42,16 @@ fn record(html: &mut String, csrf: &str, rec: &ApprovalRecord, now: u64, scrub_c
     let folder = Path::new(&rec.cwd)
         .file_name()
         .map_or_else(|| "(root)".to_owned(), |name| name.to_string_lossy().into_owned());
+    // One compact card: who and how old on the first line, the directory on its own, then the
+    // exact command, the reasons and the same four answers. The phone layout stacks the
+    // answers into a two-by-two tap grid; nothing about the answer itself changes.
     let _ = write!(
         html,
-        "<li class=approval><p><code>{}</code> · session <code>{}</code> · <code>{}</code> · waiting {}</p><pre>{}</pre>",
+        "<li class=approval><div class=approval-head><p class=approval-meta><code>{}</code> · session <code>{}</code></p><p class=approval-wait>waiting {}</p></div><p class=approval-folder><code>{}</code></p><pre>{}</pre>",
         escape(&one_line(&rec.id)),
         escape(&one_line(&rec.session)),
-        escape(&one_line(&folder)),
         age(now, rec.created_ms),
+        escape(&one_line(&folder)),
         escape(&one_line(&scrub_shell(&rec.command, scrub_ctx))),
     );
     html.push_str("<ul class=reasons>");
@@ -136,6 +139,65 @@ mod tests {
         assert!(!html.contains("Waiting for your approval"));
         assert!(!html.contains("s&lt;1&gt;"));
         assert!(!html.contains("action=/approvals"));
+    }
+
+    /// #2351 S12: on Home the request is one compact card with a first line for who and how
+    /// old, but it is still exactly one form carrying the same CSRF field, request id and four
+    /// answers. One tap each; no new action, no second form, no inline handler.
+    #[test]
+    fn home_approval_card_keeps_one_form_with_the_four_answers() {
+        let waiting = vec![ApprovalRecord {
+            id: "0123456789abcdef".into(),
+            session: "s1".into(),
+            cwd: "/work/proj".into(),
+            command: "git push --force origin main".into(),
+            keys: vec!["git-push-force".into()],
+            reasons: vec!["git push: force".into()],
+            status: "pending".into(),
+            used: false,
+            run_nonce: "0123456789abcdef".into(),
+            created_ms: 0,
+            answered_ms: None,
+        }];
+        let owner = View {
+            approvals: Some(&waiting),
+            approval_csrf: Some("tok"),
+            ..Default::default()
+        };
+        let html = content_for(Page::Home, &owner, 120);
+        assert_eq!(html.matches("<li class=approval>").count(), 1, "{html}");
+        assert!(html.contains("<div class=approval-head>"), "{html}");
+        assert!(
+            html.contains("<p class=approval-wait>waiting 2 min</p>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<p class=approval-folder><code>proj</code></p>"),
+            "{html}"
+        );
+        assert!(html.contains("<pre>git push --force origin main</pre>"), "{html}");
+        let card = html
+            .split("action=/approvals")
+            .nth(1)
+            .expect("the form stays")
+            .split("</form>")
+            .next()
+            .unwrap();
+        for (answer, label) in [
+            ("once", "Once"),
+            ("session", "This session"),
+            ("always", "Always"),
+            ("deny", "Deny"),
+        ] {
+            assert!(
+                card.contains(&format!("<button name=answer value={answer}>{label}</button>")),
+                "{answer}: {html}"
+            );
+        }
+        assert_eq!(card.matches("name=answer").count(), 4, "{html}");
+        assert_eq!(html.matches("name=csrf value=\"tok\"").count(), 1, "{html}");
+        assert_eq!(card.matches("name=id value=").count(), 1, "{html}");
+        assert!(!html.contains("onclick="), "{html}");
     }
 
     /// A multiline command or one with bidi or zero-width characters renders the escaped one-line
