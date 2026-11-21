@@ -1,0 +1,1 @@
+- `oxa work --publish` and `--report-problems` can now ask through the authenticated session owner broker. Direct terminal approvals, report search consent and publication scans are unchanged. Unaccepted tasks explain why they weren't published (#1581).

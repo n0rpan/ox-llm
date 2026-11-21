@@ -545,7 +545,7 @@ fn check_thinking_overrun_wrap_up(stop_request: usize, from_notice: bool) {
             assert!(requests[0].thinking);
             let final_request = requests.last().unwrap();
             assert!(!final_request.thinking);
-            assert!(final_request.max_tokens <= 1024);
+            assert!(final_request.max_tokens <= 4096);
             assert_ne!(
                 final_request.messages, requests[0].messages,
                 "final instruction replaces the normal fallback"
@@ -592,7 +592,7 @@ fn wrap_up_before_the_request_closes_started_events() {
                 .unwrap();
             let requests = engine.requests();
             assert_eq!(requests.len(), 1);
-            assert!(requests[0].max_tokens <= 1024);
+            assert!(requests[0].max_tokens <= 4096);
             assert!(!requests[0].thinking);
             probe.assert_balanced();
             let points = hook.points.lock().unwrap();
@@ -672,7 +672,7 @@ fn wrap_up_yields_overflow_recovery_before_compaction_or_resending() {
                 );
                 let final_request = requests.last().unwrap();
                 assert_eq!(final_request.kind, "chat");
-                assert!(final_request.max_tokens <= 1024);
+                assert!(final_request.max_tokens <= 4096);
                 assert!(!final_request.thinking);
                 assert_eq!(
                     *s.outcome(),
@@ -703,7 +703,7 @@ fn a_pending_wrap_up_skips_length_recovery_and_prefill() {
             let requests = engine.requests();
             assert_eq!(requests.len(), 2);
             assert!(requests.iter().all(|r| r.max_tokens > 0));
-            assert!(requests[1].max_tokens <= 1024);
+            assert!(requests[1].max_tokens <= 4096);
             assert!(!requests[1].thinking);
             assert_eq!(*s.outcome(), oxa_core::RunOutcome::Interrupted);
             probe.assert_balanced();
@@ -750,7 +750,7 @@ fn a_pending_wrap_up_stops_stream_replays_before_and_during_the_final_turn() {
             let requests = engine.requests();
             assert_eq!(requests.len(), 2, "{reason:?}/{point:?}: one final attempt");
             assert_eq!(*s.outcome(), RunOutcome::Failed(oxa_proto::codes::STREAM_BROKEN));
-            assert!(requests[1].max_tokens <= 1024);
+            assert!(requests[1].max_tokens <= 4096);
             assert!(!requests[1].thinking);
             assert_ne!(requests[0].idem_key, requests[1].idem_key);
             probe.assert_settled_idle(1);

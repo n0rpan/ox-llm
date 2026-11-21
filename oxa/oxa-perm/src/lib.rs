@@ -34,6 +34,7 @@
 
 mod danger;
 mod desk;
+mod effects;
 mod paths;
 mod policy;
 mod publish;
