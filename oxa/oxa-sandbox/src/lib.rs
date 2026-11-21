@@ -413,7 +413,7 @@ impl Bwrap {
             .layout
             .scratch_warn
             .zip(self.layout.scratch.as_ref())
-            .and_then(|(limit, sc)| sc.warning(limit))
+            .and_then(|(limit, sc)| sc.warning_with_cancel(limit, Some(c)))
         {
             live(line.as_bytes());
             if capture || stdin.is_some() {

@@ -18,7 +18,13 @@
 //!
 //! The size of a session directory is reported, never limited: [`Scratch::warning`] says so
 //! once the owner-set `oxa.sandbox.scratchWarnSize` is exceeded.
+use oxa_proto::CancelToken;
+use std::ffi::CStr;
+use std::fs::File;
+use std::os::fd::{FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -28,6 +34,11 @@ pub const DEFAULT_SCRATCH_WARN: u64 = 20 << 30;
 
 /// How long a measured size is reused before the directory is walked again.
 const USAGE_TTL: Duration = Duration::from_secs(60);
+// The measurement is advisory: return the bytes seen so far when a budget runs out.
+const USAGE_TIME: Duration = Duration::from_millis(50);
+const USAGE_ENTRIES: usize = 32_768;
+const USAGE_OPEN_DIRS: usize = 64;
+const USAGE_DIR_FLAGS: libc::c_int = libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
 /// `oxa.sandbox.scratchWarnSize`: `off` = no warning, else a size such as `20GiB` or `512 MiB`
 /// (a bare number is bytes; K, M, G, T with an optional `iB` or `B`, powers of 1024).
@@ -83,9 +94,36 @@ fn start_time(pid: u32) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// The most a `.oxa-owner` record can hold: two numbers and a newline.
+const OWNER_RECORD_MAX: u64 = 64;
+
 /// The pid and start time a directory records, when it has the file.
+///
+/// `.oxa-owner` sits in the session directory, which is bound read-write at `/tmp` inside the
+/// sandbox, so a command writes it. The host therefore opens it without following a symlink and
+/// without waiting for a writer (`O_NOFOLLOW | O_NONBLOCK`), requires a plain regular file and
+/// reads at most [`OWNER_RECORD_MAX`] bytes: a FIFO, a link, a device or a longer file is no
+/// record at all, never a blocked or unbounded read in the owner's process.
 fn recorded_owner(dir: &Path) -> Option<(u32, u64)> {
-    let text = std::fs::read_to_string(dir.join(".oxa-owner")).ok()?;
+    use std::io::Read;
+    let path = dir.join(".oxa-owner");
+    if !std::fs::symlink_metadata(&path).ok()?.file_type().is_file() {
+        return None;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .ok()?;
+    // The entry may have been swapped between the check and the open.
+    if !file.metadata().ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(OWNER_RECORD_MAX + 1).read_to_string(&mut text).ok()?;
+    if text.len() as u64 > OWNER_RECORD_MAX {
+        return None;
+    }
     let mut it = text.split_whitespace();
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
 }
@@ -141,24 +179,41 @@ impl Scratch {
         })
     }
 
-    /// The bytes this directory holds on disk, without following symlinks (the linked shared
-    /// caches are not counted). Walked at most once a minute; in between the last value.
+    /// Estimate bytes on disk, excluding symlinks. Reuse the last bounded scan for a minute.
     pub fn usage(&self) -> u64 {
+        self.measure(None).unwrap_or(0)
+    }
+
+    fn measure(&self, cancel: Option<&CancelToken>) -> Option<u64> {
+        let cancelled = || cancel.is_some_and(CancelToken::is_cancelled);
+        if cancelled() {
+            return None;
+        }
         let mut guard = self.measured.lock().unwrap_or_else(|e| e.into_inner());
+        if cancelled() {
+            return None;
+        }
         if let Some((at, n)) = *guard {
             if at.elapsed() < USAGE_TTL {
-                return n;
+                return Some(n);
             }
         }
-        let n = dir_usage(&self.path);
+        let n = dir_usage(&self.path, cancelled, |_| {});
+        if cancelled() {
+            return None;
+        }
         *guard = Some((Instant::now(), n));
-        n
+        Some(n)
     }
 
     /// The one-line warning when the directory holds more than `limit` bytes; again only after
-    /// the size has doubled since the last warning. Never fails or blocks anything.
+    /// the size has doubled since the last warning. It never changes the command result.
     pub fn warning(&self, limit: u64) -> Option<String> {
-        let n = self.usage();
+        self.warning_with_cancel(limit, None)
+    }
+
+    pub(crate) fn warning_with_cancel(&self, limit: u64, cancel: Option<&CancelToken>) -> Option<String> {
+        let n = self.measure(cancel)?;
         let last = self.warned.load(Ordering::Relaxed);
         if n <= limit || (last != 0 && n < last.saturating_mul(2)) {
             return None;
@@ -209,24 +264,110 @@ impl PartialEq for Scratch {
 }
 impl Eq for Scratch {}
 
-/// The disk usage of the files below `dir`; symlinks are neither followed nor counted.
-fn dir_usage(dir: &Path) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    let mut total = 0;
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else {
+/// Owns a directory stream and its descriptor together.
+struct UsageDir(NonNull<libc::DIR>);
+
+impl UsageDir {
+    fn new(file: File) -> Option<Self> {
+        let fd = file.into_raw_fd();
+        // SAFETY: fd is an open directory; fdopendir takes ownership only on success.
+        let stream = unsafe { libc::fdopendir(fd) };
+        if let Some(stream) = NonNull::new(stream) {
+            Some(Self(stream))
+        } else {
+            // SAFETY: fdopendir failed and left the descriptor to us.
+            drop(unsafe { File::from_raw_fd(fd) });
+            None
+        }
+    }
+
+    fn fd(&self) -> RawFd {
+        // SAFETY: the stream is open for the lifetime of self.
+        unsafe { libc::dirfd(self.0.as_ptr()) }
+    }
+
+    fn next_name(&mut self) -> Option<&CStr> {
+        // SAFETY: the stream is solely owned; the name is NUL-terminated and borrowed only
+        // until the next read or close of this stream.
+        unsafe {
+            let entry = libc::readdir(self.0.as_ptr());
+            if entry.is_null() {
+                None
+            } else {
+                Some(CStr::from_ptr((*entry).d_name.as_ptr()))
+            }
+        }
+    }
+}
+
+impl Drop for UsageDir {
+    fn drop(&mut self) {
+        // SAFETY: this stream and its descriptor belong to self.
+        unsafe { libc::closedir(self.0.as_ptr()) };
+    }
+}
+
+/// The disk usage below `dir`. Each lookup uses a single name relative to a pinned parent.
+fn dir_usage(dir: &Path, cancelled: impl Fn() -> bool, mut before_descend: impl FnMut(&CStr)) -> u64 {
+    let deadline = Instant::now() + USAGE_TIME;
+    let stopped = || cancelled() || Instant::now() >= deadline;
+    if stopped() {
+        return 0;
+    }
+    let Some(root) = File::options()
+        .read(true)
+        .custom_flags(USAGE_DIR_FLAGS)
+        .open(dir)
+        .ok()
+        .and_then(UsageDir::new)
+    else {
+        return 0;
+    };
+    let mut total = 0u64;
+    let mut remaining = USAGE_ENTRIES;
+    let mut stack = vec![root];
+    while remaining > 0 && !stopped() {
+        let depth = stack.len();
+        let Some(parent) = stack.last_mut() else {
+            break;
+        };
+        let fd = parent.fd();
+        let Some(name) = parent.next_name() else {
+            stack.pop();
             continue;
         };
-        for e in rd.flatten() {
-            let Ok(ft) = e.file_type() else {
-                continue;
-            };
-            if ft.is_dir() {
-                stack.push(e.path());
-            } else if ft.is_file() {
-                total += e.metadata().map(|m| m.blocks() * 512).unwrap_or(0);
+        remaining -= 1;
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: fd is live, name is a C string from readdir, and stat is writable.
+        if unsafe { libc::fstatat(fd, name.as_ptr(), stat.as_mut_ptr(), libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+            continue;
+        }
+        // SAFETY: fstatat succeeded and filled stat.
+        let stat = unsafe { stat.assume_init() };
+        match stat.st_mode & libc::S_IFMT {
+            libc::S_IFREG => {
+                let blocks = u64::try_from(stat.st_blocks).unwrap_or(0);
+                total = total.saturating_add(blocks.saturating_mul(512));
             }
+            libc::S_IFDIR if depth < USAGE_OPEN_DIRS => {
+                before_descend(name);
+                if stopped() {
+                    break;
+                }
+                // SAFETY: fd and name are still live. O_NOFOLLOW rejects even a symlink
+                // substituted after fstatat; O_DIRECTORY prevents opening other file types.
+                let child = unsafe { libc::openat(fd, name.as_ptr(), USAGE_DIR_FLAGS) };
+                if child >= 0 {
+                    // SAFETY: openat returned a new owned descriptor.
+                    if let Some(child) = UsageDir::new(unsafe { File::from_raw_fd(child) }) {
+                        stack.push(child);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     total
@@ -283,18 +424,117 @@ mod tests {
         assert!(plain.exists());
     }
 
+    /// `make_a_fifo` in a session directory, as a sandboxed command could leave it.
+    fn a_fifo_at_owner(dir: &Path) {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let p = CString::new(dir.join(".oxa-owner").as_os_str().as_bytes()).unwrap();
+        // SAFETY: `p` is a valid NUL-terminated path; the call only creates that entry.
+        assert_eq!(unsafe { libc::mkfifo(p.as_ptr(), 0o600) }, 0, "mkfifo");
+    }
+
+    #[test]
+    fn a_model_written_owner_record_never_blocks_the_host_and_prunes_nothing() {
+        let env = oxa_fake::TestEnv::new();
+        let root = env.root().join("scratch");
+        let live = Scratch::create(&root).unwrap();
+        let start = start_time(std::process::id()).unwrap();
+        let stale = format!("{} {}\n", std::process::id(), start + 1);
+        let cases = [
+            ("fifo", Some(stale.clone())),
+            ("link-zero", None),
+            ("link-owner", Some(stale.clone())),
+            ("large", Some(format!("{stale}{}", "0".repeat(64)))),
+        ];
+        for (i, (name, record)) in cases.iter().enumerate() {
+            let dir = root.join(format!("{}-{}", std::process::id(), 900 + i));
+            std::fs::create_dir_all(&dir).unwrap();
+            let owner = dir.join(".oxa-owner");
+            match name {
+                &"fifo" => a_fifo_at_owner(&dir),
+                &"link-zero" => std::os::unix::fs::symlink("/dev/zero", &owner).unwrap(),
+                &"link-owner" => {
+                    let target = root.join(format!("{}-target", std::process::id()));
+                    std::fs::write(&target, record.as_deref().unwrap()).unwrap();
+                    std::os::unix::fs::symlink(&target, &owner).unwrap();
+                }
+                _ => std::fs::write(&owner, record.as_deref().unwrap()).unwrap(),
+            }
+            assert_eq!(recorded_owner(&dir), None, "{name} is no record");
+        }
+        // A session start after them (local) and the prune still complete, and a shape the
+        // model wrote under a live session's directory does not delete that session.
+        let _next = Scratch::create(&root).unwrap();
+        for i in 0..cases.len() {
+            assert!(root.join(format!("{}-{}", std::process::id(), 900 + i)).exists());
+        }
+        assert!(live.path().exists());
+    }
+
+    #[test]
+    fn usage_ignores_a_directory_swapped_for_a_symlink_before_descent() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+
+        let env = oxa_fake::TestEnv::new();
+        let root = env.root().join("scratch");
+        let child = root.join("child");
+        let outside = env.root().join("outside");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let inside_file = root.join("inside");
+        let outside_file = outside.join("outside");
+        std::fs::write(&inside_file, vec![1u8; 4096]).unwrap();
+        std::fs::write(&outside_file, vec![1u8; 4096]).unwrap();
+        assert!(outside_file.metadata().unwrap().blocks() > 0);
+        let outside = outside.canonicalize().unwrap();
+        let mut swapped = false;
+        let size = dir_usage(
+            &root,
+            || false,
+            |name| {
+                assert_eq!(name.to_bytes(), b"child");
+                std::fs::remove_dir(&child).unwrap();
+                symlink(&outside, &child).unwrap();
+                swapped = true;
+            },
+        );
+        assert!(swapped, "the directory was replaced after classification");
+        assert_eq!(size, inside_file.metadata().unwrap().blocks() * 512);
+    }
+
+    #[test]
+    fn cancelled_usage_does_not_record_a_warning() {
+        let env = oxa_fake::TestEnv::new();
+        let sc = Scratch::create(&env.root().join("scratch")).unwrap();
+        std::fs::write(sc.path().join("file"), vec![1u8; 4096]).unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert!(sc.warning_with_cancel(0, Some(&cancel)).is_none());
+        cancel.reset();
+        assert!(sc.warning_with_cancel(0, Some(&cancel)).is_some());
+    }
+
     #[test]
     fn size_warning_counts_files_not_links_and_repeats_only_after_doubling() {
         let env = oxa_fake::TestEnv::new();
         let sc = Scratch::create(&env.root().join("scratch")).unwrap();
         std::fs::write(sc.path().join("big"), vec![1u8; 64 * 1024]).unwrap();
         std::os::unix::fs::symlink("/usr", sc.path().join("link")).unwrap();
-        assert!(sc.usage() >= 64 * 1024 && sc.usage() < 1 << 20);
-        assert!(sc
-            .warning(1024)
-            .is_some_and(|w| w.contains("oxa.sandbox.scratchWarnSize")));
-        assert!(sc.warning(1024).is_none(), "once until the size doubles");
-        assert!(sc.warning(1 << 30).is_none());
+        let size = sc.usage();
+        assert!((64 * 1024..1 << 20).contains(&size));
+        assert!(sc.warning(DEFAULT_SCRATCH_WARN).is_none());
+        assert!(sc.warning(size).is_none(), "the limit must be exceeded");
+        let limit = 1024;
+        let line = sc.warning(limit).expect("first warning over the limit");
+        assert_eq!(line.trim().lines().count(), 1);
+        assert!(sc.warning(limit).is_none(), "once at the same size");
+
+        // Supply fresh measurements to hit the exact byte boundary without waiting for the cache.
+        *sc.measured.lock().unwrap() = Some((Instant::now(), size * 2 - 1));
+        assert!(sc.warning(limit).is_none(), "still less than double");
+        *sc.measured.lock().unwrap() = Some((Instant::now(), size * 2));
+        assert!(sc.warning(limit).is_some(), "warn again at double the size");
+        assert!(sc.warning(limit).is_none(), "once at the new size");
     }
 
     #[test]
