@@ -119,12 +119,14 @@ Dangerous commands are a floor prompt in the interactive run, and an unattended 
 
 An owner-configured GitHub token command runs outside the sandbox. Its executable must resolve
 outside the project and worktrees through a trusted absolute path or the vetted tool search path.
-Invalid configured commands cannot fall back to ambient executable lookup. The helper runs from
-`/` with a fixed system PATH and only vetted home/config directory variables. Configured tokens
-for publication are scoped to github.com HTTPS. Authenticated Git runs without checkout Git
-configuration, credential helpers, hooks, or redirects. The runner refreshes after owner
-confirmation and during lane polling without automatically replaying mutations. Tokens registered
-during refresh are masked in active command output as well as the command that receives them.
+An unresolvable configured command yields no token and an error; it never falls back to ambient
+executable lookup and never to another source. The helper runs from `/` with a fixed system PATH
+and only vetted home/config directory variables. Configured tokens for publication are scoped to
+github.com HTTPS. Authenticated Git runs without checkout Git configuration, credential helpers,
+hooks, or redirects. The runner refreshes after owner confirmation and during lane polling without
+automatically replaying mutations. Tokens registered during refresh are masked in active command
+output as well as in the command that receives them, and the token of a configured source stays
+masked for that process from the command that first needs it, whether or not it loaded.
 
 ## Owner decisions (not findings)
 

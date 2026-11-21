@@ -145,8 +145,12 @@ Other secrets are not on the list. A project's `.env` file, a token in a project
 
 Use a vetted tool name or an absolute executable path outside the project for a configured
 GitHub token command. Relative paths, project or worktree executables, and unsafe tool
-directories are refused. Refreshed tokens enter the redaction history before use, including
-for commands that were already running when the token changed.
+directories are refused, and a refused command is an error for `oxa work --publish` and lane
+reads: it never falls back to `gh auth token`. For bash, a configured source's token is scrubbed
+from the output of commands that run with your rights from the first such command on, whether or
+not that session has loaded one (that command may read it itself). Refreshed tokens enter the
+redaction history before use, including for commands that were already running when the token
+changed.
 
 ### Git worktrees and shared clones
 
