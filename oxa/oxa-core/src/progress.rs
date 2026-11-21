@@ -29,6 +29,12 @@ pub enum Progress<'a> {
     Advanced,
     ToolStart(&'a str),
     ToolEnd,
+    /// The distinct file paths this run's successful `edit`/`write` calls named, in first-use
+    /// order, reported once when the run records its end (#2297). Tool-observed only: a shell
+    /// rewrite names no file here. Acceptance evidence, not a verdict; nothing is refused.
+    FilesChanged {
+        paths: &'a [String],
+    },
     /// A native goal control advanced the revision and the session store confirmed the sync.
     /// The operation may still need a prefix refresh. This is a wake to read the bound owner.
     GoalControlCommitted {

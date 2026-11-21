@@ -120,7 +120,10 @@ pub fn run_loop(
     // pi's loop starts with the run's prompt messages (the user messages appended since the
     // last reply): `message_start` / `message_end` each, and they open `agent_end.messages`.
     let opening = crate::fire::opening_messages(st);
-    let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
+    // #2293 A: the declared file deliverables of this run, checked once at its end.
+    let mut done = crate::done::DoneState::default();
+    done.begin(st);
+    let result = run_inner(st, sink, ui, &mut run_msgs, &opening, &mut done);
     // A failed run records why its pursuing goal stopped; `/goal resume` (or the a2a resume)
     // continues it in this session.
     if let Ok(RunEnd::Failed(error)) = &result {
@@ -129,6 +132,9 @@ pub fn run_loop(
     crate::goal::checkpoint(st, false, sink)?;
     drop(steering);
     crate::think::end_run(st, ui);
+    // The completion record of the files this run declared, also after a wrap-up, an abort or
+    // a failure. A run that declared none emits nothing, so an unrelated task pays nothing.
+    crate::done::report_deliverables(st, &done, sink);
     sink.emit(&AgentEvent::AgentEnd {
         messages: run_msgs.clone(),
         will_retry: false,
@@ -144,12 +150,11 @@ fn run_inner(
     ui: &mut dyn Ui,
     run_msgs: &mut Vec<EventMessage>,
     opening: &[EventMessage],
+    done: &mut crate::done::DoneState,
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
     let mut schema_repaired = None;
     let mut pending_completion = None;
-    let mut done = crate::done::DoneState::default();
-    done.begin(st);
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
     let mut length_recoveries = 0;
@@ -220,7 +225,9 @@ fn run_inner(
                         limit: reason.limit(),
                     },
                 );
-                push_user(st, crate::prompt::WRAP_UP.to_string(), sink, ui, run_msgs)?;
+                // #2293 A: a declared file that is not on disk is named here, so the last
+                // turn can still write it.
+                push_user(st, crate::done::wrap_up_message(done), sink, ui, run_msgs)?;
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Info,
                     text: reason.notice().to_string(),
@@ -816,7 +823,7 @@ fn run_inner(
 
             crate::goal::account(st, false)?;
             if crate::goal::terminal(st) {
-                let _ = crate::done::check(st, &mut done, sink, ui);
+                let _ = crate::done::check(st, done, sink, ui);
                 crate::advice::observe_done(st, done.observation.take(), false, sink)?;
                 if st.stats.done_failed {
                     if let Some(goal) = &st.goal {
@@ -840,7 +847,7 @@ fn run_inner(
                     // One nudge per open fact (unproven edits, running jobs): the goal stays
                     // pursuing for one more turn, then the completion goes through.
                     if !wrapping_up && !st.shared.has_input() {
-                        match crate::done::finish_decision(st, &mut done, true) {
+                        match crate::done::finish_decision(st, done, true) {
                             crate::done::FinishDecision::Nudge(text) => {
                                 pending_completion = goal.defer_completion();
                                 crate::goal::checkpoint(st, false, sink)?;
@@ -848,7 +855,7 @@ fn run_inner(
                                 continue;
                             }
                             crate::done::FinishDecision::End { unresolved } => {
-                                crate::done::record_end(st, &done, &unresolved, sink)?;
+                                crate::done::record_end(st, done, &unresolved, sink)?;
                             }
                         }
                     }
@@ -907,7 +914,7 @@ fn run_inner(
                     });
                     // The files edited so far are still checked and the result shown; the run
                     // is over, so a failure is not sent back to the model.
-                    let _ = crate::done::check(st, &mut done, sink, ui);
+                    let _ = crate::done::check(st, done, sink, ui);
                     crate::advice::observe_done(st, done.observation.take(), false, sink)?;
                     // Not a finished task: a caller must not read it as success.
                     return Ok(RunEnd::Failed(OxaError::new("advisor_escalation_required", text)));
@@ -1003,7 +1010,7 @@ fn run_inner(
         if deliver_steering(st, sink, ui, run_msgs)? {
             continue;
         }
-        let failed_check = crate::done::check(st, &mut done, sink, ui);
+        let failed_check = crate::done::check(st, done, sink, ui);
         let advised = crate::advice::observe_done(st, done.observation.take(), true, sink)?;
         if matches!(advised, crate::advice::AdviceResult::Escalate) {
             return Ok(RunEnd::Failed(OxaError::new(
@@ -1027,13 +1034,13 @@ fn run_inner(
         if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
             crate::goal::checkpoint(st, false, sink)?;
             if pending_completion.is_some() && turn.finish != Finish::Length && !st.shared.has_input() {
-                match crate::done::finish_decision(st, &mut done, true) {
+                match crate::done::finish_decision(st, done, true) {
                     crate::done::FinishDecision::Nudge(text) => {
                         crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
                         continue;
                     }
                     crate::done::FinishDecision::End { unresolved } => {
-                        crate::done::record_end(st, &done, &unresolved, sink)?;
+                        crate::done::record_end(st, done, &unresolved, sink)?;
                     }
                 }
             }
@@ -1155,13 +1162,13 @@ fn run_inner(
             continue;
         }
         if turn.finish != Finish::Length && !st.shared.has_input() {
-            match crate::done::finish_decision(st, &mut done, false) {
+            match crate::done::finish_decision(st, done, false) {
                 crate::done::FinishDecision::Nudge(text) => {
                     crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
                     continue;
                 }
                 crate::done::FinishDecision::End { unresolved } => {
-                    crate::done::record_end(st, &done, &unresolved, sink)?;
+                    crate::done::record_end(st, done, &unresolved, sink)?;
                 }
             }
         }

@@ -21,6 +21,7 @@ mod ask;
 mod bash;
 mod checked;
 mod ci_poll;
+mod deliverable;
 pub mod descriptions;
 mod diff;
 mod edit;
@@ -34,6 +35,7 @@ mod write;
 
 pub use ask::AskTool;
 pub use bash::{net_for as bash_net_for, BashTool, ShellConfig};
+pub use deliverable::{observe as observe_deliverable, DeliverableTool, State as DeliverableState};
 pub use diff::{apply_edits, detect_line_ending, strip_bom, unified_diff, Edit, EditOutcome};
 pub use edit::EditTool;
 pub use find::FindTool;
