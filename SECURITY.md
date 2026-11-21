@@ -210,7 +210,8 @@ Intentional removals must be stated in the PR body with a `Removes:` line. Flag 
 The rolling dev release always requires its reproducible Linux artifacts. Its native macOS arm64
 archive is best effort, so a failed macOS build cannot suppress the Linux release. When the macOS
 archive is present, the workflow includes it in the versioned SHA256 checksum file and in the same
-build-provenance attestation as the other dev assets before publishing it.
+build-provenance attestation as the other dev assets before publishing it. A stable release
+requires the macOS arm64 archive and gives it the same checksum and provenance as its Linux assets.
 The owner confirm broker (`oxa-core/src/owner_confirm.rs`, `OXA_CONFIRM_SOCK`) answers an oxa
 confirmation only from the owner: yolo chosen for the session (answer yes, shown and recorded), the
 owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.

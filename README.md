@@ -13,7 +13,8 @@ background service: you start `oxa`, and `oxa` starts what it needs.
 ## Install
 
 **Stable.** Each release attaches `ox-llm-<version>-linux-aarch64.tar.gz` and
-`ox-llm-<version>-linux-x86_64.tar.gz` with `SHA256SUMS`, an SBOM and build provenance. The
+`ox-llm-<version>-linux-x86_64.tar.gz` with `SHA256SUMS`, an SBOM and build provenance; from the
+next release on it also attaches `ox-llm-<version>-macos-arm64.tar.gz` (`oxa` only). The Linux
 archive holds one `usr/` tree with `oxa`, `oxe`, `oxe-server` and
 `local-ai-memlat-boot`, plus licence files and four inert MEMLAT templates.
 
@@ -32,7 +33,8 @@ v0.2.0 are in [install.md](oxa/docs/pages/install.md).
 it, checks the sums and the provenance, and installs it under
 `~/.local/state/oxc/dev-builds/default/` without touching a stable install or your `PATH`. See
 [docs/DEV.md](docs/DEV.md). On macOS (Apple silicon) the twin script is
-`tools/lab/dev-update-macos.sh`; macOS support is in progress and no macOS build is published yet.
+`tools/lab/dev-update-macos.sh`; dev releases include the macOS arm64 archive
+(`ox-llm-<file-version>-macos-arm64.tar.gz`), and stable releases will from the next one.
 
 **From source.** `cd oxa && cargo build --release --locked -p oxa-cli` builds `oxa`;
 `cd engine && cargo build --release --locked -p server --bin oxe-server` builds the engine.
