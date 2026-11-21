@@ -229,8 +229,9 @@ class MainPushDedupe(unittest.TestCase):
 
 class DeskToken(unittest.TestCase):
     def test_no_step_gives_the_token_to_checked_out_code_on_a_fork_pull_request(self):
-        # desk.yml runs scripts from the checkout; on a PR from a fork those are the fork's files.
-        own = ("(github.event_name != 'pull_request' || "
+        # desk.yml runs scripts from the checkout; on a PR from a fork those are the fork's files,
+        # and a merge queue entry may carry them too.
+        own = ("github.event_name != 'merge_group' && (github.event_name != 'pull_request' || "
                "github.event.pull_request.head.repo.full_name == github.repository) && github.token || ''")
         desk = (WORKFLOWS / 'desk.yml').read_text()
         lines = [line for line in desk.splitlines() if re.search(r'github\.token|secrets\.\w', line)]
