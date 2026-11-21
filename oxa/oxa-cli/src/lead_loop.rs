@@ -246,7 +246,7 @@ impl Stuck {
                     id: format!("lead:stuck:publish:{task}"),
                     revision,
                     question: format!(
-                        "Task {task} has a locally accepted commit with no publication. Push its branch or stop the worker."
+                        "Task {task} has a locally accepted commit with no matching PR receipt. Ask the worker that owns publication to finish the handoff, or route it to the authorized runner if the worker does not own GitHub access."
                     ),
                 });
             }

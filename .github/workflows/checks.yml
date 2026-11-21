@@ -21,8 +21,10 @@ name: checks
 # repeat (tools/ci/queue_covered.py decides). A push that changed a dependency cache key still
 # runs: main is what seeds the `<prefix>main` caches, and a queue run cannot. The classifier and
 # the scans always run, deduped or not.
-# The macOS arm64 oxa-cli build (`macos`, macos.yml) runs on ready PRs and in the queue when `oxa`
-# is selected. It has no push trigger of its own, so a main push never builds macOS twice.
+# The macOS arm64 oxa-cli build (`macos`, macos.yml) runs only on ready PRs whose change the
+# classifier marks `macos` (macOS packaging, the macOS workflows, oxa/Cargo.toml and Cargo.lock,
+# paths naming macos/darwin, the oxa files with macOS-only code). It never runs in the merge queue
+# or on a main push: dev-build.yml builds macOS after every merge and files a p1 issue when it breaks.
 # The `gate` job aggregates every job below; it fails when any job failed or was cancelled, when
 # the classifier or the scans did not succeed, or when a classifier output is not literally
 # 'true'/'false', so a skip caused by a failed or missing classifier cannot pass.
@@ -79,6 +81,7 @@ jobs:
       engine: ${{ steps.paths.outputs.engine }}
       oxa: ${{ steps.paths.outputs.oxa }}
       gateway: ${{ steps.paths.outputs.gateway }}
+      macos: ${{ steps.paths.outputs.macos }}
       md: ${{ steps.paths.outputs.md }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -134,12 +137,13 @@ jobs:
       oxa: ${{ github.event_name == 'merge_group' || needs.changes.outputs.oxa == 'true' }}
 
   macos:
-    # Required through `gate`: the native macOS arm64 oxa-cli build (macos.yml, one definition also
-    # used for manual dispatch). Runs on ready PRs and in the queue whenever the classifier says oxa
-    # (Rust code, Cargo.lock, packaging/, this workflow). macos.yml has no push trigger: the queue
-    # built this commit already, so a main push never builds macOS twice (#2049).
+    # The native macOS arm64 oxa-cli build (macos.yml, one definition also used for manual
+    # dispatch), about 90 minutes. Runs only on ready PRs the classifier marks `macos` (see
+    # MACOS_FILES in tools/ci/paths.py); when it runs, `gate` fails if it fails, and a skip passes.
+    # Never in the merge queue or on a main push: dev-build.yml builds macOS on every main push
+    # and opens a p1 "macOS dev build broken on main" issue when that build fails.
     needs: changes
-    if: needs.changes.outputs.covered != 'true' && (github.event_name == 'merge_group' || github.event_name == 'pull_request') && needs.changes.outputs.oxa == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false && needs.changes.outputs.macos == 'true'
     uses: ./.github/workflows/macos.yml
 
   oxa-nightly-arm:
@@ -614,7 +618,7 @@ jobs:
           for k in ('changes', 'scans'):                      # these two may never be skipped
               if needs[k]['result'] != 'success': bad[k] = needs[k]['result']
           flags = needs['changes'].get('outputs', {})
-          for k in ('engine', 'oxa', 'gateway', 'docs', 'md', 'full'):
+          for k in ('engine', 'oxa', 'gateway', 'macos', 'docs', 'md', 'full'):
               if flags.get(k) not in ('true', 'false'): bad['changes.' + k] = repr(flags.get(k))
           print(json.dumps({k: v['result'] for k, v in needs.items()}, indent=1)); print('bad:', bad)
           sys.exit(1 if bad else 0)

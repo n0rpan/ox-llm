@@ -22,6 +22,18 @@ class ReleaseAssets(unittest.TestCase):
         
         self.assertIn('dist/*.sbom.cdx.json', rel)
 
+    def test_release_requires_the_macos_archive(self):
+        rel = (W / 'release.yml').read_text()
+        macos = rel.split('\n  macos:\n', 1)[1].split('\n  release:\n', 1)[0]
+        self.assertIn('uses: ./.github/workflows/macos.yml', macos)
+        self.assertIn('version: ${{ needs.version.outputs.version }}', macos)
+        self.assertIn('needs: [version, build, combined, macos]', rel)
+        self.assertNotIn('continue-on-error', rel)
+        self.assertIn('test -f "./ox-llm-$TAG-macos-arm64.tar.gz"', rel)
+        reusable = (W / 'macos.yml').read_text()
+        self.assertIn('bash packaging/macos/stage.sh "$VERSION"', reusable)
+        self.assertIn('name: macos-dist-arm64', reusable)
+
     def test_release_build_is_reusable_and_versioned(self):
         rb = (W / 'release-build.yml').read_text()
         self.assertIn('workflow_call:', rb)

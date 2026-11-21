@@ -50,6 +50,11 @@ model, tool output, transcript or logs. Neither typed chat nor yolo can answer t
 
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.
+An explicit user requirement to preserve work (#2292) adds one reversible-checkpoint sentence to
+the existing question of a destructive dangerous-command rule (recursive delete outside the
+workspace, force push, disk destroy, SQL drop, and the owner's own `cmd:` rules), quoting the
+requirement. It is additive text on the same prompt, refusal and approval request: no new prompt,
+refusal, cap or grant change, and approval authority is unchanged.
 The native cloud gateway's default recommendations use only configured API-key providers
 and their standard endpoints. User model entries take precedence, and the owner can opt out.
 Recommendations do not initiate network discovery or confer guest access.
@@ -210,7 +215,8 @@ Intentional removals must be stated in the PR body with a `Removes:` line. Flag 
 The rolling dev release always requires its reproducible Linux artifacts. Its native macOS arm64
 archive is best effort, so a failed macOS build cannot suppress the Linux release. When the macOS
 archive is present, the workflow includes it in the versioned SHA256 checksum file and in the same
-build-provenance attestation as the other dev assets before publishing it.
+build-provenance attestation as the other dev assets before publishing it. A stable release
+requires the macOS arm64 archive and gives it the same checksum and provenance as its Linux assets.
 The owner confirm broker (`oxa-core/src/owner_confirm.rs`, `OXA_CONFIRM_SOCK`) answers an oxa
 confirmation only from the owner: yolo chosen for the session (answer yes, shown and recorded), the
 owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.

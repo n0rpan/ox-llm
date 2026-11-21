@@ -54,7 +54,10 @@ previous build are retained.
 `ox-llm-<file-version>-macos-arm64.tar.gz` (`usr/bin/oxa` only, staged by
 `packaging/macos/stage.sh`) to the same `dev` prerelease. It is covered by the same
 `SHA256SUMS-<file-version>` and provenance. The job is best effort: if it fails, the Linux
-assets still publish and the Mac asset is simply absent.
+assets still publish and the Mac asset is absent. A failed main-push build opens the p1 issue
+"macOS dev build broken on main" (or comments on the open one); the next green main-push build
+closes it. This is the only macOS build after a merge: PRs build macOS only for macOS-relevant
+paths and the merge queue never does.
 
 To qualify a branch without publishing, dispatch `dev-build.yml` on that branch with
 `macos_stage_only=true`. Check that the run's head SHA matches the commit under test.

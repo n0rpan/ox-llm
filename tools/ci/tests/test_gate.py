@@ -194,8 +194,8 @@ class MainPushDedupe(unittest.TestCase):
     # These always run: the classifier is what answers the dedupe question, and the security
     # scans are never path- or event-gated.
     FLOOR = {'changes', 'scans', 'gate'}
-    # Nightly and manual opt-in only: no main push reaches it.
-    NEVER_ON_PUSH = {'oxa-nightly-arm'}
+    # Nightly/manual opt-in, and macOS on ready PRs only: no main push reaches them.
+    NEVER_ON_PUSH = {'oxa-nightly-arm', 'macos'}
     GUARD = "needs.changes.outputs.covered != 'true'"
 
     def setUp(self):
@@ -204,7 +204,6 @@ class MainPushDedupe(unittest.TestCase):
     def test_every_job_a_main_push_may_skip_asks_the_dedupe_answer(self):
         rest = set(jobs(self.checks)) - self.FLOOR - self.NEVER_ON_PUSH
         self.assertIn('build', rest)
-        self.assertIn('macos', rest)
         for name in sorted(rest):
             self.assertIn(self.GUARD, job_block(self.checks, name), name)
 

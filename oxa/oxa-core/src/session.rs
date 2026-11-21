@@ -83,7 +83,7 @@ pub struct State {
 }
 
 /// The RPC `get_session_stats` data plus cache accounting.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Stats {
     pub user_messages: u32,
     pub assistant_messages: u32,
@@ -120,6 +120,9 @@ pub struct Stats {
     pub proved: Option<bool>,
     /// Background jobs still running when the last run ended (after the finish nudge).
     pub jobs_left: u32,
+    /// T6: the tool the task's acceptance names when no command of the last run ran it (what the
+    /// run checked is a substitute); `None` when it ran or the task names no tool.
+    pub verifier: Option<String>,
     /// The last run read an image file, changed files and ended without an independent check
     /// of its reading (after the finish nudge).
     pub image_unverified: bool,
@@ -918,7 +921,7 @@ impl Session {
     }
 
     pub fn stats(&self) -> Stats {
-        self.st.stats
+        self.st.stats.clone()
     }
 
     /// Set an opt-in, process-local final answer contract without changing the prefix.
@@ -1194,6 +1197,7 @@ impl Session {
         self.st.stats.done_failed = false;
         self.st.stats.proved = None;
         self.st.stats.jobs_left = 0;
+        self.st.stats.verifier = None;
         self.st.stats.image_unverified = false;
         self.st.stats.ci_polls = 0;
         self.st.stats.output_truncated = false;
@@ -1767,6 +1771,14 @@ fn restore_locked(
     attach_ids(st);
     attach_hosts(st, sink, ui);
     apply_branch_counts(&mut st.stats, &branch);
+    // #2292: restore the branch's last explicit preservation requirement, so a resumed
+    // session's danger floor keeps the checkpoint note without a new prompt.
+    for entry in branch.iter().rev() {
+        if let Some(requirement) = crate::agent_loop::preservation_of(entry) {
+            st.policy.set_preservation(Some(&requirement));
+            break;
+        }
+    }
     st.stats.context_tokens = st.transcript.context();
     if let Some(cli) = cli {
         let mut all = cli.builtins.clone();
@@ -2759,6 +2771,49 @@ mod tests {
             .expect("stored prompt");
         assert_eq!(crate::envnote::strip_note(&texts[1], parts), "now");
         assert!(s.st.next_turn.is_empty());
+    }
+
+    /// #2292: the branch's last explicit preservation requirement is restored on resume, so
+    /// the danger floor's checkpoint note survives a restart without a new prompt.
+    #[test]
+    fn preservation_requirement_is_restored_on_resume() {
+        let env = oxa_fake::TestEnv::new();
+        let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
+        let danger_deps = || {
+            let mut d = deps(&env, store.clone());
+            d.policy = Box::new(
+                oxa_perm::ModePolicy::new()
+                    .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()),
+            );
+            d
+        };
+        let mut s = Session::open(danger_deps(), Open::New).expect("open");
+        crate::append_entry(
+            &mut s.st,
+            EntryBody::Msg {
+                wire: WireMsg::user("clean up the repo, but keep commit abc123 exactly as it is"),
+                parts: Vec::new(),
+                tool: None,
+            },
+        )
+        .expect("append user");
+        let push = Access::Exec {
+            command: "git push --force origin main".to_string(),
+            net: false,
+        };
+        let noted = s.st.policy.danger_ask(&push, &s.st.cwd);
+        assert!(noted[0].1.contains("keep commit abc123"), "{noted:?}");
+        let sref = s.inner().sref.clone();
+        drop(s);
+        let reopened = Session::open(danger_deps(), Open::Resume(sref)).expect("resume");
+        let st = reopened.inner();
+        let hits = st.policy.danger_ask(&push, &st.cwd);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].1.contains("reversible checkpoint"), "{hits:?}");
+        assert!(
+            hits[0].1.contains("keep commit abc123 exactly as it is"),
+            "{hits:?}"
+        );
     }
 }
 
