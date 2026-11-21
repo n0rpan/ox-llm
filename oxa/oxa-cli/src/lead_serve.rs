@@ -472,7 +472,7 @@ impl Source {
         });
         use crate::lead_page::Page;
         let approvals_page = matches!(page, Page::Home | Page::Board | Page::BoardQuery(_));
-        let chat_page = matches!(page, Page::Chat(_));
+        let chat_page = matches!(page, Page::Chat(..));
         // Owner chat is configured only for a single verified Tailscale identity.
         let bound_owner = self
             .owner
@@ -488,7 +488,11 @@ impl Source {
         // The authenticated live readback (#1391): open owner asks are read from
         // the authorized durable Session on every render, never from a sample.
         let durable_asks = self.durable_asks();
-        let view = crate::lead_page::View {
+        // The chat thread reads the bound Session's entries without its writer lock, so a
+        // running Lead turn still shows. A refused or absent reading stays `None` and the
+        // page says so; only the bound owner's chat page reads it.
+        let entries = owner.map(|owner| owner.binding.read_entries().ok());
+        let mut view = crate::lead_page::View {
             approvals: waiting.as_deref(),
             approval_csrf: bound_owner.map(|owner| owner.csrf.as_str()),
             owner_chat: owner
@@ -498,6 +502,7 @@ impl Source {
                     reply: latest.as_ref().map(|latest| &latest.reply),
                     proposal: latest.as_ref().and_then(|latest| latest.proposal.as_ref()),
                     confirmed: latest.as_ref().is_some_and(|latest| latest.confirmed),
+                    entries: entries.flatten().as_deref(),
                 }),
             board: sample.as_ref().map(|sample| &sample.board),
             github_quotas: github_quotas.as_ref(),
@@ -508,6 +513,23 @@ impl Source {
             fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
             ..Default::default()
         };
+        // The chat page's own item: the canonical goal and its matching observation read
+        // from the same bound, owner-only Session as the thread.
+        let goal = if chat_page {
+            owner.and_then(|owner| owner.binding.goal().ok()).flatten()
+        } else {
+            None
+        };
+        if let Some((goal, revision, session)) = goal.as_ref() {
+            view.owner_goal = Some((
+                goal,
+                oxa_core::goal::GoalObservation {
+                    session,
+                    revision: *revision,
+                    status: Some(goal.status),
+                },
+            ));
+        }
         if fragment {
             crate::lead_page::content_for(page, &view, now)
         } else {
@@ -743,7 +765,7 @@ mod tests {
         owner
             .post(OwnerSubmission::Message("/goal is literal".into()), &env)
             .unwrap();
-        let page = crate::lead_page::Page::Chat(crate::lead_page::Prompt::Status);
+        let page = crate::lead_page::Page::Chat(crate::lead_page::Prompt::Status, None);
         let html = source.render(page, false);
         assert!(html.contains("fixture &lt;b&gt;reply&lt;/b&gt;"));
         assert!(!html.contains("fixture <b>reply</b>"));
