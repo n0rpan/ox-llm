@@ -54,6 +54,11 @@ pub struct View<'a> {
     pub owner_goal: Option<(&'a oxa_session::Goal, oxa_core::goal::GoalObservation<'a>)>,
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
+    /// The Lead session's workers from its registry and their status files. An error is
+    /// an explicit state: no workers recorded, or a registry that was refused.
+    pub workers: Option<&'a Result<Vec<crate::workers::tool::Binding>, crate::workers::tool::BindingsError>>,
+    /// Optional GitHub work the owner's App reserve deferred in the latest sample.
+    pub quota_deferred: &'a [oxa_work::shadow::Deferral],
     /// Open owner asks read live from the authorized durable Lead Session, with
     /// their original revisions. Distinct from the runner situation: an absent
     /// runner source never hides these, and vice versa.
@@ -77,6 +82,24 @@ pub struct View<'a> {
     pub approval_csrf: Option<&'a str>,
     /// The running owner session this chat page is attached to (#2075); replaces the Lead chat.
     pub attached: Option<AttachedView<'a>>,
+    /// The owner's running sessions to choose from, on the chat page only (#1469).
+    pub sessions: Option<SessionListView<'a>>,
+}
+
+/// The sessions of this user that are running now, as the owner's chat page lists them.
+pub struct SessionListView<'a> {
+    pub csrf: &'a str,
+    pub rows: &'a [SessionRow],
+    /// Label of the button that returns to the start-up target, when the page is not on it.
+    pub back: Option<&'static str>,
+}
+
+pub struct SessionRow {
+    pub id: String,
+    /// The project directory's basename only.
+    pub cwd_name: String,
+    pub modified_ms: u64,
+    pub attached: bool,
 }
 
 /// The attached session as the page shows it: the newest part of its transcript, whether it is
@@ -88,8 +111,14 @@ pub struct AttachedView<'a> {
     pub truncated: bool,
     pub live: bool,
     pub short_id: String,
+    /// The full id the message form names, so a stale page cannot send to another session.
+    pub id: String,
     /// A message was accepted since the last render.
     pub sent: bool,
+    /// `working` or `idle`, from the newest message; only meaningful while running.
+    pub activity: Option<&'static str>,
+    /// Prompt tokens of the newest request with recorded usage.
+    pub context_tokens: Option<u32>,
 }
 
 pub struct OwnerChatView<'a> {
@@ -485,8 +514,51 @@ fn usage(html: &mut String, view: &View<'_>) {
     html.push_str("</section>");
 }
 
+/// One live worker row: name, lane, model, state and how old its status is.
+fn binding_row(html: &mut String, binding: &crate::workers::tool::Binding) {
+    use crate::workers::registry::WorkerState;
+    let state = match &binding.state {
+        WorkerState::Starting => "Starting".to_owned(),
+        WorkerState::Working => "Working".to_owned(),
+        WorkerState::Idle => "Idle".to_owned(),
+        WorkerState::Finished(outcome) => format!("Finished ({outcome})"),
+        WorkerState::Dead => "Dead: its process is gone".to_owned(),
+        WorkerState::Stopped => "Stopped".to_owned(),
+    };
+    let active = matches!(
+        binding.state,
+        WorkerState::Starting | WorkerState::Working | WorkerState::Idle
+    );
+    let age = match binding.status_age_secs {
+        Some(age) if active && age > 300 => format!(" · status stale ({age} s old)"),
+        Some(age) => format!(" · status {age} s old"),
+        None => " · no status file".to_owned(),
+    };
+    let _ = write!(
+        html,
+        "<article><b>{}</b><p>{} · {} · {}{}</p></article>",
+        escape(&binding.name),
+        escape(&binding.branch),
+        escape(&binding.model),
+        escape(&state),
+        age
+    );
+}
+
 fn workers(html: &mut String, view: &View<'_>, now: u64) {
+    use crate::workers::tool::BindingsError;
     html.push_str("<section id=lanes><h2>Workers</h2>");
+    let live = matches!(view.workers, Some(Ok(_)));
+    match view.workers {
+        Some(Ok(bindings)) => {
+            html.push_str("<p class=muted>Live workers of the Lead session</p>");
+            bindings.iter().for_each(|binding| binding_row(html, binding));
+        }
+        Some(Err(BindingsError::Refused)) => html.push_str(
+            "<p>Live workers refused: the worker registry is unreadable or corrupt. It was left untouched.</p>",
+        ),
+        Some(Err(BindingsError::Absent)) | None => {}
+    }
     if let Some(s) = view.situation {
         let _ = write!(
             html,
@@ -531,7 +603,7 @@ fn workers(html: &mut String, view: &View<'_>, now: u64) {
                 }
             }
         }
-    } else {
+    } else if !live && !matches!(view.workers, Some(Err(BindingsError::Refused))) {
         html.push_str("<p>Lane status unavailable. No runner observation reached this page, so workers and their state cannot be shown; the source did not say why.</p>");
     }
     html.push_str("</section>");
@@ -2022,6 +2094,47 @@ return true;
             assert!(!render_at(&payload, MERGED + 45 * 60), "{field}");
         }
     }
+    #[test]
+    fn live_worker_rows_render_and_each_unavailable_state_is_explicit() {
+        use crate::workers::{
+            registry::WorkerState,
+            tool::{Binding, BindingsError},
+        };
+        let binding = |name: &str, state, age| Binding {
+            name: name.into(),
+            branch: format!("agent/{name}"),
+            model: "provider/model".into(),
+            state,
+            started_ms: 0,
+            status_age_secs: age,
+        };
+        let found: Result<Vec<Binding>, BindingsError> = Ok(vec![
+            binding("alive", WorkerState::Working, Some(5)),
+            binding("gone", WorkerState::Dead, None),
+            binding("slow", WorkerState::Idle, Some(900)),
+        ]);
+        let page = |workers| {
+            document_for(
+                Page::Workers,
+                &View {
+                    workers,
+                    ..Default::default()
+                },
+                100,
+            )
+        };
+        let html = page(Some(&found));
+        assert!(html.contains("agent/alive") && html.contains("Working"));
+        assert!(html.contains("Dead: its process is gone"));
+        assert!(html.contains("status stale (900 s old)"));
+        assert!(!html.contains("Lane status unavailable"));
+        let refused = Err(BindingsError::Refused);
+        assert!(page(Some(&refused)).contains("Live workers refused"));
+        let absent = Err(BindingsError::Absent);
+        assert!(page(Some(&absent)).contains("Lane status unavailable"));
+        assert!(page(None).contains("Lane status unavailable"));
+    }
+
     #[test]
     fn workers_put_reported_stalls_first_and_keep_observation_order_within_groups() {
         use oxa_proto::work::{Event, Fact, Incident};

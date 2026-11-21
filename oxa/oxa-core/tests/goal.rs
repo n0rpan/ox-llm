@@ -1269,6 +1269,16 @@ impl oxa_proto::Hooks for Probe {
     ) -> Option<Result<Option<String>, String>> {
         (self.0)(kind, args)
     }
+    /// A `ci` condition is answered over the network, like the GitHub probe's.
+    fn poll_access(&self, until: &serde_json::Value) -> Vec<oxa_proto::Access> {
+        if until["kind"] == "ci" {
+            vec![oxa_proto::Access::Net {
+                host: "github.com".into(),
+            }]
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// Deps with one probe hook set and a 1-second poll interval.
@@ -1910,4 +1920,176 @@ fn a_goal_whose_controls_were_deselected_pauses_with_a_reason_instead_of_looping
         .count();
     assert_eq!(continues, 0);
     assert_eq!(engine.requests().len(), 1);
+}
+
+/// #1919: a `wait` whose probe uses the network is network access in plan and ask mode (plan
+/// denies, ask asks once per host) and unchanged elsewhere; a local `job_done` asks nothing.
+#[test]
+fn wait_on_a_network_probe_declares_net_access_in_plan_and_ask_only() {
+    use oxa_proto::{Access, Mode, Tool, ToolCtx};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let probe = Probe(Box::new(|_, _| None));
+    let session = Session::open(probe_deps(&env, engine, probe), Open::New).unwrap();
+    let wait = session.inner().active.get("wait").expect("wait is declared");
+    let cancel = oxa_proto::CancelToken::new();
+    let spill = env.tmp();
+    let work = env.work();
+    let sandbox = NoSandbox;
+    let access = |mode: Mode, until: &str| {
+        let cx = ToolCtx {
+            checked: &[],
+            cwd: &work,
+            spill_dir: &spill,
+            sandbox: &sandbox,
+            mode,
+            cancel: &cancel,
+            env: &[],
+            tune: Default::default(),
+            hidden: None,
+        };
+        let args: serde_json::Value =
+            serde_json::from_str(&format!(r#"{{"seconds":60,"reason":"probe","until":{until}}}"#)).unwrap();
+        wait.access(&args, &cx).unwrap()
+    };
+    let ci = r#"{"kind":"ci","sha":"abc123","workflow":"lane"}"#;
+    let net = vec![Access::Net {
+        host: "github.com".into(),
+    }];
+    assert_eq!(access(Mode::Plan, ci), net);
+    assert_eq!(access(Mode::Ask, ci), net);
+    assert!(access(Mode::Workspace, ci).is_empty());
+    assert!(access(Mode::Ask, r#"{"kind":"job_done","job":"j1"}"#).is_empty());
+}
+
+/// #2183: what `oxa send` queues for a busy goal session. `steer` and `later` are admitted once,
+/// when the run starts; `slow_turn` holds that turn back (a slow tool boundary).
+struct InboxAtRunStart {
+    handle: oxa_core::Handle,
+    id: String,
+    steer: Option<&'static str>,
+    later: Option<&'static str>,
+    turns: u32,
+    slow_turn: u32,
+}
+
+impl oxa_proto::EventSink for InboxAtRunStart {
+    fn emit(&mut self, event: &oxa_proto::AgentEvent) {
+        match event {
+            oxa_proto::AgentEvent::AgentStart => {
+                if let Some(text) = self.steer.take() {
+                    assert!(self.handle.steer_for(&self.id, text.into()));
+                }
+                if let Some(text) = self.later.take() {
+                    assert!(self.handle.follow_up_for(&self.id, text.into()));
+                }
+            }
+            oxa_proto::AgentEvent::TurnStart => {
+                self.turns += 1;
+                if self.turns == self.slow_turn {
+                    std::thread::sleep(std::time::Duration::from_millis(1200));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn request_has(request: &oxa_fake::Recorded, text: &str) -> bool {
+    request
+        .messages
+        .iter()
+        .any(|m| m.role == oxa_proto::Role::User && m.content.as_deref() == Some(text))
+}
+
+/// #2183: an inbox steer reaches a busy goal session at its next tool boundary, before the next
+/// model request, while a plain follow-up sent at the same time waits for the reply that ends
+/// the pass.
+#[test]
+fn inbox_steer_arrives_at_the_next_tool_boundary_and_a_follow_up_waits() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("a", "peek", "{}"),
+        ScriptTurn::text("Noted."),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Both messages were read."}"#,
+        ),
+    ]));
+    let mut session =
+        Session::open(deps(&env, Arc::new(MemStore::new()), engine.clone()), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let mut sink = InboxAtRunStart {
+        handle: session.handle(),
+        id: session.inner().sref.id.clone(),
+        steer: Some("Steer now."),
+        later: Some("Later."),
+        turns: 0,
+        slow_turn: 0,
+    };
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(!request_has(&requests[0], "Steer now."));
+    assert!(
+        request_has(&requests[1], "Steer now."),
+        "the steer follows the tool result"
+    );
+    assert!(
+        !request_has(&requests[1], "Later."),
+        "the follow-up waits for the end of the pass"
+    );
+    assert!(request_has(&requests[2], "Later."));
+}
+
+/// #2183: a goal that keeps calling tools never ends its turn. A follow-up that has waited
+/// `oxa.goal.followUpMaxWaitSeconds` is delivered at the next tool boundary instead of staying
+/// queued behind that turn.
+#[test]
+fn follow_up_behind_a_goal_that_keeps_calling_tools_is_delivered_after_the_owner_wait() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("a", "peek", "{}"),
+        ScriptTurn::tool("b", "poke", "{}"),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"The follow-up was read."}"#,
+        ),
+    ]));
+    let mut d = deps(&env, Arc::new(MemStore::new()), engine.clone());
+    d.settings = Settings::from_values(
+        serde_json::json!({"oxa": {"envNote": false, "goal": {"followUpMaxWaitSeconds": 1}}}),
+        serde_json::json!({}),
+    );
+    let mut session = Session::open(d, Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let mut sink = InboxAtRunStart {
+        handle: session.handle(),
+        id: session.inner().sref.id.clone(),
+        steer: None,
+        later: Some("Later."),
+        turns: 0,
+        slow_turn: 2,
+    };
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        !request_has(&requests[1], "Later."),
+        "the first tool boundary only notes the follow-up"
+    );
+    assert!(
+        request_has(&requests[2], "Later."),
+        "the goal never stopped, and the follow-up still arrived"
+    );
 }

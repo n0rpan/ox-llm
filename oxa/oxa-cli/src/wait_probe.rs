@@ -36,6 +36,12 @@ pub(crate) const OUTPUT_CAP: usize = 256 * 1024;
 /// Most failed job names put in the evidence.
 const MAX_FAILED_JOBS: usize = 20;
 
+/// The kinds this set answers with `gh`: one predicate for the answer and the network access it
+/// declares, so a later kind is covered by both at once.
+fn answers_kind(kind: &str) -> bool {
+    matches!(kind, "ci" | "pr_merged" | "pr_activity") || crate::gh_probe::is_read_kind(kind)
+}
+
 /// The hook set answering `ci` and `pr_merged`.
 pub(crate) struct ProbeHooks {
     cwd: PathBuf,
@@ -361,17 +367,24 @@ impl Hooks for ProbeHooks {
     fn prompt_sections(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+    fn poll_access(&self, until: &Value) -> Vec<oxa_proto::Access> {
+        let kind = until["kind"].as_str().unwrap_or("");
+        // A runner-owned session runs no gh at all: nothing to ask for.
+        if answers_kind(kind) && !self.runner_owns_github {
+            vec![oxa_proto::Access::Net {
+                host: "github.com".to_string(),
+            }]
+        } else {
+            Vec::new()
+        }
+    }
     fn poll_event(
         &self,
         kind: &str,
         args: &Value,
         budget: Duration,
     ) -> Option<Result<Option<String>, String>> {
-        if kind != "ci"
-            && kind != "pr_merged"
-            && kind != "pr_activity"
-            && !crate::gh_probe::is_read_kind(kind)
-        {
+        if !answers_kind(kind) {
             return None;
         }
         if self.runner_owns_github {

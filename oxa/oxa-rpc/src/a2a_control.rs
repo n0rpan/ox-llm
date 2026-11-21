@@ -79,6 +79,11 @@ impl BoundControl {
         self.request.id()
     }
 
+    /// A resume: once applied on the idle session it starts one continuation run.
+    pub(super) fn is_resume(&self) -> bool {
+        matches!(self.request, Request::Resume { .. })
+    }
+
     /// Return a receipt from the session owner after attempting the durable transition.
     /// The frontend's earlier queue acknowledgement has its own meaning.
     pub(super) fn apply(self, owner: &mut Session, sink: &mut dyn EventSink) -> Value {

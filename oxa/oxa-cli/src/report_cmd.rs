@@ -592,18 +592,23 @@ fn stage_bytes(bytes: &[u8]) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
-/// The real confirmation. Under oxa's own tools the session exports `OXA_CONFIRM_SOCK`: the
-/// question goes to the session's owner confirm broker, which answers from the owner (yolo, the
-/// owner's dialog answer or the owner's typed message), never from text the model read. A model-run
-/// command controls its own environment (it can set `OXA_CONFIRM_SOCK` and drop the agent marker),
-/// so the consumer trusts a socket only when it is the sandbox's pinned mount point or when the
-/// peer behind it is verified as the session's own oxa process ([`peer_is_session_oxa`]); a fake
-/// listener is no answer. In yolo the model already holds the owner's rights, so nothing changes
-/// there: the real broker verifies and answers yes. Without a broker, a tool child
-/// (`OXA_CODING_AGENT` set) gets `None`. A manual terminal asks through `/dev/tty` (never stdin, so
-/// piped input cannot confirm) and gets `None` without one.
+/// Check reachability for agent-launched work without prompting or accepting any answer.
+pub(crate) fn has_session_broker(env: &Env) -> bool {
+    env.get(oxa_core::owner_confirm::SOCK_ENV)
+        .is_some_and(|sock| connect_verified(Path::new(sock)).is_some())
+}
+
+/// Ask the authenticated session broker when exported, otherwise ask a direct owner on
+/// `/dev/tty`. Agent markers and piped input never supply an answer.
 pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
-    tty_confirm_with(env, ask_broker, ask_verified)
+    tty_confirm_with(env, |sock, question| {
+        // Authenticate and ask on the same connection; never fall back when a broker was exported.
+        let stream = connect_verified(sock)?;
+        answer_of(
+            oxa_core::owner_confirm::ask_on(stream, &confirm_request(question)),
+            question,
+        )
+    })
 }
 
 /// The structured request for a question text: the broker shows the title and the body as
@@ -632,33 +637,15 @@ fn answer_of(reply: oxa_core::owner_confirm::Reply, question: &str) -> Option<bo
     answer
 }
 
-fn ask_broker(sock: &Path, question: &str) -> Option<bool> {
-    answer_of(
-        oxa_core::owner_confirm::ask(sock, &confirm_request(question)),
-        question,
-    )
-}
-
-/// Connect to `sock`, require the peer to be the session's own oxa process, then ask on that
-/// same connection (no window between the check and the question).
-fn ask_verified(sock: &Path, question: &str) -> Option<bool> {
+fn connect_verified(sock: &Path) -> Option<std::os::unix::net::UnixStream> {
     let stream = std::os::unix::net::UnixStream::connect(sock).ok()?;
-    if !peer_is_session_oxa(&stream) {
-        return None;
-    }
-    answer_of(
-        oxa_core::owner_confirm::ask_on(stream, &confirm_request(question)),
-        question,
-    )
+    peer_is_session_oxa(&stream, sock).then_some(stream)
 }
 
-/// `true` when the process that owns the listening socket is this process's ancestor, runs the
-/// same executable and is the same user. The model's commands run below the session's oxa and can
-/// start any listener they like, but a listener they start is not oxa's own executable (and a
-/// copy of oxa they start serves its own session, not the owner's). Off Linux there is no peer
-/// credential check here and the socket is not trusted.
+/// A sandbox can use only the pinned, same-user host peer. Elsewhere require a same-user
+/// peer and an unambiguous oxa ancestor; a same-user listener alone is not authority.
 #[cfg(target_os = "linux")]
-fn peer_is_session_oxa(stream: &std::os::unix::net::UnixStream) -> bool {
+fn peer_is_session_oxa(stream: &std::os::unix::net::UnixStream, sock: &Path) -> bool {
     use std::os::fd::AsRawFd;
     let mut cred = libc::ucred {
         pid: 0,
@@ -677,35 +664,89 @@ fn peer_is_session_oxa(stream: &std::os::unix::net::UnixStream) -> bool {
         )
     };
     // SAFETY: geteuid has no preconditions.
-    if rc != 0 || cred.pid <= 0 || cred.uid != unsafe { libc::geteuid() } {
+    if rc != 0 || len as usize != std::mem::size_of::<libc::ucred>() || cred.uid != unsafe { libc::geteuid() }
+    {
+        return false;
+    }
+    if sock == Path::new(oxa_sandbox::OWNER_CONFIRM_SOCK) {
+        // bwrap pins this socket and denies nested user namespaces. A visible peer
+        // cannot be the session outside the sandbox PID namespace.
+        return cred.pid == 0;
+    }
+    if !std::fs::read_to_string("/proc/self/uid_map")
+        .is_ok_and(|map| map.split_whitespace().eq(["0", "0", "4294967295"]))
+    {
         return false;
     }
     let Ok(peer) = u32::try_from(cred.pid) else {
         return false;
     };
-    let exe_of = |pid: u32| {
-        std::fs::read_link(format!("/proc/{pid}/exe"))
-            .ok()
-            .map(|p| PathBuf::from(p.to_string_lossy().trim_end_matches(" (deleted)")))
-    };
-    let (Some(own), Some(theirs)) = (exe_of(std::process::id()), exe_of(peer)) else {
-        return false;
-    };
-    let mut ancestors = Vec::new();
-    let mut pid = std::process::id();
-    for _ in 0..64 {
-        let Some(parent) = parent_pid(pid) else { break };
-        if parent <= 1 {
-            break;
-        }
-        ancestors.push(parent);
-        pid = parent;
-    }
-    is_session_broker(peer, &ancestors, &theirs, &own)
+    use std::os::unix::fs::MetadataExt;
+    verify_ancestor(peer, |pid| {
+        let exe = std::fs::metadata(format!("/proc/{pid}/exe")).ok()?;
+        Some((exe.dev(), exe.ino()))
+    })
 }
 
-#[cfg(not(target_os = "linux"))]
-fn peer_is_session_oxa(_stream: &std::os::unix::net::UnixStream) -> bool {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn verify_ancestor<E: PartialEq>(peer: u32, exe_of: impl Fn(u32) -> Option<E>) -> bool {
+    is_session_broker(peer, std::process::id(), parent_pid, exe_of)
+}
+
+#[cfg(target_os = "macos")]
+fn peer_is_session_oxa(stream: &std::os::unix::net::UnixStream, _sock: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let fd = stream.as_raw_fd();
+    let (mut uid, mut gid, mut pid) = (0, 0, 0 as libc::pid_t);
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: fd is live; each output pointer is valid and has the required size.
+    if unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } != 0
+        || uid != unsafe { libc::geteuid() }
+        || unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                (&mut pid as *mut libc::pid_t).cast(),
+                &mut len,
+            )
+        } != 0
+        || len as usize != std::mem::size_of::<libc::pid_t>()
+        || pid <= 0
+    {
+        return false;
+    }
+    verify_ancestor(pid as u32, |pid| {
+        let mut buf = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // SAFETY: buf is writable for the byte count passed to proc_pidpath.
+        let size =
+            unsafe { libc::proc_pidpath(pid as libc::c_int, buf.as_mut_ptr().cast(), buf.len() as u32) };
+        let end = buf.iter().position(|&byte| byte == 0)?;
+        (size > 0 && end > 0).then(|| PathBuf::from(OsStr::from_bytes(&buf[..end])))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn parent_pid(pid: u32) -> Option<u32> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: info provides a suitably aligned writable buffer of size bytes. Read it only
+    // after the kernel reports a complete PROC_PIDTBSDINFO result.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    (read == size).then(|| unsafe { info.assume_init() }.pbi_ppid)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn peer_is_session_oxa(_stream: &std::os::unix::net::UnixStream, _sock: &Path) -> bool {
     false
 }
 
@@ -717,28 +758,44 @@ fn parent_pid(pid: u32) -> Option<u32> {
     rest.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// The verdict on a listener: its process is one of the consumer's ancestors and runs the
-/// consumer's own executable.
-fn is_session_broker(peer: u32, ancestors: &[u32], peer_exe: &Path, own_exe: &Path) -> bool {
-    ancestors.contains(&peer) && peer_exe == own_exe
+/// The peer must be the only ancestor running the consumer's executable. If multiple
+/// nested oxa processes are present, an exported path alone cannot identify the owner.
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn is_session_broker<E: PartialEq>(
+    peer: u32,
+    mut pid: u32,
+    parent_pid: impl Fn(u32) -> Option<u32>,
+    exe_of: impl Fn(u32) -> Option<E>,
+) -> bool {
+    let Some(own) = exe_of(pid) else { return false };
+    let mut found = false;
+    for _ in 0..64 {
+        let Some(parent) = parent_pid(pid) else {
+            return false;
+        };
+        if parent <= 1 {
+            return found;
+        }
+        if exe_of(parent).is_some_and(|exe| exe == own) {
+            if found || parent != peer {
+                return false;
+            }
+            found = true;
+        }
+        pid = parent;
+    }
+    false
 }
 
 fn tty_confirm_with<'a>(
     env: &'a Env,
-    ask_pinned: impl Fn(&Path, &str) -> Option<bool> + 'a,
-    ask_checked: impl Fn(&Path, &str) -> Option<bool> + 'a,
+    ask_verified: impl Fn(&Path, &str) -> Option<bool> + 'a,
 ) -> impl FnMut(&str) -> Option<bool> + 'a {
     move |question: &str| {
         if let Some(sock) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
-            // The socket bwrap pinned at its immutable mount point is the session's broker by
-            // construction; any other path (the model can set the variable and drop the agent
-            // marker) must prove its listener first.
-            if sock == oxa_sandbox::OWNER_CONFIRM_SOCK {
-                return ask_pinned(Path::new(sock), question);
-            }
-            return ask_checked(Path::new(sock), question);
+            return ask_verified(Path::new(sock), question);
         }
-        if env.get("OXA_CODING_AGENT").is_some() {
+        if crate::work_cmd::agent_launched(env) {
             return None;
         }
         // Keep concurrent workers' questions and answers together.
@@ -785,15 +842,11 @@ mod confirm_tests {
             ("OXA_CODING_AGENT", "true"),
             ("OXA_CONFIRM_SOCK", oxa_sandbox::OWNER_CONFIRM_SOCK),
         ]);
-        let mut confirm = tty_confirm_with(
-            &env,
-            |sock, question| {
-                assert_eq!(sock, Path::new(oxa_sandbox::OWNER_CONFIRM_SOCK));
-                assert_eq!(question, "Post this issue? ");
-                Some(true)
-            },
-            |_, _| panic!("the pinned mount needs no peer check"),
-        );
+        let mut confirm = tty_confirm_with(&env, |sock, question| {
+            assert_eq!(sock, Path::new(oxa_sandbox::OWNER_CONFIRM_SOCK));
+            assert_eq!(question, "Post this issue? ");
+            Some(true)
+        });
         assert_eq!(confirm("Post this issue? "), Some(true));
 
         // The same process may override its environment (and drop the agent marker), but an
@@ -816,19 +869,31 @@ mod confirm_tests {
         assert_eq!(tty_confirm(&env)("q"), None);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn broker_is_trusted_only_as_an_ancestor_running_the_same_executable() {
-        let oxa = Path::new("/usr/bin/oxa");
-        assert!(is_session_broker(10, &[20, 10, 5], oxa, oxa));
-        // Not an ancestor: a listener a command started beside or below the consumer.
-        assert!(!is_session_broker(99, &[20, 10, 5], oxa, oxa));
-        // An ancestor that is not oxa's executable (a script that wraps the consumer).
-        assert!(!is_session_broker(
-            10,
-            &[20, 10, 5],
-            Path::new("/usr/bin/python3"),
-            oxa
+    fn a_pinned_path_does_not_authorize_a_visible_peer() {
+        let (client, _visible_peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        assert!(!peer_is_session_oxa(
+            &client,
+            Path::new(oxa_sandbox::OWNER_CONFIRM_SOCK)
         ));
+    }
+
+    #[test]
+    fn broker_is_trusted_only_as_the_unique_ancestor_running_the_same_executable() {
+        let parent = |pid| match pid {
+            30 => Some(20),
+            20 => Some(10),
+            10 => Some(1),
+            _ => None,
+        };
+        let exe = |pid| Some(matches!(pid, 30 | 10 | 99));
+        assert!(is_session_broker(10, 30, parent, exe));
+        assert!(!is_session_broker(99, 30, parent, exe)); // sibling
+        assert!(!is_session_broker(20, 30, parent, exe)); // wrapper
+        for peer in [10, 20] {
+            assert!(!is_session_broker(peer, 30, parent, |_| Some(true))); // ambiguous
+        }
     }
 
     #[test]
