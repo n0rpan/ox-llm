@@ -172,8 +172,8 @@ fn run_inner(
     let mut idle_streak: u32 = 0;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
-    // #2295: the verified-artifact line a request may carry, taken by that request and sent
-    // once. A run whose checks all passed has none here.
+    // #2295: the verified-artifact line the failed-check repair request carries, taken by that
+    // request. A run whose checks all passed has none here.
     let mut artifacts: Option<String> = None;
     'turns: loop {
         if crate::goal::terminal(st) {
@@ -802,7 +802,7 @@ fn run_inner(
             done.note_artifacts(crate::done::checks_run(st));
             done.note_bash(st, &results);
             crate::exec::note_stored_images(st, &results, sink)?;
-            // A new batch replaces the line: the next request carries this batch's result.
+            // #2295: the next repair request (if any) carries this batch's verified files.
             artifacts = done.verified_artifacts(&st.cwd);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
@@ -1018,8 +1018,6 @@ fn run_inner(
             )));
         }
         if let Some(text) = failed_check {
-            // #2295: the repair request carries the run's verified files (taken once).
-            artifacts = done.verified_artifacts(&st.cwd);
             crate::done::inject(st, text, sink, ui, run_msgs)?;
             continue;
         }

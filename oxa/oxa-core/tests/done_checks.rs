@@ -770,27 +770,16 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
                 call("b", "bash", json!({"command": "false"})),
                 call("c", "bash", json!({"command": "true"})),
             ]),
+            // The reply after the batch, then the reply after the repair request.
             ScriptTurn::text("done"),
+            ScriptTurn::text("fixed"),
         ],
     );
-    for r in engine.requests().iter() {
-        eprintln!(
-            "REQ {:?}",
-            r.messages
-                .iter()
-                .map(|m| (
-                    format!("{:?}", m.role),
-                    m.content.clone(),
-                    m.role == oxa_proto::Role::User
-                ))
-                .collect::<Vec<_>>()
-        );
-    }
     let checks = rec.checks();
     assert_eq!(checks.len(), 1, "{checks:?}");
     assert!(checks[0].contains("FAILED"), "{checks:?}");
-    // The write, the failing command, the passing check, then the repair round's turn.
-    assert_eq!(engine.requests().len(), 3);
+    // The write batch, the reply after it, the repair request, the reply after the repair.
+    assert_eq!(engine.requests().len(), 4);
     let repair = last_user(&engine, 2);
     assert!(repair.contains("done checks failed"), "{repair}");
     assert!(
@@ -804,8 +793,10 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
         repair.contains("change only what differs instead of rebuilding"),
         "{repair}"
     );
-    // The write batch's own turn carries no line, and the check passed: a later turn has none.
+    // The write batch's own turn carries no line, the check passed, and the line is not
+    // repeated on the reply after the repair.
     assert!(!last_user(&engine, 1).contains("Not re-derived"));
+    assert!(!last_user(&engine, 3).contains("Not re-derived"));
     assert_eq!(last_user(&engine, 2).matches("Not re-derived").count(), 1);
 }
 
