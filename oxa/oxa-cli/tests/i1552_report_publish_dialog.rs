@@ -81,6 +81,9 @@ impl Ui for Owner {
     fn interactive(&self) -> bool {
         true
     }
+    fn has_publication_dialog(&self) -> bool {
+        true
+    }
     fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
         self.gh_had_run_when_asked |= self.marker.exists();
         self.shown.push((title.into(), body.into()));

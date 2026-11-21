@@ -493,6 +493,9 @@ impl Ui for LockedUi<'_, '_> {
     fn interactive(&self) -> bool {
         self.with(|u| u.interactive())
     }
+    fn has_publication_dialog(&self) -> bool {
+        self.with(|u| u.has_publication_dialog())
+    }
 }
 
 /// The shortest and the longest pause between two polls of the host receiver in [`pumped`].
@@ -532,6 +535,7 @@ pub(crate) fn pumped<R: Send>(
     let (done_tx, done_rx) = mpsc::channel::<()>();
     let previous_broker_state = st.shared.owner_confirm().map(|broker| {
         let previous = broker.set_servable(true);
+        broker.set_plan_mode(st.mode == oxa_proto::Mode::Plan);
         (broker, previous)
     });
     std::thread::scope(|scope| {
@@ -610,6 +614,8 @@ pub(crate) fn drain_owner_confirm_records(st: &mut SessionState, sink: &mut dyn 
         let data = json!({
             "title": r.title,
             "question": r.body,
+            "repository": r.repository,
+            "url": r.url,
             "bytes": r.bytes,
             "count": r.count,
             "preview_sha256": r.preview_sha256,
