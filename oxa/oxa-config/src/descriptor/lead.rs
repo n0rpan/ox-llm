@@ -1,7 +1,7 @@
 //! Lead and web: the lead agent, the web UI's settings and the LAN sharing list (design section 5,
 //! row A2d). The fields of `oxa.lead.serve` sit below their object key.
 
-use super::{d, Apply, Control, Descriptor, Group, Item, Options, Unit, WebEdit};
+use super::{d, Apply, Control, Descriptor, Group, Item, MapKind, Options, Unit, WebEdit};
 use crate::schema::Kind;
 
 /// The Lead and web entries, in display order.
@@ -45,6 +45,20 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .toggle()
     .user_only()
     .apply(Apply::Restart)
+    .web(WebEdit::Edit),
+    // Owner-configured worker capacity per host (#2369). Display only: the board
+    // shows it next to observed use; nothing schedules or refuses on it.
+    d(
+        "oxa.lead.capacity",
+        Group::Lead,
+        "Lead",
+        "Worker capacity per host",
+        "Workers the owner allows per host, e.g. {\"host-a\": 6}. Unset = not stated.",
+    )
+    .key(Kind::Object, "{}")
+    .control(Control::Map(MapKind::Number))
+    .user_only()
+    .apply(Apply::Reload)
     .web(WebEdit::Edit),
     // Lead web access scaffold: user-layer object, disabled by default, no listener installed yet.
     // The CLI validates the fields it reads (identity mode, loopback bind, port, allow-list).

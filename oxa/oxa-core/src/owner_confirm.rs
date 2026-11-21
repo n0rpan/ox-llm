@@ -117,9 +117,60 @@ const MAX_HEADER_BYTES: usize = 21;
 pub enum Request {
     /// A verdict-only question: the owner answers yes or no.
     Ask { title: String, body: String },
+    /// A publication: the oxa parent prepares it, shows it, holds the approved bytes and posts
+    /// them itself. The child only hands over the fields.
+    Publish(Publication),
     /// A password prompt from sudo's askpass helper: only the owner's secret dialog answers it.
     Secret { prompt: String },
 }
+
+/// What is published: one issue or one comment on an existing issue (`issue`). `note` is a
+/// warning shown to the owner above the text; it is never posted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Publication {
+    pub repository: String,
+    pub issue: Option<u64>,
+    pub title: String,
+    pub body: String,
+    pub note: Option<String>,
+}
+
+impl Publication {
+    /// The one rendering of a publication: the dialog, the record hash and the yolo result all
+    /// show exactly this text. A body that holds `Repository:` or `Type yes` lines is part of
+    /// the text, it never ends or hides the preview.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        if let Some(note) = &self.note {
+            out.push_str(note);
+            out.push_str("\n\n");
+        }
+        out.push_str(&format!("Repository: {}\n", self.repository));
+        if let Some(issue) = self.issue {
+            out.push_str(&format!(
+                "Destination: https://github.com/{}/issues/{issue} (comment)\n",
+                self.repository
+            ));
+        }
+        if !self.title.is_empty() {
+            out.push_str(&format!("Title: {}\n", self.title));
+        }
+        out.push('\n');
+        out.push_str(&self.body);
+        out
+    }
+}
+
+/// The parent's side of a publication, installed by the session's owner (`oxa-cli`): `prepare`
+/// returns the exact text to show (or the reason it is refused), `post` publishes exactly the
+/// prepared bytes and returns the URL.
+pub trait Publisher: Send + Sync {
+    fn prepare(&self, publication: Publication) -> Result<Publication, String>;
+    fn post(&self, publication: &Publication) -> Result<String, String>;
+}
+
+/// The dialog title of a publication.
+const PUBLISH_TITLE: &str = "Publish to GitHub? Only you can approve";
 
 impl Request {
     pub fn ask(title: impl Into<String>, body: impl Into<String>) -> Request {
@@ -135,6 +186,10 @@ impl Request {
             Request::Ask { title, body } => {
                 json!({"v": 2, "kind": "ask", "title": title, "body": body})
             }
+            Request::Publish(p) => json!({
+                "v": 2, "kind": "publish", "repository": p.repository, "issue": p.issue,
+                "title": p.title, "body": p.body, "note": p.note,
+            }),
             Request::Secret { prompt } => json!({"v": 2, "kind": "secret", "prompt": prompt}),
         }
         .to_string();
@@ -153,6 +208,19 @@ impl Request {
                 title: v.get("title")?.as_str()?.to_string(),
                 body: v.get("body")?.as_str()?.to_string(),
             }),
+            "publish" => Some(Request::Publish(Publication {
+                repository: v.get("repository")?.as_str()?.to_string(),
+                issue: match v.get("issue") {
+                    None | Some(Value::Null) => None,
+                    Some(n) => Some(n.as_u64()?),
+                },
+                title: v.get("title")?.as_str()?.to_string(),
+                body: v.get("body")?.as_str()?.to_string(),
+                note: match v.get("note") {
+                    None | Some(Value::Null) => None,
+                    Some(n) => Some(n.as_str()?.to_string()),
+                },
+            })),
             "secret" => Some(Request::Secret {
                 prompt: v.get("prompt")?.as_str()?.to_string(),
             }),
@@ -169,6 +237,9 @@ pub struct Reply {
     pub origin: Origin,
     pub reason: Option<String>,
     pub limit: Option<usize>,
+    /// A publication was approved: the broker holds the approved bytes and waits for the
+    /// client's post frame on the same connection.
+    pub approved: bool,
 }
 
 impl Reply {
@@ -178,6 +249,7 @@ impl Reply {
             origin: Origin::Nobody,
             reason: Some(reason.to_string()),
             limit: None,
+            approved: false,
         }
     }
 
@@ -187,6 +259,7 @@ impl Reply {
             origin,
             reason: None,
             limit: None,
+            approved: false,
         }
     }
 
@@ -206,6 +279,9 @@ impl Reply {
         }
         if let Some(limit) = self.limit {
             v["limit"] = json!(limit);
+        }
+        if self.approved {
+            v["approved"] = json!(true);
         }
         v
     }
@@ -230,6 +306,7 @@ impl Reply {
                 .get("limit")
                 .and_then(Value::as_u64)
                 .and_then(|n| usize::try_from(n).ok()),
+            approved: v.get("approved").and_then(Value::as_bool) == Some(true),
         }
     }
 }
@@ -246,17 +323,44 @@ pub fn ask(sock: &Path, request: &Request) -> Reply {
 }
 
 /// [`ask`] on a connection the caller already made (and verified): one request, one answer.
-pub fn ask_on(mut stream: UnixStream, request: &Request) -> Reply {
+pub fn ask_on(stream: UnixStream, request: &Request) -> Reply {
+    exchange(&stream, request)
+}
+
+/// Send one request frame on `stream` and read the broker's one-line reply. For a publication
+/// the connection stays open after an approval: [`post_on`] then asks the parent to post.
+pub fn exchange(mut stream: &UnixStream, request: &Request) -> Reply {
     // The broker may refuse (too large) and close before it has read the whole body: a failed
     // write is then not an error, the refusal is already waiting to be read.
     let _ = stream.write_all(&request.frame());
     let mut line = String::new();
-    if std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).is_err() {
+    if std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut line).is_err() {
         return Reply::nobody("unreachable");
     }
     match serde_json::from_str::<Value>(&line) {
         Ok(v) => Reply::from_json(&v),
         Err(_) => Reply::nobody("unreachable"),
+    }
+}
+
+/// After an approved publication: ask the parent to post the bytes it holds. `Ok(url)` when
+/// posted, `Err(detail)` when the post failed or the connection is not an approved one.
+pub fn post_on(mut stream: &UnixStream) -> Result<String, String> {
+    stream
+        .write_all(b"{\"post\":true}\n")
+        .map_err(|_| "the owner confirm connection is closed".to_string())?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut line)
+        .map_err(|_| "the owner confirm connection is closed".to_string())?;
+    let v: Value =
+        serde_json::from_str(&line).map_err(|_| "no answer from the owner confirm broker".to_string())?;
+    match (
+        v.get("posted").and_then(Value::as_str),
+        v.get("failed").and_then(Value::as_str),
+    ) {
+        (Some(url), _) => Ok(url.to_string()),
+        (None, Some(detail)) => Err(detail.to_string()),
+        _ => Err("no answer from the owner confirm broker".to_string()),
     }
 }
 
@@ -330,6 +434,9 @@ pub struct Record {
     pub verdict: Verdict,
     pub origin: Origin,
     pub count: u64,
+    /// A publication's repository and, once posted, its URL.
+    pub repository: Option<String>,
+    pub url: Option<String>,
 }
 
 /// The text a request shows the owner: title, a blank line, body. The record hash covers it.
@@ -346,6 +453,8 @@ struct Pending {
     id: u64,
     title: String,
     body: String,
+    /// A publication: shown with the approval dialog when the UI is interactive.
+    publish: bool,
     shown: bool,
     reply: Option<(Verdict, Origin)>,
     /// Created by `serve` under the state lock when it picks the request; a typed answer
@@ -375,6 +484,8 @@ impl State {
                     && last.preview_sha256 == record.preview_sha256
                     && last.verdict == record.verdict
                     && last.origin == record.origin
+                    && last.repository == record.repository
+                    && last.url == record.url
                 {
                     last.count += record.count;
                     return;
@@ -397,6 +508,10 @@ pub struct OwnerConfirm {
     limits: Limits,
     /// Connections being served now (bounded by `limits.max_connections`).
     active: AtomicUsize,
+    /// The parent's publication side; without one a publish request answers `no_publisher`.
+    publisher: Mutex<Option<Arc<dyn Publisher>>>,
+    /// The session is in plan mode (read-only): a publish request answers `plan_mode`.
+    plan_mode: AtomicBool,
     askpass_launch: Mutex<Option<Arc<oxa_sandbox::SudoLaunch>>>,
     #[cfg(target_os = "linux")]
     askpass_exe: Option<std::fs::File>,
@@ -627,6 +742,8 @@ impl OwnerConfirm {
             closed: AtomicBool::new(false),
             limits,
             active: AtomicUsize::new(0),
+            publisher: Mutex::new(None),
+            plan_mode: AtomicBool::new(false),
             askpass_launch: Mutex::new(None),
             #[cfg(target_os = "linux")]
             askpass_exe: std::fs::File::open("/proc/self/exe").ok(),
@@ -637,6 +754,16 @@ impl OwnerConfirm {
 
     pub fn sock_path(&self) -> &Path {
         &self.sock
+    }
+
+    /// Install the parent's publication side (prepare, show, post).
+    pub fn set_publisher(&self, publisher: Arc<dyn Publisher>) {
+        *lock(&self.publisher) = Some(publisher);
+    }
+
+    /// Plan mode is read-only: publications are refused while it is on.
+    pub fn set_plan_mode(&self, on: bool) {
+        self.plan_mode.store(on, Ordering::SeqCst);
     }
 
     /// The askpass helper a privileged command's `SUDO_ASKPASS` names (see [`ASKPASS_NAME`]).
@@ -747,12 +874,23 @@ impl OwnerConfirm {
                     let cancel = DialogCancel::new();
                     p.shown = true;
                     p.cancel = Some(cancel.clone());
-                    (p.id, p.title.clone(), p.body.clone(), p.secret, cancel)
+                    (p.id, p.title.clone(), p.body.clone(), p.publish, p.secret, cancel)
                 })
         };
-        let Some((id, title, body, secret, cancel)) = next else {
+        let Some((id, title, body, publish, secret, cancel)) = next else {
             return;
         };
+        if publish && ui.has_publication_dialog() {
+            // The paged approval dialog shows the rendered publication exactly; only a key press
+            // answers it.
+            let verdict = match ui.approve_publication(&title, &body) {
+                Some(true) => Verdict::Yes,
+                Some(false) => Verdict::No,
+                None => Verdict::None,
+            };
+            self.answer(id, verdict, Origin::Dialog);
+            return;
+        }
         if secret {
             // The prompt is the requesting process's own text, shown as data. Only this dialog
             // answers; the value goes straight to the waiting connection.
@@ -879,19 +1017,30 @@ impl OwnerConfirm {
 
     fn request(&self, request: &Request) -> Reply {
         match request {
-            Request::Ask { title, body } => self.request_kind(title, body, false).0,
+            Request::Ask { title, body } => self.request_kind(title, body, false, false, true).0,
+            Request::Publish(_) => Reply::nobody("bad_request"),
             // `connection` answers a password prompt itself: it needs the value, not a verdict.
-            Request::Secret { prompt } => self.request_kind(prompt, prompt, true).0,
+            Request::Secret { prompt } => self.request_kind(prompt, prompt, false, true, true).0,
         }
     }
 
     /// A password prompt waits like a question, but only the `Ui::secret` dialog answers it and
     /// the value goes to the waiting connection instead of a record.
     fn request_secret(&self, prompt: String) -> Option<String> {
-        self.request_kind(&prompt, &prompt, true).1
+        self.request_kind(&prompt, &prompt, false, true, true).1
     }
 
-    fn request_kind(&self, title: &str, body: &str, secret: bool) -> (Reply, Option<String>) {
+    /// Ask the owner (or answer for yolo) about `title` and `body`. With `record` the answer is
+    /// recorded here; a publication records itself once it is posted. A secret is never
+    /// recorded: its value goes to the waiting connection instead.
+    fn request_kind(
+        &self,
+        title: &str,
+        body: &str,
+        publish: bool,
+        secret: bool,
+        record: bool,
+    ) -> (Reply, Option<String>) {
         let shown = shown_text(title, body);
         let sha = sha256_hex(shown.as_bytes());
         // Yolo answers a yes/no question at once; it cannot answer a password prompt (there is no
@@ -899,16 +1048,19 @@ impl OwnerConfirm {
         if self.yolo.full() && !secret {
             // Yolo keeps no pending request. The record is compact so a
             // loop of large requests cannot grow memory while nothing drains it.
-            let first_line = title.lines().next().unwrap_or("").to_string();
-            lock(&self.state).push_record(Record {
-                title: first_line,
-                body: None,
-                bytes: shown.len(),
-                preview_sha256: sha,
-                verdict: Verdict::Yes,
-                origin: Origin::Yolo,
-                count: 1,
-            });
+            if record {
+                lock(&self.state).push_record(Record {
+                    title: title.lines().next().unwrap_or("").to_string(),
+                    body: None,
+                    bytes: shown.len(),
+                    preview_sha256: sha,
+                    verdict: Verdict::Yes,
+                    origin: Origin::Yolo,
+                    count: 1,
+                    repository: None,
+                    url: None,
+                });
+            }
             return (Reply::given(Verdict::Yes, Origin::Yolo), None);
         }
         let mut st = lock(&self.state);
@@ -928,6 +1080,7 @@ impl OwnerConfirm {
             id,
             title: title.to_string(),
             body: body.to_string(),
+            publish,
             shown: false,
             reply: None,
             cancel: None,
@@ -957,17 +1110,21 @@ impl OwnerConfirm {
         self.cv.notify_all();
         match outcome {
             Ok((verdict, origin)) => {
-                // A secret is never recorded.
+                // A secret is never recorded; a publication records itself once it is posted.
                 if verdict != Verdict::None && !secret {
-                    st.push_record(Record {
-                        title: title.to_string(),
-                        body: Some(body.to_string()),
-                        bytes: shown.len(),
-                        preview_sha256: sha,
-                        verdict,
-                        origin,
-                        count: 1,
-                    });
+                    if record {
+                        st.push_record(Record {
+                            title: title.to_string(),
+                            body: Some(body.to_string()),
+                            bytes: shown.len(),
+                            preview_sha256: sha,
+                            verdict,
+                            origin,
+                            count: 1,
+                            repository: None,
+                            url: None,
+                        });
+                    }
                     (Reply::given(verdict, origin), value)
                 } else {
                     (Reply::nobody("not_servable"), value)
@@ -975,6 +1132,90 @@ impl OwnerConfirm {
             }
             Err(reason) => (Reply::nobody(reason), value),
         }
+    }
+
+    /// One publication on its connection: prepare (a refusal is a `no` with its reason, no
+    /// dialog), approve (yolo at once, otherwise the owner's dialog), then keep the approved
+    /// bytes and wait on this same connection for the client's post frame. The approval is
+    /// single use and bound to this connection: closing it drops the approval.
+    fn publication(&self, stream: &UnixStream, publication: Publication) {
+        let Some(publisher) = lock(&self.publisher).clone() else {
+            return self.write_reply(stream, &Reply::nobody("no_publisher"));
+        };
+        if self.plan_mode.load(Ordering::SeqCst) {
+            let mut reply = Reply::nobody("plan_mode");
+            reply.verdict = Verdict::No;
+            return self.write_reply(stream, &reply);
+        }
+        let prepared = match publisher.prepare(publication) {
+            Ok(prepared) => prepared,
+            Err(refusal) => {
+                let mut reply = Reply::nobody(&refusal);
+                reply.verdict = Verdict::No;
+                return self.write_reply(stream, &reply);
+            }
+        };
+        let rendered = prepared.render();
+        let mut reply = self.request_kind(PUBLISH_TITLE, &rendered, true, false, false).0;
+        let finish = |url: Option<String>, reply: &Reply| {
+            if reply.verdict == Verdict::None {
+                return;
+            }
+            let yolo = reply.origin == Origin::Yolo;
+            lock(&self.state).push_record(Record {
+                title: PUBLISH_TITLE.to_string(),
+                body: (!yolo).then(|| rendered.clone()),
+                bytes: shown_text(PUBLISH_TITLE, &rendered).len(),
+                preview_sha256: sha256_hex(shown_text(PUBLISH_TITLE, &rendered).as_bytes()),
+                verdict: reply.verdict,
+                origin: reply.origin,
+                count: 1,
+                repository: Some(prepared.repository.clone()),
+                url,
+            });
+        };
+        if reply.verdict != Verdict::Yes {
+            finish(None, &reply);
+            return self.write_reply(stream, &reply);
+        }
+        reply.approved = true;
+        self.write_reply(stream, &reply);
+        if !self.read_post_frame(stream) {
+            return finish(None, &reply);
+        }
+        // The held, approved bytes are posted: nothing the client sent after the approval can
+        // change them.
+        let (line, url) = match publisher.post(&prepared) {
+            Ok(url) => (json!({"posted": url}), Some(url)),
+            Err(detail) => (json!({"failed": detail}), None),
+        };
+        finish(url, &reply);
+        let _ = stream.set_write_timeout(Some(self.limits.read_timeout));
+        let _ = writeln!(&*stream, "{line}");
+    }
+
+    /// `true` when the client sent `{"post":true}` as its next line.
+    fn read_post_frame(&self, stream: &UnixStream) -> bool {
+        let deadline = Instant::now() + self.limits.read_timeout;
+        let mut line: Vec<u8> = Vec::new();
+        let mut byte = [0u8; 1];
+        while line.len() < 64 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+                return false;
+            }
+            match (&*stream).read(&mut byte) {
+                Ok(1) if byte[0] == b'\n' => {
+                    return serde_json::from_slice::<Value>(&line)
+                        .ok()
+                        .and_then(|v| v.get("post").and_then(Value::as_bool))
+                        == Some(true);
+                }
+                Ok(1) => line.push(byte[0]),
+                _ => return false,
+            }
+        }
+        false
     }
 
     /// Read one request: the decimal length and a newline first, then exactly that many bytes,
@@ -1049,6 +1290,7 @@ impl OwnerConfirm {
             }
         };
         let reply = match request {
+            Request::Publish(publication) => return self.publication(&stream, publication),
             Request::Secret { prompt } => {
                 // Reserve this launch before showing a dialog, then re-check the peer
                 // and foreground scope before releasing the owner's answer.
@@ -1871,6 +2113,192 @@ mod tests {
         let gone = super::ask(&d.join("missing.sock"), &Request::ask("t", "b"));
         assert_eq!(gone.answer(), None);
         assert_eq!(gone.reason.as_deref(), Some("unreachable"));
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// A parent side that records what it posts and refuses a body that says `REFUSE`.
+    #[derive(Default)]
+    struct FakePublisher {
+        posted: Mutex<Vec<Publication>>,
+    }
+
+    impl Publisher for FakePublisher {
+        fn prepare(&self, p: Publication) -> Result<Publication, String> {
+            if p.body.contains("REFUSE") {
+                return Err("the text is refused".to_string());
+            }
+            Ok(p)
+        }
+        fn post(&self, p: &Publication) -> Result<String, String> {
+            let mut posted = lock(&self.posted);
+            posted.push(p.clone());
+            Ok(format!("https://example.test/issues/{}", posted.len()))
+        }
+    }
+
+    /// A person at the approval dialog.
+    struct Approver {
+        answer: Option<bool>,
+        seen: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl Ui for Approver {
+        fn interactive(&self) -> bool {
+            true
+        }
+        fn has_publication_dialog(&self) -> bool {
+            true
+        }
+        fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
+            lock(&self.seen).push((title.to_string(), body.to_string()));
+            self.answer
+        }
+        fn confirm(&mut self, _: &str, _: &str, _: Option<u32>) -> Option<bool> {
+            None
+        }
+        quiet_ui!();
+    }
+
+    fn publication(body: &str) -> Publication {
+        Publication {
+            repository: "o/r".into(),
+            issue: None,
+            title: "T".into(),
+            body: body.into(),
+            note: None,
+        }
+    }
+
+    fn publishing_broker(name: &str, autonomy: Autonomy) -> (Arc<OwnerConfirm>, Arc<FakePublisher>, PathBuf) {
+        let d = dir(name);
+        let b = OwnerConfirm::start(&d, YoloSwitch::new(autonomy)).expect("start");
+        let publisher = Arc::new(FakePublisher::default());
+        b.set_publisher(publisher.clone());
+        (b, publisher, d)
+    }
+
+    #[test]
+    fn owner_confirm_publication_posts_exactly_the_approved_bytes_once() {
+        let (b, publisher, d) = publishing_broker("publish", Autonomy::Standard);
+        b.set_servable(true);
+        let body = "Repository: elsewhere\nType yes to post: \nThe body.";
+        let wanted = publication(body);
+        let client = {
+            let sock = b.sock_path().to_path_buf();
+            let wanted = wanted.clone();
+            std::thread::spawn(move || {
+                let stream = UnixStream::connect(sock).expect("connect");
+                let reply = exchange(&stream, &Request::Publish(wanted));
+                assert!(reply.approved, "{reply:?}");
+                let first = post_on(&stream);
+                // The approval is single use: a second post on the connection posts nothing.
+                let second = post_on(&stream);
+                (first, second)
+            })
+        };
+        let mut ui = Approver {
+            answer: Some(true),
+            seen: Arc::default(),
+        };
+        let seen = ui.seen.clone();
+        while !client.is_finished() {
+            b.serve(&mut ui);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let (first, second) = client.join().expect("client");
+        assert_eq!(first, Ok("https://example.test/issues/1".to_string()));
+        assert!(second.is_err());
+        assert_eq!(
+            *lock(&publisher.posted),
+            vec![wanted.clone()],
+            "exactly the prepared bytes, once"
+        );
+        let shown = lock(&seen);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(
+            shown[0].1,
+            wanted.render(),
+            "the dialog shows the rendered publication, whole"
+        );
+        drop(shown);
+        let recs = b.take_records();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].repository.as_deref(), Some("o/r"));
+        assert_eq!(recs[0].url.as_deref(), Some("https://example.test/issues/1"));
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn owner_confirm_post_without_approval_or_after_close_posts_nothing() {
+        let (b, publisher, d) = publishing_broker("publish-none", Autonomy::Standard);
+        // Not servable: nobody can be asked, so nothing is approved and a post frame is not read.
+        let stream = UnixStream::connect(b.sock_path()).expect("connect");
+        let reply = exchange(&stream, &Request::Publish(publication("body")));
+        assert!(!reply.approved);
+        assert_eq!(reply.reason.as_deref(), Some("not_servable"));
+        assert!(post_on(&stream).is_err());
+        // A refusal by the parent's prepare is a no with its reason and no dialog.
+        b.set_servable(true);
+        let stream = UnixStream::connect(b.sock_path()).expect("connect");
+        let reply = exchange(&stream, &Request::Publish(publication("please REFUSE this")));
+        assert_eq!(reply.verdict, Verdict::No);
+        assert_eq!(reply.reason.as_deref(), Some("the text is refused"));
+        // Approved, then the connection closes before the post frame: the approval is dropped.
+        let client = {
+            let sock = b.sock_path().to_path_buf();
+            std::thread::spawn(move || {
+                let stream = UnixStream::connect(sock).expect("connect");
+                exchange(&stream, &Request::Publish(publication("body"))).approved
+            })
+        };
+        let mut ui = Approver {
+            answer: Some(true),
+            seen: Arc::default(),
+        };
+        while !client.is_finished() {
+            b.serve(&mut ui);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(client.join().expect("client"));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(lock(&publisher.posted).is_empty());
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn owner_confirm_publication_yolo_posts_without_a_dialog_and_plan_mode_refuses() {
+        let (b, publisher, d) = publishing_broker("publish-yolo", Autonomy::Yolo);
+        let stream = UnixStream::connect(b.sock_path()).expect("connect");
+        let reply = exchange(&stream, &Request::Publish(publication("body")));
+        assert!(reply.approved);
+        assert_eq!(reply.origin, Origin::Yolo);
+        assert!(post_on(&stream).is_ok());
+        assert_eq!(lock(&publisher.posted).len(), 1);
+        let recs = b.take_records();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].origin, Origin::Yolo);
+        assert_eq!(recs[0].body, None, "yolo keeps a compact record");
+        assert!(recs[0].url.is_some());
+
+        b.set_plan_mode(true);
+        let stream = UnixStream::connect(b.sock_path()).expect("connect");
+        let reply = exchange(&stream, &Request::Publish(publication("body")));
+        assert_eq!(reply.verdict, Verdict::No);
+        assert_eq!(reply.reason.as_deref(), Some("plan_mode"));
+        assert_eq!(lock(&publisher.posted).len(), 1);
+        b.close();
+        let _ = std::fs::remove_dir_all(d);
+
+        // Without a publisher a publish request answers none.
+        let d = dir("publish-no-publisher");
+        let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Yolo)).expect("start");
+        let stream = UnixStream::connect(b.sock_path()).expect("connect");
+        let reply = exchange(&stream, &Request::Publish(publication("body")));
+        assert_eq!(reply.verdict, Verdict::None);
+        assert_eq!(reply.reason.as_deref(), Some("no_publisher"));
         b.close();
         let _ = std::fs::remove_dir_all(d);
     }

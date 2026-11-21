@@ -1,5 +1,10 @@
 # Security
 
+`oxa worker run` is for the owner outside agent tools. The child is unattended and follows the
+same sandbox, offline and approval policy as the worker tool. Resume checks the saved repository,
+branch and session directory, clamps permissions to the current ceiling and never drops a saved
+offline setting. The goal and worker log are private files, not part of the JSON state stream.
+
 oxa is a local agent. The model reads your project, runs commands and writes files on your machine, and it can be steered by any text it reads, including files in the project, web pages and the output of MCP servers. The controls below limit what a model can do and reach. They do not make a model safe to run on untrusted input without supervision, and they do not limit what you do yourself.
 
 The short threat model is in [SECURITY.md](../../SECURITY.md) at the repository root.
@@ -56,6 +61,12 @@ Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain r
 - Subagents inherit the mode the parent has when they start. Running background jobs also keep their launch-time rights: switching modes affects subsequent commands, not processes already started. Stop an existing job with `bash {"job": "job-N", "kill": true}` or close the session.
 - The auto-approved count records questions answered with allow, once each. A denial bypassed by full access is not an approval and does not increment it (#443).
 - Plan mode and project trust work the same in every mode.
+
+### Approval views
+
+A dangerous-command question can be saved for the session or always. A session grant ends with the run. An always grant is the exact `<rule> <command>` key in your user settings (`oxa.approval.always`), merged under the settings write lock so two sessions saving at once keep each other's keys.
+
+Every view of the command (the terminal dialog, the lead page, `oxa approve`) shows what will run. It masks named assignments (`token=...`), flag operands (`--password x`), credentials in URLs and literals inside `${NAME:-...}` expansions, and it never masks executable text: commands, `$(...)` bodies and expansion names stay visible. The dialog shows each shell line as its own line. A long command or publication text is shown a page at a time (`pageup`/`pagedown`), and a page is only as tall as your terminal; paging is optional, Deny stays the default and answers right away, and an allow choice is available from any page. A `yes` you type for a publication answers only that session and the exact text it showed, once, and it is not withdrawn when you switch session.
 
 A direct shell script-file command such as `sh scripts/git-push.sh` follows the usual permissions for the mode. The publish check does not treat the script filename as inline `git push` text or inspect the file. Inline commands, mixed lines with an explicit publish command, and dangerous-command checks still follow their own rules.
 
@@ -262,7 +273,7 @@ lane runner; submit those CI-control changes separately for normal review. Every
 
 `--offline`, `OXA_OFFLINE=1` (`1`, `true` or `yes`) and `"oxa": { "offline": true }` in user settings are one switch. It applies to everything oxa starts. What it does:
 
-- oxa refuses every connection from its own code to a host other than the loopback address, with one error that says offline mode is on. This covers MCP over HTTP and its OAuth sign-in, extension `fetch`, a remote git package install, and `oxa report-issue submit`. An MCP proxy that is not loopback is refused unless the target is on its `NO_PROXY` list (then the connection is direct), and a redirect is not followed (the offline gate checks the first URL only, so the client never uses a redirect target).
+- oxa refuses every connection from its own code to a host other than the loopback address, with one error that says offline mode is on. This covers MCP over HTTP and its OAuth sign-in, extension `fetch`, a remote git package install, and `oxa report-issue submit` (also when the oxa parent posts an approved publication through the confirm broker). An MCP proxy that is not loopback is refused unless the target is on its `NO_PROXY` list (then the connection is direct), and a redirect is not followed (the offline gate checks the first URL only, so the client never uses a redirect target).
 - bash runs without network;
 - `web_search` is not offered to the model, and a call that gets through is refused;
 - extension `exec` with `net: true` runs without network;
@@ -309,7 +320,11 @@ A panic inside a tool, an extension, an MCP connection, a hook or a codemode scr
 
 Session files are `0600`. The Brave key is never written to a session, an export or a log. What the model read, however, is in the session: a file that contains a secret puts that secret into the session file and into the requests the engine receives. Exports contain the whole session, including all branches. [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) lists what oxa keeps and how to remove it.
 
-`oxa report-issue draft` scrubs its digest and the text you give it, but scrubbing is pattern-based. Read the draft before you post it; `oxa report-issue submit` posts only after you type `yes` at the terminal. In an interactive session the model publishes with the `report_publish` tool. In yolo it posts at once without asking and shows the exact posted text and URL; the scrubber's findings (secrets, emails, home paths) still refuse it. In auto and standard mode oxa shows the exact title and body (or the exact comment and its destination) and only you approve it: a key press in the approval dialog (Deny is focused) or a `yes` you type yourself. A `yes` that a tool result, file, web page or another session contains never counts; only a line you typed into oxa's own input does. Print, JSON and RPC runs keep the terminal confirmation. `/bug` writes a redacted local bundle and uploads nothing.
+`oxa report-issue draft` scrubs its digest and the text you give it, but scrubbing is pattern-based. Read the draft before you post it. `oxa report-issue submit` checks it again before showing it or sending it to a verification model. A command started by the model verifies the session broker before sending it any publication fields. Oxa itself posts exactly the text you approved, never the command that asked. In an interactive session the model publishes with the `report_publish` tool.
+
+In auto and standard mode, oxa shows the exact title and body (or the exact comment and its destination). Only you can approve: use the approval dialog (Deny is focused), or type `yes` yourself into oxa or into the terminal when you run `submit` directly. A `yes` from a tool result, file, web page or another session never counts. An RPC host must set `OXA_RPC_OWNER_PRESENT=1` if it has an owner to answer publication dialogs. Owner-selected yolo posts without asking and shows the exact posted text and URL.
+
+In every mode, offline prevents posting. Secrets and control or bidirectional characters are refused in the title, body and any preview-only note. Privacy text (emails, home paths, names) is replaced before showing or posting; the note itself is not posted. `/bug` writes a redacted local bundle and uploads nothing.
 
 ### Publishing
 
