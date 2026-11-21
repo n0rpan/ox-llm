@@ -1880,14 +1880,14 @@ mod capacity_tests {
             .render(Page::Workers, false)
             .contains("No per-host capacity configured"));
         // The owner edits the user file; the next read shows it and live refresh fires.
-        write_user(&dirs, serde_json::json!({"air":6}));
+        write_user(&dirs, serde_json::json!({"host-a":6}));
         let six = source.fingerprint();
         assert_ne!(unset, six);
-        assert!(source.render(Page::Workers, false).contains("air unknown/6"));
+        assert!(source.render(Page::Workers, false).contains("host-a unknown/6"));
         // A further edit moves it again; reverting returns to the prior fingerprint.
-        write_user(&dirs, serde_json::json!({"air":8}));
+        write_user(&dirs, serde_json::json!({"host-a":8}));
         assert_ne!(six, source.fingerprint());
-        write_user(&dirs, serde_json::json!({"air":6}));
+        write_user(&dirs, serde_json::json!({"host-a":6}));
         assert_eq!(six, source.fingerprint());
     }
 
@@ -1901,12 +1901,12 @@ mod capacity_tests {
         std::fs::create_dir_all(project.parent().unwrap()).unwrap();
         std::fs::write(
             &project,
-            serde_json::json!({"oxa":{"lead":{"capacity":{"air":6}}}}).to_string(),
+            serde_json::json!({"oxa":{"lead":{"capacity":{"host-a":6}}}}).to_string(),
         )
         .unwrap();
         let html = source.render(Page::Workers, false);
         assert!(html.contains("No per-host capacity configured"), "{html}");
-        assert!(!html.contains("air unknown/6"), "{html}");
+        assert!(!html.contains("host-a unknown/6"), "{html}");
         // Even a trusted project load keeps the key user-only: user_value never sees it.
         assert_eq!(
             Settings::load(&dirs, &test.work(), true).user_value("oxa.lead.capacity"),

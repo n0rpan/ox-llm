@@ -562,7 +562,7 @@ fn capacity(html: &mut String, view: &View<'_>) {
     };
     let facts = crate::lead::capacity::derive(configured, view.board, view.situation);
     if facts.hosts.is_empty() {
-        html.push_str("<p>No per-host capacity configured. Set <code>oxa.lead.capacity</code> in user settings, for example <code>{\"air\": 6}</code>.</p>");
+        html.push_str("<p>No per-host capacity configured. Set <code>oxa.lead.capacity</code> in user settings, for example <code>{\"host-a\": 6}</code>.</p>");
     } else {
         html.push_str("<p class=muted>running workers / configured capacity</p><ul>");
         for row in &facts.hosts {
@@ -1005,8 +1005,8 @@ mod tests {
             standing_revision: 1,
             goal: None,
             running: vec![
-                running("t1", "air"),
-                running("t2", "air"),
+                running("t1", "host-a"),
+                running("t2", "host-a"),
                 running("t3", "<b>host"),
             ],
             local_accepted: Vec::new(),
@@ -1030,7 +1030,7 @@ mod tests {
                 evidence_incomplete: None,
             }],
         };
-        let capacity = Capacity::parse(Some(&serde_json::json!({"air": 6})));
+        let capacity = Capacity::parse(Some(&serde_json::json!({"host-a": 6})));
         let view = View {
             board: Some(&board),
             situation: Some(&situation),
@@ -1040,7 +1040,7 @@ mod tests {
         for page in [Page::Home, Page::Workers] {
             let html = content_for(page, &view, 100);
             assert!(html.contains("id=capacity"), "{page:?}");
-            assert!(html.contains("air 2/6"), "{page:?}");
+            assert!(html.contains("host-a 2/6"), "{page:?}");
             // An observed but unconfigured host keeps an unknown capacity, and its
             // name is escaped rather than rendered as markup.
             assert!(html.contains("&lt;b&gt;host 1/unknown"), "{page:?}");
@@ -1057,13 +1057,13 @@ mod tests {
         let html = content_for(Page::Workers, &View::default(), 100);
         assert!(html.contains("Capacity unavailable"));
         // Configured but no situation or board: use and ready stay unknown, never zero.
-        let capacity = Capacity::parse(Some(&serde_json::json!({"air": 6})));
+        let capacity = Capacity::parse(Some(&serde_json::json!({"host-a": 6})));
         let view = View {
             capacity: Some(&capacity),
             ..Default::default()
         };
         let html = content_for(Page::Workers, &view, 100);
-        assert!(html.contains("air unknown/6"));
+        assert!(html.contains("host-a unknown/6"));
         assert!(html.contains("Ready depth unavailable"));
         assert!(html.contains("Stuck work unavailable"));
         // An empty configuration with no observation offers the set-it hint.

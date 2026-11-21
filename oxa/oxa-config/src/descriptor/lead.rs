@@ -53,7 +53,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         Group::Lead,
         "Lead",
         "Worker capacity per host",
-        "Workers the owner allows per host, e.g. {\"air\": 6}. Unset = not stated.",
+        "Workers the owner allows per host, e.g. {\"host-a\": 6}. Unset = not stated.",
     )
     .key(Kind::Object, "{}")
     .control(Control::Map(MapKind::Number))

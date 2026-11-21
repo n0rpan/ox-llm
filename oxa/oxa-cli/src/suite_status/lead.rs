@@ -276,25 +276,25 @@ mod tests {
         assert!(section_for(&test, &dirs)["capacity"].is_null());
         write_settings(
             &dirs,
-            &json!({"oxa": {"lead": {"capacity": {"air": 6, "n0rpan": 8, "bad name": 3}}}}),
+            &json!({"oxa": {"lead": {"capacity": {"host-a": 6, "host-b": 8, "bad name": 3}}}}),
         );
         // The invalid host entry is ignored; the valid capacities are reported.
         assert_eq!(
             section_for(&test, &dirs)["capacity"],
-            json!({"air": 6, "n0rpan": 8})
+            json!({"host-a": 6, "host-b": 8})
         );
         // A project file cannot change the owner's capacity.
         let project_settings = dirs.project_settings_file(&test.work());
         fs::create_dir_all(project_settings.parent().unwrap()).unwrap();
         fs::write(
             &project_settings,
-            json!({"oxa": {"lead": {"capacity": {"air": 99}}}}).to_string(),
+            json!({"oxa": {"lead": {"capacity": {"host-a": 99}}}}).to_string(),
         )
         .unwrap();
         let merged = Settings::load(&dirs, &test.work(), true);
         assert_eq!(
             section(&merged, &dirs, &test.work(), &Env::from_pairs(&[]))["capacity"],
-            json!({"air": 6, "n0rpan": 8})
+            json!({"host-a": 6, "host-b": 8})
         );
     }
 

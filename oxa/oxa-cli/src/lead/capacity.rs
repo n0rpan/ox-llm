@@ -184,13 +184,13 @@ mod tests {
     #[test]
     fn parses_valid_entries_and_ignores_invalid_ones() {
         let value = json!({
-            "air": 6, "n0rpan": 8, "zero": 0,
+            "host-a": 6, "host-b": 8, "zero": 0,
             "bad name": 4, "": 3, "neg": -1, "frac": 1.5, "text": "6",
             "huge": u64::from(u32::MAX) + 1,
         });
         let capacity = Capacity::parse(Some(&value));
-        assert_eq!(capacity.hosts.get("air"), Some(&6));
-        assert_eq!(capacity.hosts.get("n0rpan"), Some(&8));
+        assert_eq!(capacity.hosts.get("host-a"), Some(&6));
+        assert_eq!(capacity.hosts.get("host-b"), Some(&8));
         assert_eq!(capacity.hosts.get("zero"), Some(&0));
         // bad name, empty, neg, frac, text, huge: six ignored, never a refusal.
         assert_eq!(capacity.ignored(), 6);
@@ -200,25 +200,25 @@ mod tests {
     #[test]
     fn unset_and_non_object_are_empty_not_errors() {
         assert!(Capacity::parse(None).is_empty());
-        assert!(Capacity::parse(Some(&json!("air"))).is_empty());
+        assert!(Capacity::parse(Some(&json!("host-a"))).is_empty());
         assert!(Capacity::parse(Some(&json!({}))).is_empty());
         assert_eq!(Capacity::parse(None).ignored(), 0);
     }
 
     #[test]
     fn host_rows_union_configured_and_observed_with_unknown_sides() {
-        let capacity = Capacity::parse(Some(&json!({"air": 6, "n0rpan": 8})));
+        let capacity = Capacity::parse(Some(&json!({"host-a": 6, "host-b": 8})));
         let situation = snapshot(vec![
-            running("t1", "air"),
-            running("t2", "air"),
+            running("t1", "host-a"),
+            running("t2", "host-a"),
             running("t3", "other"),
         ]);
         let facts = derive(&capacity, None, Some(&situation));
         let row = |host: &str| facts.hosts.iter().find(|r| r.host == host).unwrap();
-        assert_eq!(row("air").capacity, Some(6));
-        assert_eq!(row("air").used, Some(2));
+        assert_eq!(row("host-a").capacity, Some(6));
+        assert_eq!(row("host-a").used, Some(2));
         // Configured but idle: observed use is a real zero, not unknown.
-        assert_eq!(row("n0rpan").used, Some(0));
+        assert_eq!(row("host-b").used, Some(0));
         // Observed but unconfigured: capacity stays unknown.
         assert_eq!(row("other").capacity, None);
         assert_eq!(row("other").used, Some(1));
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn absent_situation_leaves_use_unknown_not_zero() {
-        let capacity = Capacity::parse(Some(&json!({"air": 6})));
+        let capacity = Capacity::parse(Some(&json!({"host-a": 6})));
         let facts = derive(&capacity, None, None);
         assert_eq!(facts.hosts.len(), 1);
         assert_eq!(facts.hosts[0].capacity, Some(6));
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn stuck_reports_stalled_idle_and_blocked_subjects() {
-        let mut situation = snapshot(vec![running("t1", "air")]);
+        let mut situation = snapshot(vec![running("t1", "host-a")]);
         situation.incidents = vec![
             Incident {
                 id: "i1".into(),
@@ -275,7 +275,7 @@ mod tests {
             },
             Incident {
                 id: "i2".into(),
-                subject: Subject::Host("air".into()),
+                subject: Subject::Host("host-a".into()),
                 kind: IncidentKind::HostIdle,
                 evidence: None,
             },
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(
             facts.stuck,
             Some(vec![
-                "host air idle".to_owned(),
+                "host-a idle".to_owned(),
                 "task t1 stalled".to_owned(),
                 "task t2 blocked (ci)".to_owned(),
             ])

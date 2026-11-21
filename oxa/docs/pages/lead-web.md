@@ -162,7 +162,7 @@ the pages did not read before. The server no longer makes its own partial read.
   "Live workers refused" and is left untouched.
 - **Capacity** (home and Workers pages) shows the owner's user-only `oxa.lead.capacity`
   map next to observed use: one row per host as `running workers / configured capacity`,
-  for example `air 2/6`. A host the owner did not configure shows an unknown capacity;
+  for example `host-a 2/6`. A host the owner did not configure shows an unknown capacity;
   without a runner observation the use is unknown, never zero. It also reports the Ready
   queue depth (eligible items the loop would propose first) and the stuck work the
   situation reports (stalled tasks, idle hosts, blocked task/host subjects). A board or
