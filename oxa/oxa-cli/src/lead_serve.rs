@@ -839,7 +839,7 @@ impl Source {
                     reply: latest.as_ref().map(|latest| &latest.reply),
                     proposal: latest.as_ref().and_then(|latest| latest.proposal.as_ref()),
                     confirmed: latest.as_ref().is_some_and(|latest| latest.confirmed),
-                    entries: entries.flatten().as_deref(),
+                    entries: entries.as_deref(),
                 }),
             board: observed.map(|o| &o.board),
             situation: observed.and_then(|o| o.situation.as_ref()),
