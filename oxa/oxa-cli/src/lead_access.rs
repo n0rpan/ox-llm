@@ -55,6 +55,10 @@ impl Config {
                 "port",
                 "allowed_identities",
                 "proxy",
+                // The in-process sampler's settings (#2262): read by `lead_sampler`, never
+                // part of listener or identity authority.
+                "sample_secs",
+                "repo",
             ]
             .contains(&key.as_str())
         }) {

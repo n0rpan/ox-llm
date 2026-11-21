@@ -1322,12 +1322,17 @@ fn with_configured_lead(
     line.push('\n');
     std::fs::write(&board, line).unwrap();
     std::fs::set_permissions(&board, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // The project is trusted interactively, as the sampler requires; settings stay flat, since
+    // `oxa.lead.serve` accepts only its listener and sampler keys.
+    test.write(
+        "home/.oxa/agent/trust.json",
+        &serde_json::json!({test.work().to_str().unwrap(): true}).to_string(),
+    );
     let mut settings = serde_json::json!({"oxa":{
-        "defaultProjectTrust":"always",
+        "github":{"tokenCommand":[mint.to_str().unwrap()]},
         "lead":{"serve":{"sample_secs":1,"repo":"example/repo","enabled":true,"port":port}},
     }});
-    // The mint helper answers with the checked token; a configure step may replace it.
-    settings["oxa"]["github"]["tokenCommand"] = serde_json::json!([mint.to_str().unwrap()]);
+    // A configure step may replace the mint helper.
     configure(&mut settings, &test.home());
     test.write("home/.oxa/agent/settings.json", &settings.to_string());
     drop(reservation);
