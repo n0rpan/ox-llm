@@ -29,14 +29,20 @@ thread_local! {
     static AGENT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 /// The bearer header of the local client token the running lead wrote for its owner.
+/// The start line is printed before the file is published, so wait briefly for it.
 fn bearer() -> String {
     AGENT.with(|agent| {
-        agent
+        let dir = agent
             .borrow()
-            .as_ref()
-            .and_then(|dir| std::fs::read_to_string(dir.join("lead-client-token")).ok())
-            .map(|token| format!("Authorization: Bearer {}\r\n", token.trim()))
-            .unwrap_or_default()
+            .clone()
+            .expect("the lead start recorded its agent dir");
+        for _ in 0..200 {
+            if let Ok(token) = std::fs::read_to_string(dir.join("lead-client-token")) {
+                return format!("Authorization: Bearer {}\r\n", token.trim());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("the running lead published no client token");
     })
 }
 fn get(port: u16, path: &str, authority: &str, extra: &str) -> String {

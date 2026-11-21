@@ -674,6 +674,25 @@ Report honestly: what you changed, what you ran, what still fails or is unchecke
 /// question (see [`ends_unfinished`]).
 pub const HEADLESS_NUDGE: &str = "Nobody can answer you and the task is not finished. Do not stop on a plan, a promise or a question: do the next step now with a tool call. If something blocks you, say what blocks you and what you tried; if you are done, say what you ran to check it.";
 
+/// The finish decision's nudge for a run that changed files and ran no passing check since
+/// (`oxa.done.proveIt`). One per run.
+pub const PROVE_IT_NUDGE: &str = "You changed files and no check has passed since your last change. Run the project's check for what you changed (tests, build or lint) and fix what fails, or say in one line why no check exists. Then finish.";
+
+/// The finish decision's nudge for background jobs still running when a goal completes or a
+/// headless run ends (`oxa.done.waitForJobs`). One per run.
+pub fn jobs_nudge(ids: &[String], headless: bool) -> String {
+    let names = ids.join(", ");
+    let ends = if headless {
+        " This run is headless: the jobs are stopped when it ends."
+    } else {
+        ""
+    };
+    let first = &ids[0];
+    format!(
+        "Background jobs are still running: {names}.{ends} Either wait for them (`wait` with until {{\"kind\":\"job_done\",\"job\":\"{first}\"}}, or `bash` with {{\"job\":\"{first}\",\"wait_s\":60}}) and use their result, or stop them with `bash` {{\"job\":\"{first}\",\"kill\":true}} if they are not needed. Then finish."
+    )
+}
+
 /// FH-N2: whether a final reply ends on a plan or a promise ("I will ...", "let me ...", "next
 /// step ...", a line ending in a colon), or on a question when `edited` is false (no file
 /// changed in the run: after edits a closing "anything else?" is politeness, not an open
@@ -721,6 +740,13 @@ pub fn ends_unfinished(text: &str, edited: bool) -> bool {
 }
 
 /// Goal controls are declared only for an explicitly active stored goal.
+/// The continuation after a reply that matched the output schema while the goal is still pursued:
+/// the answer is recorded and does not end the goal.
+pub const GOAL_CONTINUE_AFTER_ANSWER: &str = "Your answer was recorded; it does not end the goal. Next, call wait (until something changes), do the next piece of work, or call goal_done with evidence if the goal is complete or blocked.";
+
+/// The one nudge after a second reply in a row without an action.
+pub const GOAL_IDLE_NUDGE: &str = "Two replies in a row had no action. Do one of these now: make a tool call for the next piece of work; call wait with seconds and a reason if you are waiting for something; or call goal_done with evidence if the goal is complete or blocked.";
+
 pub const GOAL_CONTINUE: &str = "Continue pursuing the stored goal. Use wait when no work is available. Call goal_done with evidence only when complete or blocked.";
 pub fn goal_start(objective: &str) -> String {
     format!("Pursue this stored goal until complete or blocked. Use wait when no work is available; call goal_done with evidence to finish.\n\n{objective}")
@@ -728,7 +754,7 @@ pub fn goal_start(objective: &str) -> String {
 pub const GOAL_DONE_DESCRIPTION: &str =
     "End the active goal with a complete or blocked status and concrete evidence.";
 pub const GOAL_DONE_SCHEMA: &str = r#"{"type":"object","properties":{"status":{"type":"string","enum":["complete","blocked"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["status","evidence"],"additionalProperties":false}"#;
-pub const GOAL_WAIT_DESCRIPTION: &str = "Wait 1-86400 s; typed input ends it. until: ci{sha,workflow}, pr_merged/pr_view/pr_checks{pr}, job_done{job}, run_log_failed{run}, issue_view{issue}.";
+pub const GOAL_WAIT_DESCRIPTION: &str = "Wait 1-86400 s; typed input ends it. until: ci{sha,workflow} and pr_merged{pr} first, then pr_view/pr_checks{pr}, pr_activity{pr,head}, job_done{job}, run_log_failed{run}, issue_view{issue}. E.g. {\"seconds\":3600,\"until\":{\"kind\":\"ci\",\"sha\":\"<40-hex>\",\"workflow\":\"lane\"}}.";
 pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer"},"reason":{"type":"string"},"until":{"type":"object"}},"required":["seconds","reason"]}"#;
 
 #[cfg(test)]

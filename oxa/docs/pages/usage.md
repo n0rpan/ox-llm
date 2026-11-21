@@ -54,7 +54,7 @@ The table lists the default bindings. Every binding can be changed in `~/.oxa/ag
 | Key | Action |
 |---|---|
 | Enter while a turn runs | steer: the text is delivered after the running tool calls |
-| Alt+Enter | queue a follow-up: delivered when the run finishes |
+| Alt+Enter | queue a follow-up: delivered when the run finishes (a goal run that keeps calling tools delivers it after `oxa.goal.followUpMaxWaitSeconds`) |
 | Alt+Up | move queued messages back into the editor |
 | Escape while a turn runs | abort the turn; queued messages return to the editor |
 | Escape twice on an empty editor, idle | open `/tree` (or `/fork`, see `doubleEscapeAction`) |
@@ -65,7 +65,7 @@ The table lists the default bindings. Every binding can be changed in `~/.oxa/ag
 | Alt+M | cycle the permission mode: standard, auto, yolo |
 | Ctrl+Alt+O | toggle yolo: full access, no prompts, bash without the sandbox |
 
-Queued steering and follow-up messages show above the editor as `Steering:` and `Follow-up:` lines. `steeringMode` and `followUpMode` (see [settings.md](settings.md)) decide whether the queue is sent one message at a time or all at once.
+Queued steering and follow-up messages show above the editor as `Steering:` and `Follow-up:` lines. `steeringMode` and `followUpMode` (see [settings.md](settings.md)) decide whether the queue is sent one message at a time or all at once. A message that is still queued when the turn ends is sent as the next prompt, also when the turn ended in a failed request (it is sent once; a request that fails again is not repeated). After you stop a turn, or when it is blocked by a budget, offline mode or an exhausted quota, the queue is kept: Alt+Up brings it back into the editor. Messages from `oxa send` appear in the same queues: a steer under `Steering:`, a `--follow-up` under `Follow-up:` (see [cli.md](cli.md#send-a-session-a-message)).
 
 ### Display and models
 
@@ -135,7 +135,7 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/compact [instructions]` | compact the context now, with optional guidance for the summary |
 | `/new` | start a new session |
 | `/resume` | open the sessions picker |
-| `/goal [text\|clear\|pause\|resume]` | show the session goal; with text, set it and start a run that pursues it until complete or blocked; `clear`, `pause` or `resume` control it; a goal that gets two replies without a tool call shows a warning and keeps pursuing (with `oxa.goal.idlePause` it stops as paused, with a notice giving the reason and `/goal resume`) |
+| `/goal [text\|clear\|pause\|resume]` | show the session goal; with text, set it and start a run that pursues it until complete or blocked; `clear`, `pause` or `resume` control it; a goal with no budget of its own that gets two replies without a tool call stops as paused by default, with a notice giving the reason and `/goal resume` (`oxa.onExceed.goalIdle` in the user settings chooses `warn`, `pause` or `stop`); a goal that only warns gets one nudge and then oxa waits itself before each next request (`oxa.goal.idleBackoffSeconds`, doubling, recorded; `0` turns the wait off), and a reply that matches the output schema is recorded as an answer and followed by `wait` or `goal_done`; `resume` works from any state except done or canceled, in the same session (a run that failed keeps the goal pursuing and records a warning with the error code; `--continue` in headless mode continues it) |
 | `/tree` | navigate the session tree; choose a branch or summarise the one you leave |
 | `/fork` | start a new session from an earlier user message |
 | `/clone` | duplicate the current session at the current point |

@@ -40,6 +40,7 @@ fn fixture() -> (TestEnv, serde_json::Value) {
         .unwrap();
     let gh = env.write("tmp/gh", r#"#!/bin/sh
 printf 'read\n' >> gh-calls
+printf '%s\n' "$*" >> gh-args
 if [ -e expect-input ]; then IFS= read -r expected < expect-input; [ "$GH_TOKEN" = "$expected" ] || exit 93; fi
 if [ -e held-pipe ]; then
   (n=0; while [ ! -e release-pipe ] && [ "$n" -lt 450 ]; do sleep 0.1; n=$((n+1)); done) &
@@ -347,6 +348,68 @@ fn refreshed_token_can_be_supplied_privately_by_the_caller() {
     );
     assert!(samples.next().is_none());
     assert!(!log.contains("synthetic-refreshed"));
+}
+
+#[test]
+fn app_reserve_defers_optional_reads_before_they_start_and_records_why() {
+    let (env, _) = fixture();
+    let resets_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 600;
+    fs::write(
+        env.work().join("app-quota-headers"),
+        format!("X-RateLimit-Resource: graphql\r\nX-RateLimit-Limit: 5000\r\nX-RateLimit-Remaining: 4000\r\nX-RateLimit-Reset: {resets_at}\r\n"),
+    )
+    .unwrap();
+    fs::write(env.work().join("expect-input"), "synthetic-token\n").unwrap();
+    let run = |extra: &str| {
+        let _ = fs::remove_file(env.work().join("gh-args"));
+        let mut child = command(
+            &env,
+            &format!("work board --shadow --repo example/repo --once --token-stdin --app-quota-shadow --lead-alarms {extra}"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"synthetic-token\n")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let log = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+        let sample: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        let calls = fs::read_to_string(env.work().join("gh-args")).unwrap_or_default();
+        (sample, calls)
+    };
+    // No reserve: today's behaviour, the queued-run read is launched and nothing is deferred.
+    let (sample, calls) = run("");
+    assert!(calls.contains("actions/runs?status=queued"), "{calls}");
+    assert!(sample.get("quota_deferred").is_none());
+    // A reserve with no core observation: the optional core read never starts, the board stays.
+    let (sample, calls) = run("--app-quota-reserve 100");
+    assert!(!calls.contains("actions/runs"), "{calls}");
+    assert!(sample["board"]["entries"].is_array());
+    let deferred = sample["quota_deferred"].as_array().unwrap();
+    assert_eq!(deferred.len(), 1, "{deferred:?}");
+    assert_eq!(deferred[0]["work"], "queued_run_pages");
+    assert_eq!(deferred[0]["resource"], "core");
+    assert_eq!(deferred[0]["awaiting_observation"], true);
+    // A window below the reserve defers the graphql panels read until its reset.
+    let (sample, _) = run("--app-quota-reserve 5000");
+    let panels = sample["quota_deferred"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["work"] == "lead_panels")
+        .expect("the panels read is deferred");
+    assert_eq!(panels["until"], resets_at);
 }
 
 #[test]
