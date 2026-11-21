@@ -107,8 +107,6 @@ fn undecided_falls_through_to_the_shipped_default() {
     // `project_trust` asks before the default resolves, so the shipped default trusts the
     // project without writing a decision the owner never made.
     assert!(!env.agent_dir().join("trust.json").exists(), "nothing saved");
-    let mut store = oxa_perm::TrustStore::load(&env.agent_dir().join("trust.json"));
-    assert_eq!(store.lookup(&env.work()), None);
 }
 
 /// An owner who wants the question (`defaultProjectTrust: "ask"`) keeps the old headless
@@ -127,7 +125,10 @@ fn ask_opt_in_skips_without_a_question() {
         !env.work().join("project-log.txt").exists(),
         "ask without a terminal skips the project's extension"
     );
-    assert!(err.contains("not trusted") && err.contains("local.js"), "{err}");
+    assert!(
+        err.contains("not trusted") && err.contains(".oxa/extensions"),
+        "{err}"
+    );
     assert!(!env.agent_dir().join("trust.json").exists(), "nothing saved");
 }
 

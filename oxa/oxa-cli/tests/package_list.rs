@@ -50,7 +50,8 @@ fn package_list_reads_project_declarations_by_default() {
     let installed = command(&env, "install", &["-l", source.to_str().unwrap()]);
     assert!(installed.contains("(project)"), "{installed}");
     let listed = command(&env, "list", &[]);
-    assert!(listed.contains("(project)"), "{listed}");
+    assert!(listed.contains("project "), "{listed}");
+    assert!(listed.contains("installed at"), "{listed}");
     assert!(!listed.contains("not trusted"), "{listed}");
     assert!(!listed.contains("hidden"), "{listed}");
     assert!(
@@ -280,7 +281,7 @@ fn package_list_does_not_open_untrusted_special_or_oversized_settings() {
 #[cfg(target_os = "linux")]
 #[test]
 fn package_list_listing_never_opens_a_project_settings_path() {
-    use std::{fs, process::Command};
+    use std::{fs, os::unix::fs::FileTypeExt, process::Command};
 
     let env = TestEnv::new();
     owner_trust(&env, "never");
