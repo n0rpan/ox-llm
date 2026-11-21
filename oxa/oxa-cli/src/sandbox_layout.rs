@@ -371,6 +371,30 @@ mod tests {
     }
 
     #[test]
+    fn scratch_warning_is_optional_and_an_invalid_size_keeps_the_default() {
+        let env = TestEnv::new();
+        let (e, dirs) = setup(&env);
+        for (value, limit, warnings) in [
+            (None, Some(20 << 30), 0),
+            (Some("512MiB"), Some(512 << 20), 0),
+            (Some("off"), None, 0),
+            (Some("not a size"), Some(20 << 30), 1),
+        ] {
+            if let Some(value) = value {
+                env.write(
+                    "home/.oxa/agent/settings.json",
+                    &format!(r#"{{"oxa":{{"sandbox":{{"scratchWarnSize":"{value}"}}}}}}"#),
+                );
+            }
+            let mut notices = Vec::new();
+            let built = layout(&e, &dirs, &env.work(), false, &mut notices);
+            assert_eq!(built.scratch_warn, limit, "{value:?}");
+            assert_eq!(notices.len(), warnings, "{value:?}: {notices:?}");
+            assert!(notices.iter().all(|(level, _)| *level == Level::Warning));
+        }
+    }
+
+    #[test]
     fn a_confirmed_start_in_home_is_a_workspace_with_one_notice() {
         let env = TestEnv::new();
         let (e, dirs) = setup(&env);
