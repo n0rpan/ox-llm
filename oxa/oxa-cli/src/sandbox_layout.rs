@@ -3,8 +3,8 @@
 use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::Level;
 use oxa_sandbox::{
-    expand_home, is_home_itself, is_home_or_above, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE,
-    SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
+    expand_home, is_home_itself, is_home_or_above, parse_scratch_warn, Layout, LayoutInputs,
+    DEFAULT_SCRATCH_WARN, SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
 };
 use std::path::{Path, PathBuf};
 
@@ -287,6 +287,17 @@ pub(crate) fn layout(
     }
     built.mask_runtime_ipc = true;
     built.sockets = listed_sockets(&paths(SETTING_SOCKETS), notices);
+    built.scratch_warn = match user
+        .string(SETTING_SCRATCH_WARN)
+        .map(|raw| parse_scratch_warn(&raw))
+    {
+        None => Some(DEFAULT_SCRATCH_WARN),
+        Some(Ok(limit)) => limit,
+        Some(Err(why)) => {
+            notices.push((Level::Warning, format!("{SETTING_SCRATCH_WARN} ignored: {why}")));
+            Some(DEFAULT_SCRATCH_WARN)
+        }
+    };
     // #1543: nobody can answer a credential prompt in an unattended run, so an expired
     // credential fails at once with the 401 the worker reports instead of blocking.
     if env.get("OXA_UNATTENDED").is_some() {
@@ -303,6 +314,9 @@ pub(crate) fn layout(
     }
     built
 }
+
+/// #486: the soft size limit of the session's `/tmp` scratch (a warning, never a block).
+const SETTING_SCRATCH_WARN: &str = "oxa.sandbox.scratchWarnSize";
 
 /// RP6: the owner's listed sockets that exist and are Unix sockets, canonical and sorted. Each
 /// one is named in a start notice that states the risk; a path that is not a socket is
@@ -366,6 +380,30 @@ mod tests {
         let e = Env::from_pairs(&pairs);
         let dirs = dirs_from_env(&e, None).expect("dirs");
         (e, dirs)
+    }
+
+    #[test]
+    fn scratch_warning_is_optional_and_an_invalid_size_keeps_the_default() {
+        let env = TestEnv::new();
+        let (e, dirs) = setup(&env);
+        for (value, limit, warnings) in [
+            (None, Some(20 << 30), 0),
+            (Some("512MiB"), Some(512 << 20), 0),
+            (Some("off"), None, 0),
+            (Some("not a size"), Some(20 << 30), 1),
+        ] {
+            if let Some(value) = value {
+                env.write(
+                    "home/.oxa/agent/settings.json",
+                    &format!(r#"{{"oxa":{{"sandbox":{{"scratchWarnSize":"{value}"}}}}}}"#),
+                );
+            }
+            let mut notices = Vec::new();
+            let built = layout(&e, &dirs, &env.work(), false, &mut notices);
+            assert_eq!(built.scratch_warn, limit, "{value:?}");
+            assert_eq!(notices.len(), warnings, "{value:?}: {notices:?}");
+            assert!(notices.iter().all(|(level, _)| *level == Level::Warning));
+        }
     }
 
     #[test]

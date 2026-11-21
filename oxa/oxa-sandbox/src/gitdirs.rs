@@ -1058,14 +1058,38 @@ fn run_git_config(p: &Path) -> Option<GitAnswer> {
 }
 
 /// sbx-gitsym: the mounts a command sees, for "could the command change this path".
+#[derive(Default)]
 pub(crate) struct Mounts {
     /// Read-write binds (the writable cwd, writable caches), canonical.
     pub rw: Vec<PathBuf>,
     /// Read-only binds inside them (the repository's git directories), canonical.
     pub ro: Vec<PathBuf>,
+    /// Directories the command cannot see: the home tmpfs and the masked deny-list
+    /// directories, canonical.
+    pub hidden: Vec<PathBuf>,
 }
 
 impl Mounts {
+    /// #955: what bash sees at `p` (canonical): the deepest matching root decides; on a tie a
+    /// hidden or read-only mount wins over a read-write one. No match is the plain read-only
+    /// root bind.
+    pub(crate) fn view_of(&self, p: &Path) -> oxa_proto::BashView {
+        use oxa_proto::BashView;
+        let depth = |xs: &[PathBuf]| {
+            xs.iter()
+                .filter(|m| p.starts_with(m))
+                .map(|m| m.components().count())
+                .max()
+        };
+        let (rw, ro, hid) = (depth(&self.rw), depth(&self.ro), depth(&self.hidden));
+        match [rw, ro, hid].into_iter().flatten().max() {
+            None => BashView::ReadOnly,
+            Some(d) if hid == Some(d) => BashView::Hidden,
+            Some(d) if ro == Some(d) => BashView::ReadOnly,
+            Some(_) => BashView::Same,
+        }
+    }
+
     /// The command can change `q` (a physical path): its deepest mount is read-write and `q`
     /// lies below it, or is that mount and is the final target (its content is writable; a
     /// mount point itself cannot be renamed). A read-only mount wins a tie.

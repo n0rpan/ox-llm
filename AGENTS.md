@@ -503,8 +503,16 @@ read its result; they never launch builds or tests.
   its surfaces and help (P1 if added outside it or without an exception reason).
 
 **Security invariants**
+- Project trust defaults to a saved folder decision, including the closest saved parent. Report new or
+  changed gated resources by path when loading them. `projectTrustPolicy: "content"` is user-only and
+  retains executable-content re-approval; loading changes under folder trust does not approve those
+  bytes for content policy or managed-worktree inheritance. Preserve explicit denials, safe paths and
+  the existing owner approval route. Trusted unattended checks run; untrusted checks report why and
+  how the owner can approve the source rather than silently skipping.
 - Inbox child creation, publication, scanning and privacy wipes must stay relative to opened
   no-follow directory descriptors on Linux and macOS. Do not re-resolve a saved pathname.
+- Sandbox scratch usage must walk through no-follow directory handles, honor command cancellation,
+  and keep the estimate advisory with entry, time and open-directory budgets.
 
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests; use synthetic fixtures.
   Do not open real credential files during review.

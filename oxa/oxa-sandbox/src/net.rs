@@ -403,6 +403,14 @@ impl Sandbox for NetSandbox {
     fn scratch_dir(&self) -> Option<&std::path::Path> {
         self.inner.scratch_dir()
     }
+    fn bash_view(
+        &self,
+        cwd: &std::path::Path,
+        path: &std::path::Path,
+        writable: bool,
+    ) -> oxa_proto::BashView {
+        self.inner.bash_view(cwd, path, writable)
+    }
     fn preserves_host_path(&self, path: &std::path::Path) -> bool {
         self.inner.preserves_host_path(path)
     }

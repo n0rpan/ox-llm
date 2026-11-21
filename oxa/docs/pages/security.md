@@ -195,12 +195,18 @@ A project can carry configuration that runs code or loads code: settings with ho
 - `defaultProjectTrust` sets the answer when no decision is recorded: `ask` (default), `always` or `never`. It is a user setting.
 - An untrusted project still contributes its context files (`AGENTS.md`, `CLAUDE.md`), which are text. Its other resources do not load.
 
+`projectTrustPolicy` is a user-only setting. With `folder` (the default), you trust the folder once. New or changed gated files load without another question. The notice names changed paths, not their contents. If the folder has no decision of its own, the closest saved parent decision applies. A saved child denial still blocks loading.
+
+With `projectTrustPolicy: "content"`, the rules below apply. Loading a change under folder policy does not approve those bytes for content policy later.
+
 Trust covers the content, not just the directory. Once you trust a project, oxa records a hash of each file that runs or loads code: the project's `settings.json` keys that do this, `mcp.json`, `SYSTEM.md`, `APPEND_SYSTEM.md`, and everything under `.oxa/extensions`, `.oxa/skills`, `.oxa/prompts`, and `.agents/skills`. The model can write these files, so if one changes:
 
 - in the interface, oxa asks again and lists each changed file;
 - in print, JSON and RPC modes, the changed resources are not loaded and a notice names the files.
 
 `--approve` trusts the project and records the current content for one run. `--no-approve` ignores the project's configuration and resources for one run. `oxa install -l` and `oxa mcp ... -l` check the same record.
+
+For a saved decision, start oxa interactively in that folder, approve it (use `/trust` to change an existing decision), and restart. `oxa install -l` and `oxa mcp ... -l` require a saved decision and use the selected policy. Trusted unattended checks still run; an untrusted unattended run with project `done` checks fails with the approval route instead of silently skipping them. This does not grant a managed worker direct trust in its worktree.
 
 In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**` without asking, and the file tools refuse writes to `.git/hooks` or `.git/config`. Plan mode denies these writes too. User-selected `yolo` outside plan mode deliberately lifts all of these guards.
 
@@ -320,6 +326,8 @@ oxa shows no startup notice about this (it would fill small terminals). The note
 
 Workspace writes persist (except protected paths), as do configured writable binds, package caches and permitted git data. Other paths are read-only or hidden. /tmp is the session's private scratch: it persists between commands of one session and is deleted when the session ends (`TMPDIR` and `XDG_CACHE_HOME` point into it). Do not report scratch files as saved; put deliverables in the workspace.
 
-Each session gets its own scratch directory, `~/.cache/oxa/scratch/<pid>-<n>` on the host (mode 0700), created when the session starts or is reopened. It is deleted when the session ends: at `/new`, `/resume`, fork, clone or any other switch to another session, and when oxa exits. A resumed session therefore starts with an empty /tmp; two sessions never share one. A directory left behind by an oxa that was killed is removed when a later oxa creates its next session directory. Hook commands do not belong to a session and get a new empty /tmp for each command. If the directory cannot be created, every command gets a new empty /tmp instead.
+Each session gets its own scratch directory, `~/.cache/oxa/scratch/<pid>-<n>` on the host (mode 0700), created when the session starts or is reopened. It is deleted when the session ends: at `/new`, `/resume`, fork, clone or any other switch to another session, and when oxa exits. A resumed session therefore starts with an empty /tmp; two sessions never share one. A directory left behind by an oxa that was killed is removed when a later oxa creates its next session directory. The directory records its owner (pid and process start time), so one whose pid was reused by another process is removed too. When it holds more than `oxa.sandbox.scratchWarnSize` (user settings, default 20 GiB, `off` disables) a command's output carries one warning line, again only after the size has doubled; it never blocks. The `write` and `edit` tools still write where you ask, and say so when sandboxed bash cannot see that path; add it to `oxa.sandbox.readPaths` or `oxa.sandbox.writePaths` to share it. Hook commands do not belong to a session and get a new empty /tmp for each command. If the directory cannot be created, every command gets a new empty /tmp instead.
+
+The scratch warning uses a bounded estimate of disk usage. It skips symlinks, may undercount a large or deeply nested tree, and stops sampling if the command is cancelled.
 
 Inside the sandbox `XDG_CACHE_HOME` is always `/tmp/.cache`. Shared caches stay shared: each entry of your cache home (your `XDG_CACHE_HOME` when it is an absolute path, otherwise `~/.cache`) that is bound read-write, for example through `writePaths`, appears as `/tmp/.cache/<name>`, so tools write to the same cache as your own builds. Everything else a tool caches goes to the session's scratch and is deleted with it. With a custom `XDG_CACHE_HOME`, entries of `~/.cache` are not linked.

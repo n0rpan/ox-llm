@@ -54,6 +54,19 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .web(WebEdit::Confirm)
     .widens("Trusting a new project lets its settings apply without asking."),
     d(
+        "projectTrustPolicy",
+        Group::Safety,
+        "Permissions",
+        "Project trust policy",
+        "Trust a folder once, or ask again when its executable project files change.",
+    )
+    .key(Kind::Enum(&["folder", "content"]), "\"folder\"")
+    .choice(&[("folder", ""), ("content", "")])
+    .user_only()
+    .apply(Apply::Restart)
+    .web(WebEdit::Confirm)
+    .widens("Folder trust lets new and changed project code load without asking again."),
+    d(
         "oxa.allowHomeCwd",
         Group::Safety,
         "Permissions",
@@ -197,4 +210,16 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .apply(Apply::Restart)
     .web(WebEdit::Confirm)
     .widens("Lets bash use these host sockets; the docker socket gives root on this machine."),
+    d(
+        "oxa.sandbox.scratchWarnSize",
+        Group::Safety,
+        "Bash sandbox",
+        "Scratch size warning",
+        "Warn when the session's /tmp scratch grows past this size (20GiB, `off` for never).",
+    )
+    .key(Kind::String, "\"20GiB\"")
+    .text()
+    .user_only()
+    .apply(Apply::Restart)
+    .web(WebEdit::Edit),
 ];

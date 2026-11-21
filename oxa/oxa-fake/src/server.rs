@@ -148,6 +148,9 @@ pub struct FakeCaps {
     pub preserve_thinking: bool,
     /// `park`: `"ram+disk"` (Rust MoE), `"disk"` (Rust Flash) or `"none"`.
     pub park: String,
+    /// Wave D D4: the row is a cloud model of this provider (`remote: true`); `None` = local.
+    /// [`FakeOpts::remote`] marks every row remote instead.
+    pub remote_provider: Option<&'static str>,
 }
 
 impl FakeCaps {
@@ -159,6 +162,7 @@ impl FakeCaps {
             hint_clear: true,
             preserve_thinking: true,
             park: "ram+disk".to_string(),
+            remote_provider: None,
         }
     }
     /// The Rust Flash engine's block (family `rust-flash`): no `preserve_thinking`, disk park.
@@ -177,6 +181,7 @@ impl FakeCaps {
             hint_clear: false,
             preserve_thinking: false,
             park: "none".to_string(),
+            remote_provider: None,
         }
     }
 }
@@ -610,7 +615,7 @@ fn model_limits(o: &FakeOpts) -> Value {
             }
             row["capabilities"] = caps;
         }
-        if let Some(provider) = o.remote {
+        if let Some(provider) = r.caps.as_ref().and_then(|c| c.remote_provider).or(o.remote) {
             row["context_window"] = json!(r.cap);
             if !row["capabilities"].is_object() {
                 row["capabilities"] = json!({

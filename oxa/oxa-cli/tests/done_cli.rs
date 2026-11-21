@@ -116,13 +116,19 @@ fn print_exits_zero_when_done_checks_pass() {
 }
 
 #[test]
-fn untrusted_project_done_is_reported_in_print_mode() {
+fn untrusted_project_done_fails_with_an_owner_approval_route() {
     let env = TestEnv::new();
-    project_done(&env, r#"["exit 1"]"#);
-    let (code, _, err) = go(&env, edits_then_stops(1), &["-p", "go"]);
-    assert_eq!(code, 0, "the checks did not run, so nothing failed: {err}");
-    assert_eq!(err.matches(NOTICE).count(), 1, "{err}");
-    assert!(!err.contains("done check:") && !err.contains(FAILED), "{err}");
+    project_done(&env, r#"["touch untrusted-check-ran"]"#);
+    for args in [["-p", "go"], ["--mode=json", "go"]] {
+        let (code, _, err) = go(&env, edits_then_stops(1), &args);
+        assert_eq!(code, 1, "{err}");
+        assert_eq!(err.matches(NOTICE).count(), 1, "{err}");
+        assert!(
+            err.contains(&env.work().display().to_string()) && err.contains("--approve"),
+            "{err}"
+        );
+        assert!(!env.work().join("untrusted-check-ran").exists());
+    }
 }
 
 #[test]
@@ -167,6 +173,6 @@ fn trust_project_env_does_not_override_no_approve() {
         &["-p", "-na", "go"],
         &[("OXA_TRUST_PROJECT", "1")],
     );
-    assert_eq!(code, 0, "{err}");
+    assert_eq!(code, 1, "{err}");
     assert!(err.contains(NOTICE), "{err}");
 }

@@ -179,3 +179,49 @@ fn a_visible_load_gives_one_notice_retries_with_the_same_key_and_rereads() {
         "capabilities read again after the load"
     );
 }
+
+/// #2256: a model switch is not an engine reload. The target model legitimately holds nothing
+/// of the session's wire, so the reply reports one cache miss with its real cause (`epoch`),
+/// and no "Engine reloaded ... the engine restarted" notice blames the engine.
+#[test]
+fn a_model_switch_cold_prefill_is_not_reported_as_a_reload() {
+    let env = TestEnv::new();
+    let cold = || ScriptTurn {
+        text: Some("b".to_string()),
+        fault: Some(Fault::Cold),
+        ..ScriptTurn::text("")
+    };
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("a"), cold()],
+        FakeOpts {
+            model: "first-model".to_string(),
+            models: vec![
+                FakeModel::moe("first-model", 1 << 20),
+                FakeModel::moe("second-model", 1 << 20),
+            ],
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut s = open(&env, &server);
+    prompt(&mut s, "one");
+    let mut sink = VecSink::default();
+    s.set_model("second-model", &mut sink).expect("switch");
+    let ev = prompt(&mut s, "two");
+    let notices = info_notices(&ev);
+    assert!(
+        !notices.iter().any(|n| n.contains("Engine reloaded")),
+        "a switch is not a reload: {notices:?}"
+    );
+    let causes: Vec<&str> = ev
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::CacheMiss { cause, cached, .. } => {
+                assert_eq!(*cached, 0, "the target really prefilled cold");
+                Some(*cause)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(causes, vec![oxa_proto::miss_cause::EPOCH]);
+}

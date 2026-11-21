@@ -217,9 +217,11 @@ unverified pending tests in hosted lane CI at the exact head.
 The worker can name additional acceptance crates by ending its final reply with
 `<oxa-acceptance>["crate-name"]</oxa-acceptance>`; a block that is not readable crate
 names, or a crate that is not part of the repository, keeps the task unverified.
-The source project must pass the existing
-trust and executable-content approval before a task starts. Invoking `work` does
-not approve an untrusted project. Acceptance runs in the normal bwrap sandbox;
+The source project must be trusted before a task starts. By default a trusted
+folder's changed `done` commands are reported and run; `projectTrustPolicy: "content"`
+requires fresh approval of changed executable project content. Invoking `work` does
+not approve an untrusted project. If checks cannot run for lack of trust, the error
+points to the source folder and interactive `/trust` route. Acceptance runs in the normal bwrap sandbox;
 missing or unusable bwrap blocks the task. Checkout has a ten-minute limit. Each
 check and the change inventory have a ten-minute ceiling within the remaining task deadline.
 `in subdirectory: command` selects a folder inside that sandbox. The runner rejects
