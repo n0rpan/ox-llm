@@ -54,10 +54,25 @@ MACOS_FILES = frozenset((
 ))
 
 
+MACOS_CFG = re.compile(r'target_os\s*=\s*"macos"|not\((any\()?target_os\s*=\s*"linux"')
+REPO = Path(__file__).resolve().parents[2]
+
+
+def macos_code(path):
+    # A changed Rust file that holds macOS-only cfg selects the build without being listed anywhere,
+    # so adding macOS code to a new file never needs a list edit (MACOS_FILES stays as a fast path).
+    if not path.endswith('.rs'):
+        return False
+    try:
+        return bool(MACOS_CFG.search((REPO / path).read_text(errors='replace')))
+    except OSError:
+        return False
+
+
 def macos(path):
     lower = path.lower()
     return (path in MACOS_FILES or path.startswith(MACOS_PREFIXES)
-            or 'macos' in lower or 'darwin' in lower)
+            or 'macos' in lower or 'darwin' in lower or macos_code(path))
 
 
 def classify(paths, full_event=False):
