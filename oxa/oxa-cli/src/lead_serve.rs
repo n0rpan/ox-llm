@@ -511,37 +511,124 @@ fn proposal_for_confirmation(
 struct Source {
     uid: u32,
     board: Option<PathBuf>,
+    /// The runner situation the loop also reads (`OXA_LEAD_SITUATION`); the pages never had it.
+    situation: Option<PathBuf>,
+    agent_dir: PathBuf,
+    sessions_dir: PathBuf,
+    /// Whether the authenticated live route is installed, and the digest of this executable.
+    live: bool,
+    running_sha256: Option<String>,
     form: Option<crate::lead_http::FixedForm>,
     owner: Option<Arc<OwnerChat>>,
     desk: Option<ApprovalDesk>,
 }
+/// The stable part of the worker bindings: a status age that merely grows each second
+/// is not a change, only crossing the stale mark is.
+fn bindings_key(
+    bindings: &Option<Result<Vec<crate::workers::tool::Binding>, crate::workers::tool::BindingsError>>,
+) -> String {
+    let key = bindings.as_ref().map(|result| {
+        result
+            .as_ref()
+            .map(|list| {
+                list.iter()
+                    .map(|b| {
+                        (
+                            &b.name,
+                            &b.branch,
+                            &b.model,
+                            format!("{:?}", b.state),
+                            b.status_age_secs.map(|age| age > 300),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .map_err(|error| *error as u8)
+    });
+    format!("{key:?}")
+}
+
 impl Source {
     fn new(env: &Env, uid: u32) -> Result<Self, OxaError> {
         let board = env.get("OXA_LEAD_BOARD_LOG").map(PathBuf::from);
         if board.as_ref().is_some_and(|path| !path.is_absolute()) {
             return Err(invalid("lead board sample path must be absolute"));
         }
+        let situation = env.get("OXA_LEAD_SITUATION").map(PathBuf::from);
+        if situation.as_ref().is_some_and(|path| !path.is_absolute()) {
+            return Err(invalid("lead situation path must be absolute"));
+        }
         Ok(Self {
             uid,
             board,
+            situation,
+            agent_dir: PathBuf::new(),
+            sessions_dir: PathBuf::new(),
+            live: false,
+            running_sha256: None,
             form: None,
             owner: None,
             desk: None,
         })
     }
 
+    /// The exact id of the session the Lead's workers belong to: its owner binding's.
+    fn parent_session(&self) -> Option<&str> {
+        self.owner.as_ref().map(|owner| match &owner.session {
+            OwnerSession::Dedicated(binding) => binding.session_id(),
+            OwnerSession::Attached(attached) => attached.session_id(),
+        })
+    }
+
+    /// The one observation every page, and the live fingerprint, is built from. The bounded
+    /// reader revalidates owner-only files and directories on every read; missing, stale and
+    /// refused data stay explicit in the shared renderer.
+    fn observe(&self) -> Option<crate::lead_observation::Observation> {
+        let board = self.board.as_deref()?;
+        let observation = crate::lead_observation::Observation::read(
+            board,
+            self.situation.as_deref(),
+            self.uid,
+            oxa_proto::time::now_ms(),
+        );
+        Some(match self.parent_session() {
+            Some(parent) => observation.with_workers(&self.agent_dir, &self.sessions_dir, parent),
+            None => observation,
+        })
+    }
+
+    /// A hash of what the pages show: it changes exactly when an observation does (board
+    /// time, situation sequence, ask revisions, worker states), so a quiet system sends nothing.
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut hash = DefaultHasher::new();
+        if let Some(observation) = self.observe() {
+            observation.cause.is_some().hash(&mut hash);
+            observation.board.observed_at.hash(&mut hash);
+            observation
+                .situation
+                .as_ref()
+                .map(|s| s.as_of_seq)
+                .hash(&mut hash);
+            bindings_key(&observation.bindings).hash(&mut hash);
+        }
+        if let Some(asks) = self.durable_asks() {
+            asks.iter()
+                .map(|ask| (&ask.id, ask.revision))
+                .collect::<Vec<_>>()
+                .hash(&mut hash);
+        }
+        hash.finish()
+    }
+
     fn render(&self, page: crate::lead_page::Page, fragment: bool) -> String {
-        // The existing bounded reader revalidates owner-only files/directories on every read.
-        // Missing, stale and refused data remain explicit in the shared renderer.
-        let sample = self
-            .board
-            .as_deref()
-            .and_then(|path| crate::lead_input::sample(path, self.uid).ok());
+        let observation = self.observe();
+        let observed = observation.as_ref().filter(|o| o.cause.is_none());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let github_quotas = sample.as_ref().and_then(|sample| {
-            crate::lead_quota::GitHubQuotas::from_app_sample(sample.app_quota?, sample.board.observed_at, now)
+        let github_quotas = observed.and_then(|o| {
+            crate::lead_quota::GitHubQuotas::from_app_sample(o.app_quota?, o.board.observed_at, now)
         });
         use crate::lead_page::Page;
         let approvals_page = matches!(page, Page::Home | Page::Board | Page::BoardQuery(_));
@@ -590,12 +677,17 @@ impl Source {
                     proposal: latest.as_ref().and_then(|latest| latest.proposal.as_ref()),
                     confirmed: latest.as_ref().is_some_and(|latest| latest.confirmed),
                 }),
-            board: sample.as_ref().map(|sample| &sample.board),
+            board: observed.map(|o| &o.board),
+            situation: observed.and_then(|o| o.situation.as_ref()),
+            workers: observation.as_ref().and_then(|o| o.bindings.as_ref()),
+            quota_deferred: observed.map_or(&[][..], |o| o.quota_deferred.as_slice()),
+            live_events: self.live,
+            running_sha256: self.running_sha256.as_deref(),
             github_quotas: github_quotas.as_ref(),
             durable_asks: durable_asks.as_deref(),
             // Stuck-work signals from the same protected record, with each
             // unobserved source explicit in the view (#1391).
-            alarms: sample.as_ref().map(|sample| &sample.alarms),
+            alarms: observed.map(|o| &o.alarms),
             fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
             ..Default::default()
         };
@@ -620,6 +712,22 @@ impl Source {
                 .unwrap_or_default(),
         )
     }
+}
+
+/// SHA-256 of the serving executable as 64 lowercase hex characters; `None` when it cannot
+/// be read, in which case the page simply never learns of an update.
+fn self_digest() -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(std::env::current_exe().ok()?).ok()?;
+    let (mut hash, mut buffer) = (Sha256::new(), vec![0u8; 64 * 1024]);
+    loop {
+        match file.read(&mut buffer).ok()? {
+            0 => break,
+            n => hash.update(&buffer[..n]),
+        }
+    }
+    Some(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// With no `oxa.cloud.daily_budget_usd` there is no budget check: a metered Lead model is admitted
@@ -647,6 +755,8 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         .map_err(|_| invalid("OS owner identity unavailable"))?
         .uid();
     let mut source = Source::new(env, uid)?;
+    source.agent_dir = dirs.agent_dir.clone();
+    source.sessions_dir = dirs.sessions_dir.clone();
     // The approval desk is read on every board render; a desk that cannot open shows as unavailable.
     source.desk = ApprovalDesk::open(&dirs.agent_dir).ok();
     // The one real service journal: fixed allowlisted lines on stderr, carried to
@@ -725,6 +835,19 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     writeln!(out, "lead board: listening on configured loopback endpoint")
         .and_then(|()| out.flush())
         .map_err(|_| invalid("cannot report lead startup"))?;
+    // The live route and the digest of the serving executable, computed once at start: a
+    // changed digest after an update makes an open page reload itself.
+    source.live = true;
+    source.running_sha256 = self_digest();
+    let source = Arc::new(source);
+    let live = crate::lead_http::Live {
+        fingerprint: {
+            let source = source.clone();
+            Box::new(move || source.fingerprint())
+        },
+        running_sha256: source.running_sha256.clone(),
+        poll: std::time::Duration::from_secs(1),
+    };
     let served = crate::lead_http::serve_fixed(
         listener,
         move |stream, request| authorized(&config, uid, stream, request, &identity_journal),
@@ -732,6 +855,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         form,
         owner,
         Some(refusal_log),
+        Some(live),
     )
     .map_err(|_| invalid("lead listener failed"));
     // The workers the owner Lead started outlive its chat turns and stop with the Lead.
@@ -1096,6 +1220,45 @@ mod tests {
             uid
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    #[test]
+    fn a_growing_status_age_does_not_change_the_live_fingerprint() {
+        use crate::workers::registry::WorkerState;
+        use crate::workers::tool::Binding;
+        let at = |age: u64| {
+            Some(Ok(vec![Binding {
+                name: "w".into(),
+                branch: "b".into(),
+                model: "m".into(),
+                state: WorkerState::Working,
+                started_ms: 1,
+                status_age_secs: Some(age),
+            }]))
+        };
+        assert_eq!(bindings_key(&at(3)), bindings_key(&at(9)));
+        assert_ne!(
+            bindings_key(&at(3)),
+            bindings_key(&at(400)),
+            "going stale is a change"
+        );
+    }
+
+    #[test]
+    fn the_page_advertises_live_events_only_when_the_route_is_installed() {
+        let mut source = Source::new(&Env::from_pairs(&[]), 0).unwrap();
+        let page = |source: &Source| source.render(crate::lead_page::Page::Home, false);
+        assert!(!page(&source).contains("oxa-live-events"));
+        source.live = true;
+        source.running_sha256 = Some("a".repeat(64));
+        let html = page(&source);
+        assert!(html.contains("oxa-live-events"));
+        assert!(html.contains(&"a".repeat(64)));
     }
 }
 

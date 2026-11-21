@@ -30,7 +30,9 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .number(Unit::Bytes)
     .advise_from(2048, 1024, "under 2048 bytes a tool result is cut short")
     .apply(Apply::Reload)
-    .web(WebEdit::Edit),
+    .web(WebEdit::Confirm)
+    .user_only()
+    .widens("Changes how many bytes of one tool result are sent to the model."),
     d(
         "oxa.toolRepair",
         Group::Tools,

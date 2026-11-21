@@ -5,6 +5,16 @@ use crate::schema::Kind;
 
 /// The Safety entries, in display order.
 pub(super) const ENTRIES: &[Descriptor] = &[
+    d(
+        "oxa.workers.repository",
+        Group::Safety,
+        "Workers",
+        "Lead worker repository",
+        "Canonical absolute path to the explicitly trusted primary Git checkout used by a live Lead outside Git. User settings only.",
+    )
+    .key(Kind::String, "null")
+    .text()
+    .user_only(),
     // #202: the permission mode at start; a project's value may only lower it
     // (`Settings::default_permission_mode`).
     d(
