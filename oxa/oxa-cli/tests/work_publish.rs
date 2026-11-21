@@ -40,6 +40,7 @@ case "$1 $2" in
     if test -f "$HOME/pr-state.json"; then printf '['; cat "$HOME/pr-state.json"; printf ']'; else printf '[]'; fi ;;
   'api graphql') if test -f "$HOME/queued"; then printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"id":"queue"}}}}}'; else printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}'; fi ;;
   'pr create')
+    if test -f "$HOME/fail-pr-create"; then exit 7; fi
     draft=false
     body_next=false
     for arg in "$@"; do
@@ -1322,6 +1323,63 @@ fn publication_never_pushes_tags_implicitly() {
     let tags = git(&env, &env.work(), &["--git-dir", "remote.git", "tag", "--list"]);
     assert!(tags.is_empty(), "{tags}");
 }
+#[test]
+fn status_distinguishes_a_saved_commit_from_a_push_without_a_pr_receipt() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let path = configure(&env);
+    let status = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .args(["work", "status", "--json"])
+            .current_dir(env.work().join("project"))
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:1"))
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()[0].clone()
+    };
+    let head = run_args(&env, edits(), &["work", "../tasks.json"], Some(path.clone()));
+    let local = status();
+    assert_eq!(
+        local["publication"]["phase"], "committed_no_push_recorded",
+        "{local}"
+    );
+    assert!(local["publication"]["age_secs"].is_u64(), "{local}");
+    assert!(!env.home().join("gh-calls").exists());
+
+    let fail = env.write("home/fail-pr-create", "");
+    let retry = || {
+        run_args(
+            &env,
+            vec![],
+            &["work", "../tasks.json", "--publish"],
+            Some(path.clone()),
+        )
+    };
+    let partial = retry();
+    assert_eq!(partial["outcome"], "blocked", "{partial}");
+    let gh_calls = fs::read(env.home().join("gh-calls")).unwrap();
+    let pushed = status();
+    assert_eq!(
+        pushed["publication"]["phase"], "branch_without_pr_receipt",
+        "{pushed}"
+    );
+    assert_eq!(pushed["head_sha"], head["head_sha"]);
+    assert_eq!(pushed["head_saved_at_ms"], local["head_saved_at_ms"]);
+    assert_eq!(fs::read(env.home().join("gh-calls")).unwrap(), gh_calls);
+
+    fs::remove_file(fail).unwrap();
+    let published = retry();
+    assert_eq!(published["outcome"], "done", "{published}");
+    assert!(status().get("publication").is_none());
+}
+
 #[test]
 fn a_normal_publish_records_a_receipt_read_back_from_the_remote() {
     let env = TestEnv::new();

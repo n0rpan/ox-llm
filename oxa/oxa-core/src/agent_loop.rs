@@ -62,7 +62,31 @@ pub(crate) fn append_entry_with_id(
     let entry = append_to_store(st.store.as_ref(), &st.sref, id, parent, body)?;
     st.tree.push(entry.clone());
     st.transcript.apply(&entry);
+    // #2292: an explicit preservation requirement in a user message rides on the danger
+    // floor's existing question. It stays until a newer requirement replaces it.
+    if let Some(requirement) = preservation_of(&entry) {
+        st.policy.set_preservation(Some(&requirement));
+    }
     Ok(entry)
+}
+
+/// #2292: the explicit preservation requirement of a user message entry, if any. Only the
+/// typed text is read (the environment note is stripped); assistant, tool and summary
+/// entries never carry one.
+pub(crate) fn preservation_of(entry: &Entry) -> Option<String> {
+    let EntryBody::Msg {
+        wire,
+        parts,
+        tool: None,
+    } = &entry.body
+    else {
+        return None;
+    };
+    if wire.role != Role::User {
+        return None;
+    }
+    let content = wire.content.as_deref()?;
+    oxa_perm::preservation_requirement(crate::envnote::strip_note(content, parts))
 }
 
 pub(crate) fn append_to_store(
@@ -285,6 +309,9 @@ fn run_inner(
         let mut retried = false;
         let mut empty_retries: u32 = 0;
         let mut replays: u32 = 0;
+        if let Some(capture) = st.shared.gate.wire_evidence.get() {
+            capture.new_request();
+        }
         let turn = loop {
             // A run that continues after a persisted cut, failure or wrap-up is still foreground
             // work: re-arm the signal that `persist` cleared, so input during the replay or the

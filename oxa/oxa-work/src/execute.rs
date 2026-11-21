@@ -540,8 +540,13 @@ pub(crate) fn save_work(
     if dirty_worktree(binary, tree, repo, policy, lock)? {
         return Err("uncommitted changes remain after saving; retained for inspection".into());
     }
-    record.head_sha = Some(checked(git(policy, tree, &["rev-parse", "HEAD"]))?);
-    record.tree_sha = Some(checked(git(policy, tree, &["rev-parse", "HEAD^{tree}"]))?);
+    let head = checked(git(policy, tree, &["rev-parse", "HEAD"]))?;
+    let tree_sha = checked(git(policy, tree, &["rev-parse", "HEAD^{tree}"]))?;
+    if record.head_sha.as_ref() != Some(&head) {
+        record.head_saved_at_ms = Some(state::now_ms());
+    }
+    record.head_sha = Some(head);
+    record.tree_sha = Some(tree_sha);
     Ok(())
 }
 

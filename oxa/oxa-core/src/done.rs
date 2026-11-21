@@ -42,6 +42,12 @@ pub(crate) struct DoneState {
     /// Each finish fact gets one nudge turn per run ([`finish_decision`]).
     nudged_unproven: bool,
     nudged_jobs: bool,
+    nudged_image: bool,
+    /// The run consulted an image file (`read` on an image, placeholder included).
+    image_read: bool,
+    /// A check ran after the last image read. Before the image nudge only a recognizable
+    /// passing check counts; after it any successful command does ([`Self::note_proof`]).
+    image_checked: bool,
     /// Distinct paths the run's successful `edit`/`write` calls named, in first-use order
     /// (#2297). Tool-observed only; reported once at the end as acceptance evidence.
     changed_paths: Vec<String>,
@@ -281,19 +287,32 @@ impl DoneState {
                         }
                     }
                 }
+                "read" => {
+                    // An image read opens the cross-check fact again, even after a check.
+                    if res.ui["imageRead"] == true || !res.msg.images.is_empty() {
+                        self.image_read = true;
+                        self.image_checked = false;
+                    }
+                }
                 "deliverable" => self.note_deliverable(&call.args_raw, &res.ui),
                 "bash" => {
                     let args = serde_json::from_str::<serde_json::Value>(&call.args_raw).ok();
                     let exited_zero = res.ui["exit"].as_i64() == Some(0) && res.ui["timedOut"] != true;
                     // A detached part ran without its output or exit status being seen.
                     let detached = res.ui["detached"] == true;
-                    if exited_zero
-                        && !detached
-                        && args
+                    if exited_zero && !detached {
+                        let is_check = args
                             .as_ref()
-                            .is_some_and(|args| crate::think::executed_check(&call.name, args).is_some())
-                    {
-                        self.proof.passed();
+                            .is_some_and(|args| crate::think::executed_check(&call.name, args).is_some());
+                        if is_check {
+                            self.proof.passed();
+                        }
+                        // After the one image nudge, any successful command counts as the
+                        // cross-check the model was asked to run: a render-and-diff or an
+                        // invariant probe is not a recognizable test runner.
+                        if is_check || self.nudged_image {
+                            self.image_checked = true;
+                        }
                     }
                 }
                 _ => {}
@@ -303,8 +322,9 @@ impl DoneState {
 
     /// Start of a run: remember the tree, so a later `bash` change can be told apart.
     pub(crate) fn begin(&mut self, st: &SessionState) {
-        // Prove-it needs the fingerprint too, so a bash-made edit counts as a change.
-        if !st.settings.done_commands().is_empty() || prove_it(st) {
+        // Prove-it and the image cross-check need the fingerprint too, so a bash-made edit
+        // counts as a change.
+        if !st.settings.done_commands().is_empty() || prove_it(st) || image_cross_check(st) {
             self.tree = tree_fingerprint(&st.cwd);
         }
     }
@@ -489,6 +509,13 @@ fn prove_it(st: &SessionState) -> bool {
     st.settings.user_bool("oxa.done.proveIt", false)
 }
 
+/// `oxa.done.imageCrossCheck` (user settings, default on): a run that read an image file and
+/// changed files, with no check since the image was read, gets one turn asking for an
+/// independent cross-check of its reading, or for the unverified claim to be named.
+fn image_cross_check(st: &SessionState) -> bool {
+    st.settings.user_bool("oxa.done.imageCrossCheck", true)
+}
+
 /// What is still open when a run or goal is about to end.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FinishFact {
@@ -496,6 +523,8 @@ pub(crate) enum FinishFact {
     Unproven,
     /// Background jobs (ids) still running.
     JobsRunning(Vec<String>),
+    /// An image was read, files changed, and no check ran since the image was read.
+    ImageUnverified,
 }
 
 pub(crate) enum FinishDecision {
@@ -529,6 +558,9 @@ pub(crate) fn finish_decision(
     if prove_it(st) && state.proof.unproven() {
         facts.push(FinishFact::Unproven);
     }
+    if image_cross_check(st) && state.image_read && state.proof.edited() && !state.image_checked {
+        facts.push(FinishFact::ImageUnverified);
+    }
     let headless = crate::is_headless();
     if st.settings.user_bool("oxa.done.waitForJobs", true) && (goal_completion || headless) {
         let running: Vec<String> = st
@@ -552,6 +584,10 @@ pub(crate) fn finish_decision(
                 state.nudged_jobs = true;
                 return FinishDecision::Nudge(crate::prompt::jobs_nudge(ids, headless));
             }
+            FinishFact::ImageUnverified if !state.nudged_image => {
+                state.nudged_image = true;
+                return FinishDecision::Nudge(crate::prompt::IMAGE_CROSS_CHECK_NUDGE.to_string());
+            }
             _ => {}
         }
     }
@@ -567,12 +603,17 @@ pub(crate) fn record_end(
 ) -> Result<(), OxaError> {
     st.stats.proved = state.proof.edited().then(|| !state.proof.unproven());
     st.stats.jobs_left = 0;
+    st.stats.image_unverified = false;
     for fact in unresolved {
         let text = match fact {
             FinishFact::Unproven => "Run ended without a passing check after its last edit".to_string(),
             FinishFact::JobsRunning(ids) => {
                 st.stats.jobs_left = ids.len() as u32;
                 format!("Run ended with background jobs still running: {}", ids.join(" "))
+            }
+            FinishFact::ImageUnverified => {
+                st.stats.image_unverified = true;
+                "Run ended without an independent check of what it read from an image".to_string()
             }
         };
         crate::agent_loop::persist(
@@ -1095,6 +1136,111 @@ mod tests {
         state.note_proof(&[call], &[result]);
 
         assert!(state.proof.unproven());
+    }
+
+    fn bash_call(id: &str, command: &str, exit: i64) -> (ToolCall, CallResult) {
+        (
+            ToolCall {
+                id: id.to_string(),
+                name: "bash".to_string(),
+                args_raw: serde_json::json!({ "command": command }).to_string(),
+            },
+            CallResult {
+                msg: oxa_proto::WireMsg::tool_result(id, ""),
+                tool_name: "bash".to_string(),
+                is_error: false,
+                ui: serde_json::json!({ "exit": exit, "timedOut": false }),
+                warn: false,
+            },
+        )
+    }
+
+    fn image_read_call(id: &str, ui: serde_json::Value, with_part: bool) -> (ToolCall, CallResult) {
+        let mut msg = oxa_proto::WireMsg::tool_result(id, "[image board.png 8x8]");
+        if with_part {
+            msg.images = vec![oxa_proto::WireImage {
+                mime: "image/png".to_string(),
+                base64: "eA==".to_string(),
+            }];
+        }
+        (
+            ToolCall {
+                id: id.to_string(),
+                name: "read".to_string(),
+                args_raw: serde_json::json!({ "path": "board.png" }).to_string(),
+            },
+            CallResult {
+                msg,
+                tool_name: "read".to_string(),
+                is_error: false,
+                ui,
+                warn: false,
+            },
+        )
+    }
+
+    #[test]
+    fn an_image_read_opens_the_cross_check_fact_and_a_passing_check_settles_it() {
+        let mut state = DoneState::default();
+        let (read, res) = image_read_call("c1", serde_json::json!({ "imageRead": true }), false);
+        state.note_proof(&[read], &[res]);
+        assert!(state.image_read);
+        assert!(!state.image_checked);
+        let (call, res) = bash_call("c2", "cargo test", 0);
+        state.note_proof(&[call], &[res]);
+        assert!(state.image_checked);
+    }
+
+    #[test]
+    fn an_image_part_counts_as_an_image_read_without_the_marker() {
+        let mut state = DoneState::default();
+        let (read, res) = image_read_call("c1", serde_json::Value::Null, true);
+        state.note_proof(&[read], &[res]);
+        assert!(state.image_read);
+        assert!(!state.image_checked);
+    }
+
+    #[test]
+    fn a_new_image_read_after_a_check_reopens_the_fact() {
+        let mut state = DoneState::default();
+        let (read, res) = image_read_call("c1", serde_json::json!({ "imageRead": true }), false);
+        state.note_proof(&[read], &[res]);
+        let (call, res) = bash_call("c2", "cargo test", 0);
+        state.note_proof(&[call], &[res]);
+        assert!(state.image_checked);
+        // Same batch, call order: the check ran before this read, so the fact stays open.
+        let (read2, res2) = image_read_call("c3", serde_json::json!({ "imageRead": true }), false);
+        state.note_proof(&[read2], &[res2]);
+        assert!(!state.image_checked);
+    }
+
+    #[test]
+    fn after_the_image_nudge_any_successful_command_settles_it() {
+        let mut state = DoneState {
+            nudged_image: true,
+            ..DoneState::default()
+        };
+        let (read, res) = image_read_call("c1", serde_json::json!({ "imageRead": true }), false);
+        state.note_proof(&[read], &[res]);
+        // A failed command is not a check.
+        let (call, res) = bash_call("c2", "render-diff board.png out.png", 1);
+        state.note_proof(&[call], &[res]);
+        assert!(!state.image_checked);
+        // A render-and-diff is not a recognizable test runner, but after the nudge the
+        // successful command counts as the cross-check the model was asked to run.
+        let (call, res) = bash_call("c3", "render-diff board.png out.png", 0);
+        state.note_proof(&[call], &[res]);
+        assert!(state.image_checked);
+    }
+
+    #[test]
+    fn before_the_nudge_a_plain_command_does_not_settle_the_image_fact() {
+        let mut state = DoneState::default();
+        let (read, res) = image_read_call("c1", serde_json::json!({ "imageRead": true }), false);
+        state.note_proof(&[read], &[res]);
+        let (call, res) = bash_call("c2", "echo done", 0);
+        state.note_proof(&[call], &[res]);
+        assert!(!state.image_checked);
     }
 
     /// A `deliverable` call's arguments and typed `ui`, as the tool writes them.

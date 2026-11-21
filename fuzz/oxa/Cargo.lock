@@ -796,6 +796,7 @@ dependencies = [
  "oxa-sandbox",
  "oxa-session",
  "oxa-tools",
+ "serde",
  "serde_json",
  "sha2",
 ]

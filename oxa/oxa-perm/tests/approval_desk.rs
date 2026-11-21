@@ -767,6 +767,60 @@ fn no_desk_keeps_the_ui_path() {
     assert!(p.danger_unattended(&exec(DANGEROUS), &cwd).is_none());
 }
 
+/// #2292: the preservation checkpoint note rides on the unattended request and the desk
+/// record of a destructive command, so the owner sees it on the approvals page too. It is
+/// the same request: same keys, same answers, no new refusal.
+#[test]
+fn preservation_note_rides_on_the_unattended_request_and_record() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    p.set_preservation(Some("keep commit abc123 exactly as it is"));
+    let text = p.danger_unattended(&exec(DANGEROUS), &cwd).expect("request");
+    assert!(text.contains("reversible checkpoint"), "{text}");
+    assert!(text.contains("keep commit abc123"), "{text}");
+    let id = request_id(&text);
+    let rec = desk
+        .records()
+        .expect("records")
+        .into_iter()
+        .find(|r| r.id == id)
+        .expect("record");
+    assert!(
+        rec.keys.iter().any(|k| k == KEY),
+        "the reviewed rule key is unchanged: {:?}",
+        rec.keys
+    );
+    assert!(
+        rec.reasons.iter().any(|r| r.contains("reversible checkpoint")),
+        "{:?}",
+        rec.reasons
+    );
+    // The owner's answer works exactly as before.
+    desk.answer(&id, "once").expect("answer");
+    assert_eq!(p.decide(Mode::Workspace, &exec(DANGEROUS), &cwd), Decision::Allow);
+}
+
+/// #2292: a refusal names the checkpoint too, and only for a destructive rule.
+#[test]
+fn preservation_note_rides_on_the_unattended_refusal() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Refuse, true);
+    p.set_preservation(Some("preserve the release branch"));
+    let text = p.danger_unattended(&exec(DANGEROUS), &cwd).expect("refusal");
+    assert!(
+        text.starts_with("Refused: dangerous command (git-push-force: "),
+        "{text}"
+    );
+    assert!(text.contains("reversible checkpoint"), "{text}");
+    assert!(text.contains("preserve the release branch"), "{text}");
+    let sudo = p.danger_unattended(&exec("sudo ls"), &cwd).expect("refusal");
+    assert!(!sudo.contains("reversible checkpoint"), "{sudo}");
+}
+
 /// #2097: a pipeline fed by a command the owner never saw (`cat targets | tee ...`) acts on data
 /// that can change after the answer, so it is refused unattended and its record cannot be
 /// answered; a literal producer fixes the data in the reviewed text and still files a request.

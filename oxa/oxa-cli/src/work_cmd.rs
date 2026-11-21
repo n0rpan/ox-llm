@@ -241,6 +241,20 @@ pub(crate) fn run(
                         row.liveness
                     )
                     .map_err(|e| e.to_string())?;
+                    if let Some(publication) = row.publication {
+                        let age = publication
+                            .age_secs
+                            .map_or_else(|| "age unknown".to_owned(), |s| format!("{s}s since save"));
+                        writeln!(
+                            out,
+                            "  {} {}: {} ({age}). {}",
+                            row.record.branch,
+                            row.record.head_sha.as_deref().unwrap_or_default(),
+                            publication.phase,
+                            publication.disposition
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
                 }
             }
             return Ok(0);

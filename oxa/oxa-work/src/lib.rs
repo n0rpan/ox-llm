@@ -40,7 +40,9 @@ pub mod mirrors;
 pub mod shadow;
 mod state;
 mod status;
-pub use status::{status, task_usage, task_usage_for_binding, Liveness, Status, TaskUsage};
+pub use status::{
+    status, task_usage, task_usage_for_binding, Liveness, PublicationStatus, Status, TaskUsage,
+};
 mod tree;
 pub use state::{CheckpointKind, CheckpointObserver, Step};
 mod worker;
@@ -138,6 +140,9 @@ pub struct Record {
     pub checkpoint_at_ms: u64,
     pub step: Step,
     pub head_sha: Option<String>,
+    /// When this execution first saved the exact head, not the last retry time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_saved_at_ms: Option<u64>,
     pub tree_sha: Option<String>,
     pub interruption: Option<WorkerInterruption>,
     #[serde(default)]
@@ -1415,6 +1420,7 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         checkpoint_at_ms: 0,
         step: Step::Finished,
         head_sha: None,
+        head_saved_at_ms: None,
         tree_sha: None,
         interruption: None,
         pull_request: None,

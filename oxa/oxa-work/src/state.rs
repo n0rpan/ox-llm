@@ -167,6 +167,7 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         .ok_or("task checkpoint record is missing")?;
     let optional = [
         "pull_request",
+        "head_saved_at_ms",
         "draft",
         "problem_notes",
         "reports",

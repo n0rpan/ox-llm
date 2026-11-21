@@ -57,6 +57,11 @@ model, tool output, transcript or logs. Neither typed chat nor yolo can answer t
 
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.
+An explicit user requirement to preserve work (#2292) adds one reversible-checkpoint sentence to
+the existing question of a destructive dangerous-command rule (recursive delete outside the
+workspace, force push, disk destroy, SQL drop, and the owner's own `cmd:` rules), quoting the
+requirement. It is additive text on the same prompt, refusal and approval request: no new prompt,
+refusal, cap or grant change, and approval authority is unchanged.
 The native cloud gateway's default recommendations use only configured API-key providers
 and their standard endpoints. User model entries take precedence, and the owner can opt out.
 Recommendations do not initiate network discovery or confer guest access.

@@ -1158,7 +1158,10 @@ fn publish_locked(
         let _ = std::fs::remove_file(body);
         Ok((result.trim().to_string(), draft))
     })();
-    value.record.publish_receipt = publish_receipt;
+    // A refusal before another push has no newer destination observation.
+    if let Some(receipt) = publish_receipt {
+        value.record.publish_receipt = Some(receipt);
+    }
     match result {
         Ok((url, draft)) => {
             value.record.pull_request = Some(url);
