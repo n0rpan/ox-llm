@@ -346,8 +346,17 @@ Execution preserves a saved offline restriction across restarts; later explicit
 publication uses the current network policy without changing that restriction.
 A publication failure keeps a publication checkpoint; another `--publish` retries
 without replaying the agent. Offline mode refuses network publication.
-Before each push, the runner asks through the controlling terminal for approval
-of the accepted commit, branch and PR destination. Piped input cannot approve it.
+Before each push, the runner asks the owner to approve the accepted commit, branch and
+PR destination. In an oxa session, publication and problem reporting use the authenticated
+owner confirm broker (`OXA_CONFIRM_SOCK`). Yolo records a yes without a dialog; standard and
+auto show a dialog that the owner's typed `yes` can answer. The Linux sandbox exposes only the
+pinned broker socket, not its directory, and requires a same-user peer outside the sandbox's PID
+namespace. Outside the sandbox on Linux and macOS, the peer must be the same user and the unique
+ancestor running the same oxa executable. An unverified broker cannot approve.
+A direct owner invocation asks on `/dev/tty`. Piped input and text the model read never approve.
+After the yes the runner re-checks the origin push URL and task head and refuses if either changed.
+When a task cannot be published because it did not finish with an accepted result, the record's
+`detail` explains why.
 
 ### What the publication scan refuses
 
@@ -371,11 +380,12 @@ commit is still pushed. Rewrite the unpublished commits (`git rebase` or a fresh
 rotate a credential that left the machine. The scan reads only git objects; it does not
 change them.
 
-`--report-problems` independently authorizes filing the task's own structured
-problem notes using the `report-issue` workflow. This flag must be launched by the
-user outside an agent tool. Each new report or comment shows its exact cleaned
-text and requires controlling-terminal confirmation, as `oxa report-issue submit`
-does. Without confirmation it stays a local draft. Reports use the user setting `oxa.reportIssue.repo`;
+`--report-problems` enables the `report-issue` workflow for the task's own structured
+problem notes. The owner launches it directly, or from an agent tool that holds the session's
+owner confirm broker; an agent-launched run with neither is refused. The plain workflow shows
+the scrubbed worker queries and asks before sending any search. If you opt into semantic dedupe,
+that setting authorizes its search instead. Each new report or comment shows its exact cleaned
+text and asks the owner the same way as a publish. Without a yes it stays a local draft. Reports use the user setting `oxa.reportIssue.repo`;
 project settings cannot choose a destination. Notes, titles and queries pass
 through the existing report scrubber. The runner performs two or three symptom
 queries against open issues and PRs and reads the top matches before writing.
