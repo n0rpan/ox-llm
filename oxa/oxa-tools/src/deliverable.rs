@@ -134,48 +134,63 @@ impl Tool for DeliverableTool {
             return ToolOutput::error(oxa_proto::tool_errors::ABORTED);
         }
         let abs = crate::resolve_tool_path(cx, path);
+        // `read` refuses what is not a regular file before it opens anything: `open(O_RDONLY)`
+        // on a named pipe blocks until a writer opens it, and no per-tool timeout would end it.
+        // The guarded open below is then the #518 pin check, not a way to discover the kind.
+        let meta = match std::fs::metadata(&abs) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return report(path, &abs, State::Missing, None),
+            Err(_) => return report(path, &abs, State::Unverified, None),
+        };
+        if !meta.is_file() {
+            return report(path, &abs, State::NotFile, None);
+        }
         // #518: the location the permission check judged (a symlink resolved): a link swapped
         // after the check is refused, not followed.
         let (state, bytes) = match checked::open(cx, &abs) {
             Ok(file) => match file.metadata() {
-                Ok(m) if m.is_file() && m.len() == 0 => (State::Empty, Some(0)),
-                Ok(m) if m.is_file() => (State::Present, Some(m.len())),
-                Ok(_) => (State::NotFile, None),
+                Ok(m) if m.len() == 0 => (State::Empty, Some(0)),
+                Ok(m) => (State::Present, Some(m.len())),
                 Err(_) => (State::Unverified, None),
             },
             Err(e) if e.kind() == io::ErrorKind::NotFound => (State::Missing, None),
             Err(_) => (State::Unverified, None),
         };
-        let mut ui = serde_json::json!({
-            "deliverable": true,
-            "path": path,
-            "state": state.as_str(),
-            "bytes": bytes,
-        });
-        // The guarded location, for the run's end check. A path that is not UTF-8 has no
-        // record: the call still answers the model, and nothing claims it later.
-        if let Some(abs) = abs.to_str() {
-            ui["abs"] = Value::String(abs.to_string());
-        }
-        ToolOutput {
-            images: Vec::new(),
-            text: match state {
-                State::Present => format!(
-                    "Deliverable {path}: present, {} bytes. The content is not checked: read it once before you finish, and check again if you write it later.",
-                    bytes.unwrap_or(0)
-                ),
-                State::Empty => format!(
-                    "Deliverable {path}: empty (0 bytes). Write the answer with the write tool, then check it again."
-                ),
-                State::Missing => format!(
-                    "Deliverable {path}: missing. Write it with the write tool now, then check it again."
-                ),
-                State::NotFile => format!("Deliverable {path}: not a regular file."),
-                State::Unverified => format!("Deliverable {path}: could not be checked."),
-            },
-            is_error: false,
-            ui,
-        }
+        report(path, &abs, state, bytes)
+    }
+}
+
+/// The result for the model and the typed `ui` the run's record reads.
+fn report(path: &str, abs: &Path, state: State, bytes: Option<u64>) -> ToolOutput {
+    let mut ui = serde_json::json!({
+        "deliverable": true,
+        "path": path,
+        "state": state.as_str(),
+        "bytes": bytes,
+    });
+    // The guarded location, for the run's end check. A path that is not UTF-8 has no record:
+    // the call still answers the model, and nothing claims it later.
+    if let Some(abs) = abs.to_str() {
+        ui["abs"] = Value::String(abs.to_string());
+    }
+    ToolOutput {
+        images: Vec::new(),
+        text: match state {
+            State::Present => format!(
+                "Deliverable {path}: present, {} bytes. The content is not checked: read it once before you finish, and check again if you write it later.",
+                bytes.unwrap_or(0)
+            ),
+            State::Empty => format!(
+                "Deliverable {path}: empty (0 bytes). Write the answer with the write tool, then check it again."
+            ),
+            State::Missing => format!(
+                "Deliverable {path}: missing. Write it with the write tool now, then check it again."
+            ),
+            State::NotFile => format!("Deliverable {path}: not a regular file."),
+            State::Unverified => format!("Deliverable {path}: could not be checked."),
+        },
+        is_error: false,
+        ui,
     }
 }
 
@@ -258,6 +273,33 @@ mod tests {
         assert!(empty.text.contains("empty"), "{}", empty.text);
         assert_eq!(empty.ui["state"], "empty");
         assert_eq!(empty.ui["bytes"], 0);
+    }
+
+    /// A named pipe must be refused, not opened: `open(O_RDONLY)` on a FIFO blocks the whole
+    /// run until a writer appears. The call runs on its own thread so a regression fails this
+    /// test with the reason instead of hanging the suite.
+    #[test]
+    fn a_fifo_is_refused_before_it_can_block() {
+        let env = TestEnv::new();
+        let fifo = env.work().join("answer-pipe");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a fresh path inside this test's private directory, with no other references.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let work = env.work();
+        std::thread::spawn(move || {
+            let out = with_ctx(&work, |cx| {
+                DeliverableTool::new().run(&serde_json::json!({ "path": "answer-pipe" }), cx, &mut |_| {})
+            });
+            let _ = tx.send((out.text, out.ui["state"].clone()));
+        });
+        let (text, state) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap_or_else(|_| {
+                panic!("the deliverable check blocked on a named pipe instead of refusing it")
+            });
+        assert!(text.contains("not a regular file"), "{text}");
+        assert_eq!(state, "not_file");
     }
 
     #[test]
