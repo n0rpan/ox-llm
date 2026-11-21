@@ -925,10 +925,16 @@ exit 0
 /// The top bar's sampler line, so a test asserts what the owner reads, not the markup.
 fn sampler_line(page: &str) -> String {
     let start = page
-        .split("<span id=connection")
+        .split("id=connection")
         .nth(1)
         .expect("the top bar names the sample");
-    start.split("</span>").next().unwrap_or_default().to_owned()
+    start
+        .split("</span>")
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '=')
+        .trim()
+        .to_owned()
 }
 
 /// A lead with `configure` written into the user settings, one private board log, and one
