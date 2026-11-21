@@ -393,6 +393,7 @@ mod tests {
         assert!(!publication_pending(&execution));
         let mut no_lane_run = accepted(&head);
         no_lane_run.acceptance_outcome = None;
+        no_lane_run.outcome = Outcome::Running;
         assert!(!publication_pending(&no_lane_run));
     }
 
