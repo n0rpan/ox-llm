@@ -1216,37 +1216,36 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
 /// tool (`ToolCtx::env`; extension tools pass it to `execute` as `toolCallId`).
 pub const TOOL_CALL_ID_ENV: &str = oxa_proto::names::ENV_TOOL_CALL_ID;
 
-/// #784: `SUDO_ASKPASS` for a bash command that runs through `sudo` in an attended session with
-/// no OS sandbox. It names the broker's askpass entry, so a password sudo asks for is typed into
-/// an oxa dialog and goes straight to sudo; the model never sees it. Not exported under bwrap
-/// (the helper is outside it) or for an unattended run (nobody can type a password).
-type Askpass = (String, String, crate::owner_confirm::AskpassWindow);
+/// Route an attended, unsandboxed foreground sudo call to the password broker. The
+/// host runner sees this selector, but it is never a credential or a child environment value.
+type Askpass = (String, crate::owner_confirm::AskpassWindow);
 
-fn askpass_env(st: &SessionState, tool: &str, args: &Value, attended: bool) -> Option<Askpass> {
-    if tool != "bash" || !attended {
+#[cfg(target_os = "linux")]
+fn askpass_env(
+    st: &SessionState,
+    tool: &oxa_proto::ToolSpec,
+    args: &Value,
+    attended: bool,
+) -> Option<Askpass> {
+    if tool.name != "bash"
+        || tool.source != oxa_proto::Source::Builtin
+        || !attended
+        || st.mode == oxa_proto::Mode::Plan
+        || args.get("background").and_then(Value::as_bool) == Some(true)
+    {
         return None;
     }
     let command = args.get("command")?.as_str()?;
-    if !oxa_perm::runs_privileged(command) {
-        return None;
-    }
-    let broker = st.shared.owner_confirm()?;
-    let probe = oxa_proto::ExecSpec {
-        command: String::new(),
-        cwd: st.cwd.clone(),
-        writable: true,
-        net: true,
-        timeout_s: None,
-        env: Vec::new(),
-    };
-    if !st.sandbox.bwrap_args(&probe).is_empty() {
-        return None;
-    }
-    Some((
-        "SUDO_ASKPASS".to_string(),
-        broker.askpass_path().to_string_lossy().into_owned(),
-        broker.open_askpass_window(),
-    ))
+    let mut argv = oxa_perm::literal_sudo_argv(command)?;
+    argv.remove(0);
+    // The bash executor, not the file-tool sandbox view, decides whether this call
+    // actually runs on the host. Registering a selector alone cannot admit a peer.
+    st.shared.owner_confirm()?.open_askpass_window(command, argv)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn askpass_env(_: &SessionState, _: &oxa_proto::ToolSpec, _: &Value, _: bool) -> Option<Askpass> {
+    None
 }
 
 /// What a tool run needs from the state, owned, so that the run can leave the session thread.
@@ -1261,7 +1260,7 @@ struct OwnedCtx {
     checked: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     hidden: Option<Arc<dyn oxa_proto::PathFilter>>,
     /// Keeps the password-prompt window open for as long as the call runs.
-    _askpass: Option<crate::owner_confirm::AskpassWindow>,
+    askpass: Option<crate::owner_confirm::AskpassWindow>,
 }
 
 impl OwnedCtx {
@@ -1276,8 +1275,8 @@ impl OwnedCtx {
             env.push((TOOL_CALL_ID_ENV.to_string(), call_id.to_string()));
         }
         let mut window = None;
-        if let Some((key, value, guard)) = askpass {
-            env.push((key, value));
+        if let Some((selector, guard)) = askpass {
+            env.push((oxa_sandbox::SUDO_LAUNCH_ENV.to_owned(), selector));
             window = Some(guard);
         }
         OwnedCtx {
@@ -1290,7 +1289,7 @@ impl OwnedCtx {
             tune: st.tune,
             checked: checked.to_vec(),
             hidden: st.policy.path_filter_for_mode(st.mode),
-            _askpass: window,
+            askpass: window,
         }
     }
 
@@ -1325,9 +1324,9 @@ pub(crate) fn run_tool(
     ui: &mut dyn Ui,
     live: &mut dyn FnMut(&mut dyn EventSink, &str),
 ) -> ToolOutput {
-    let askpass = askpass_env(st, &tool.spec().name, args, ui.interactive());
+    let askpass = askpass_env(st, tool.spec(), args, ui.interactive());
     let owned = OwnedCtx::of(st, call_id, checked, askpass);
-    if st.host_rx.is_none() {
+    if st.host_rx.is_none() && owned.askpass.is_none() {
         let cx = owned.cx();
         let mut direct = |partial: &str| live(&mut *sink, partial);
         return contained_tool(tool, || {
@@ -1339,7 +1338,6 @@ pub(crate) fn run_tool(
         });
     }
     let (tx, rx) = std::sync::mpsc::channel::<String>();
-    let owned = &owned;
     let mut tick = |sink: &mut dyn EventSink| {
         while let Ok(partial) = rx.try_recv() {
             live(sink, &partial);
@@ -1430,10 +1428,9 @@ fn run_parallel(
     for p in batch {
         crate::fire::tool_start(st, &p.id, &p.name, &p.args, sink, ui);
     }
-    let attended = ui.interactive();
     let owned: Vec<OwnedCtx> = batch
         .iter()
-        .map(|p| OwnedCtx::of(st, &p.id, &p.checked, askpass_env(st, &p.name, &p.args, attended)))
+        .map(|p| OwnedCtx::of(st, &p.id, &p.checked, None))
         .collect();
     let cancelled = st.shared.cancel.is_cancelled();
     std::thread::scope(|scope| {

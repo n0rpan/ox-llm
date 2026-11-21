@@ -199,25 +199,15 @@ impl DangerRules {
         (self, warnings)
     }
 
-    /// `true` when `stages` is exactly one simple command, with no redirect, pipe, background,
-    /// substitution or `$`, that runs a listed root action through `sudo` (or `sudo -n`).
-    fn is_root_action(&self, stages: &[Stage]) -> bool {
+    /// `true` for a listed root action invoked as literal `sudo` (or `sudo -n`).
+    fn is_root_action(&self, command: &str, stages: &[Stage]) -> bool {
         if self.root_actions.is_empty() {
             return false;
         }
-        let [stage] = stages else { return false };
-        if stage.mark.is_some()
-            || stage.pipe_in
-            || stage.background
-            || stage.conditional
-            || !stage.redirects.is_empty()
-            || !stage.bodies.is_empty()
-            || stage.words.iter().any(|w| has_dynamic(w))
-        {
+        let Some(words) = literal_sudo_words(command, stages) else {
             return false;
-        }
-        let words = &stage.words;
-        let argv: &[String] = match words.as_slice() {
+        };
+        let argv: &[String] = match words {
             [sudo, rest @ ..] if sudo == "sudo" => match rest {
                 [flag, tail @ ..] if flag == "-n" => tail,
                 _ => rest,
@@ -225,7 +215,7 @@ impl DangerRules {
             _ => return false,
         };
         // The launcher chain must be just that `sudo`: the same argv comes out of `effects::of`.
-        let fx = effects::of(words, &stage.redirects, false);
+        let fx = effects::of(words, &[], false);
         fx.privileged
             && fx.argv == argv
             && self
@@ -246,7 +236,7 @@ impl DangerRules {
         match parse_line(command) {
             Some(stages) => {
                 self.check_stages(&stages, &ctx, 0, false, &mut hits);
-                if self.is_root_action(&stages) {
+                if self.is_root_action(command, &stages) {
                     hits.retain(|hit| hit.rule != "sudo");
                 }
             }
@@ -1082,6 +1072,29 @@ impl DangerRules {
 /// script in the workspace named like the action is never matched.
 fn root_action_matches(action: &[String], argv: &[String]) -> bool {
     action.len() == argv.len() && action.iter().zip(argv).all(|(a, w)| a == "*" || a == w)
+}
+
+/// Literal argv for a direct sudo invocation. Shared by named root actions and the
+/// password broker's direct launch; neither may infer an argv from shell expansion.
+pub fn literal_sudo_argv(command: &str) -> Option<Vec<String>> {
+    let stages = parse_line(command)?;
+    literal_sudo_words(command, &stages).map(<[String]>::to_vec)
+}
+
+fn literal_sudo_words<'a>(command: &str, stages: &'a [Stage]) -> Option<&'a [String]> {
+    // Inspect raw text. The general classifier strips quotes and escapes and does not
+    // expand pathname patterns, braces or tildes. Be conservative even within quotes.
+    if command
+        .chars()
+        .any(|c| (c.is_control() && c != '\t') || "$`*?[]{}~\\#;|&<>()!".contains(c))
+    {
+        return None;
+    }
+    let [stage] = stages else { return None };
+    let [sudo, _, ..] = stage.words.as_slice() else {
+        return None;
+    };
+    matches!(sudo.as_str(), "sudo" | "/usr/bin/sudo" | "/bin/sudo").then_some(stage.words.as_slice())
 }
 
 /// `true` when some simple command of `command` runs through a privilege launcher (`sudo`,

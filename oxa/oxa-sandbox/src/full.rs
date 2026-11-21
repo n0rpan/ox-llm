@@ -180,7 +180,18 @@ impl FullAccess {
         live: &mut dyn FnMut(&[u8]),
         capture: bool,
     ) -> ExecResult {
-        match self.decide(role) {
+        let decision = self.decide(role);
+        let mut stripped;
+        let s = if (role != ExecRole::ModelBash || !matches!(decision, ExecDecision::Host))
+            && s.env.iter().any(|(key, _)| key == crate::SUDO_LAUNCH_ENV)
+        {
+            stripped = s.clone();
+            stripped.env.retain(|(key, _)| key != crate::SUDO_LAUNCH_ENV);
+            &stripped
+        } else {
+            s
+        };
+        match decision {
             ExecDecision::Sandbox => match stdin {
                 Some(input) => self.inner.run_with_stdin(s, input, c, live),
                 None if capture => self.inner.run(s, c, live),

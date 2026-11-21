@@ -244,6 +244,11 @@ fn a_named_root_action_skips_only_the_sudo_question() {
     for command in [
         "sudo bootctl set-default a; rm -rf /",
         "sudo bootctl set-default $X",
+        "sudo bootctl set-default {a,b}",
+        "sudo bootctl set-default *.conf",
+        "sudo bootctl set-default slot?",
+        "sudo bootctl set-default slot[12]",
+        "sudo bootctl set-default ~",
         "sudo bootctl set-default a > /etc/x",
         "sudo rm -rf /srv",
         "sudo bootctl set-default a b",

@@ -45,8 +45,7 @@ fn the_password_reaches_sudo_and_nothing_else() {
     let broker = OwnerConfirm::start(&dir.join("broker"), YoloSwitch::new(Autonomy::Yolo)).unwrap();
     broker.set_servable(true);
     // The fake sudo is no setuid binary: stand in for the peer check, keep the privileged-call window.
-    broker.set_askpass_peer_check(|_| true);
-    let _window = broker.open_askpass_window();
+    let _window = broker.test_askpass_window(|_| true);
     let helper = dir.join(ASKPASS_NAME);
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_oxa"), &helper).unwrap();
     let fake_sudo = dir.join("sudo");

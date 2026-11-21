@@ -29,9 +29,14 @@ immediately before the run, plus the run and session. After a commit, a reset or
 the same text asks again; facts that cannot be resolved (computed words, unreadable repository) are
 refused for unattended replay. An interactive session grant and the owner's `always` line stay
 exact-text keys by the owner's own choice. `oxa.approval.rootActions` (user settings only, never a
-project file, never given to a worker, subagent or headless run) names `sudo` commands oxa does not
-ask about; sudo itself still decides whether a password is needed, and the password is typed into an
-oxa dialog and goes owner -> broker -> askpass helper -> sudo, never to the model, transcript or logs. The dialog opens only for the helper a setuid `sudo` starts, and only when its stdout is the pipe sudo reads: a wrapper around the helper and a pipe this session reads are answered `none`.
+project file, never given to a worker, subagent or headless run) names literal `sudo` commands oxa
+does not ask about. Shell expansion or a custom shell or prefix keeps the approval prompt. Sudo
+still decides whether a password is needed. On Linux the masked dialog is available only for an
+attended, unsandboxed, direct foreground sudo launch. The broker pins the running oxa executable
+by device and inode and checks that the helper uses that inode and writes to sudo's pipe. It accepts
+one request bound to the exact sudo child started by that bash call, and revokes delivery when the
+call stops being foreground. The password travels owner -> broker -> helper -> sudo, never to the
+model, tool output, transcript or logs. Neither typed chat nor yolo can answer the dialog.
 
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.
@@ -152,7 +157,7 @@ Each loopback listener that can start a model request or spend cloud budget need
 The following decisions set the policy for current review and planned changes; they do not claim that the open issues are implemented:
 
 - **Project trust (#1441):** Ask once per folder by default. Offer per-content re-approval as an opt-in; it is not required by default.
-- **Privileged actions (#784):** Only the owner can configure named root actions that may run without a password. For other sudo commands, the owner enters the password directly through a separate terminal or secure owner-only input that passes it straight to sudo. The password never reaches the model, prompt, transcript, tool output, or logs.
+- **Privileged actions (#784):** Only the owner can configure named root actions that skip oxa's approval prompt. The setting does not skip sudo's authentication. The owner enters the password in the masked dialog for an eligible direct foreground call, or in a separate terminal. The password never reaches the model, transcript, tool output or logs.
 - **Release payload (#1394):** Keep standalone `oxe` in the release allowlist for other inference clients and LAN sharing without an `oxa` agent.
 - **Scripts (#2020):** Running a script follows the normal permission mode. Do not add a special confirmation merely because a script might publish. Yolo does not ask, auto runs within its existing rights, and standard applies its usual prompts. The existing secret and publication rules for direct commands still apply.
 - **ChatGPT subscription limits (#1909):** Configured limits warn and record; they do not stop a request locally. The provider enforces its own limits.

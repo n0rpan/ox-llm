@@ -22,6 +22,7 @@ mod net;
 mod offline;
 mod run;
 mod scratch;
+mod sudo;
 mod unsandboxed;
 
 pub use bwrap::{account_home, bwrap_args, bwrap_args_with, without_account_home};
@@ -41,6 +42,9 @@ pub use run::{
     run_unsandboxed_stdin,
 };
 pub use scratch::{scratch_root, user_cache_home, Scratch};
+#[cfg(target_os = "linux")]
+pub use sudo::PeerLifetime;
+pub use sudo::{SudoLaunch, SUDO_LAUNCH_ENV};
 pub use unsandboxed::Unsandboxed;
 
 /// The plain statement shown wherever commands run without an OS sandbox (platforms without

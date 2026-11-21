@@ -502,8 +502,11 @@ read its result; they never launch builds or tests.
 - **Grant facts and root actions (#2055, #784):** a desk grant of a push carries `@facts <digest>` (source ref
   ids, remote identity) re-resolved at every decision; do not widen a grant to text alone, and never copy an
   `@facts` key into `oxa.approval.always`. `oxa.approval.rootActions` is user-only and only the interactive owner
-  session reads it. The sudo password request (`secret_prompt`) is an owner input path answered only by
-  `Ui::secret`: never by model text, a typed chat message or yolo, and never recorded.
+  session reads it. Named actions match literal sudo arguments with the default shell; any shell expansion keeps
+  the approval prompt. A sudo password request is answered only by `Ui::secret`: never by model text, a typed
+  chat message or yolo, and never recorded. On Linux the broker checks the helper against the running executable
+  inode, then binds a single request to the exact foreground host sudo process the runner started. A helper from
+  another call cannot use that grant, and closing the foreground scope revokes delivery.
 - **Command effects (#1680, #1919, #2097):** `credential-read` and `git-hook-write` are danger-approval rules for
   standard mode, not an OS sandbox requirement; yolo never reaches them and the owner can remove them through
   `oxa.approval.dangerous`. One `Effects` value per shell command (`oxa-perm/src/effects.rs`) feeds them and the

@@ -27,10 +27,9 @@
 //! "prompt":..}` in, `{"secret":..}` or `{"answer":"none",..}` out. It is answered only by the
 //! session's own `Ui::secret` dialog: never by a typed message, never by yolo (there is no
 //! password to invent), and an unattended run answers `none`. It is served only while an
-//! attended, unsandboxed privileged bash call is in flight ([`OwnerConfirm::open_askpass_window`])
-//! and only to a peer that is the askpass helper run by a setuid `sudo`, writing to the pipe sudo
-//! reads ([`peer_is_sudo_askpass`]): a wrapper that keeps the helper's pid and redirects its
-//! stdout, or a pipe this session reads, is answered `none`.
+//! attended, unsandboxed direct sudo call is in flight.
+//! At most one request from the exact sudo child launched for that call can open a dialog.
+//! The helper must be the running oxa executable and write to the pipe sudo reads.
 //! The secret is held only until it is written to the asking process's socket; it is never put in
 //! a [`Record`] or in `Debug` output.
 use oxa_proto::{DialogCancel, Ui, YoloSwitch};
@@ -398,27 +397,47 @@ pub struct OwnerConfirm {
     limits: Limits,
     /// Connections being served now (bounded by `limits.max_connections`).
     active: AtomicUsize,
-    /// Attended, unsandboxed privileged bash calls in flight (see [`OwnerConfirm::open_askpass_window`]).
-    /// A password prompt is served only while this is above zero.
-    askpass_window: AtomicUsize,
-    /// Replaces the peer check for a password prompt. `None` is the real check
-    /// ([`peer_is_sudo_askpass`]); the seam exists for in-process tests with a fake `sudo`.
+    askpass_launch: Mutex<Option<Arc<oxa_sandbox::SudoLaunch>>>,
+    #[cfg(target_os = "linux")]
+    askpass_exe: Option<std::fs::File>,
+    // The in-process seam for the fake sudo integration test. No wire request can set it.
     peer_check: Mutex<Option<PeerCheck>>,
 }
 
 type PeerCheck = Box<dyn Fn(&UnixStream) -> bool + Send + Sync>;
 
-/// Held by a privileged bash call for as long as it runs; while any is held the broker may show
-/// a password dialog, and only to sudo's askpass child (see [`peer_is_sudo_askpass`]).
+/// The duration of one attended foreground call. Dropping it also revokes delivery
+/// if the command moved to the background while the owner was answering.
 pub struct AskpassWindow(Arc<OwnerConfirm>);
 
 impl Drop for AskpassWindow {
     fn drop(&mut self) {
-        self.0.askpass_window.fetch_sub(1, Ordering::SeqCst);
+        if let Some(launch) = lock(&self.0.askpass_launch).take() {
+            launch.revoke();
+        }
     }
 }
 
-/// The facts [`peer_is_sudo_askpass`] decides on, read from `/proc`. Split out so the decision can
+#[doc(hidden)]
+pub struct TestAskpassWindow(Arc<OwnerConfirm>);
+
+impl Drop for TestAskpassWindow {
+    fn drop(&mut self) {
+        *lock(&self.0.peer_check) = None;
+    }
+}
+
+enum SecretPeer {
+    #[cfg(target_os = "linux")]
+    Sudo {
+        parent: u32,
+        launch: Arc<oxa_sandbox::SudoLaunch>,
+        lifetime: oxa_sandbox::PeerLifetime,
+    },
+    Test,
+}
+
+/// The facts the askpass peer check decides on, read from `/proc`. Split out so the decision can
 /// be tested with the facts a wrapper script around the helper produces.
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,8 +445,8 @@ struct AskpassPeer {
     /// The uids the kernel reports for the socket.
     peer_uid: u32,
     me: u32,
-    own_exe: PathBuf,
-    peer_exe: PathBuf,
+    own_exe: (u64, u64),
+    peer_exe: (u64, u64),
     parent_comm: String,
     parent_real_uid: u32,
     parent_effective_uid: u32,
@@ -458,20 +477,13 @@ impl AskpassPeer {
     }
 }
 
-/// `true` when the peer of `stream` is this oxa executable (the askpass helper symlink) whose
-/// parent is a genuine setuid `sudo` and whose stdout is the pipe sudo reads. A model-run
-/// command, or a raw client of the socket, is neither. Linux only; elsewhere `false`.
+/// Identify a helper by the running inode, not the replaceable installation pathname.
 #[cfg(target_os = "linux")]
-fn peer_is_sudo_askpass(stream: &UnixStream) -> bool {
-    askpass_peer(stream).is_some_and(|p| p.trusted())
-}
-
-/// Reads the [`AskpassPeer`] facts for `stream`'s peer. `None` when any of them cannot be read.
-#[cfg(target_os = "linux")]
-fn askpass_peer(stream: &UnixStream) -> Option<AskpassPeer> {
+fn askpass_parent(stream: &UnixStream, exe: &std::fs::File) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
     let (peer, peer_uid, me) = oxa_sandbox::peer_pid_uid(stream)?;
-    let own_exe = exe_of(std::process::id())?;
-    let peer_exe = exe_of(peer)?;
+    let own = exe.metadata().ok()?;
+    let peer_exe = std::fs::metadata(format!("/proc/{peer}/exe")).ok()?;
     let parent = proc_stat_ppid(peer)?;
     let parent_comm = std::fs::read_to_string(format!("/proc/{parent}/comm")).ok()?;
     let status = std::fs::read_to_string(format!("/proc/{parent}/status")).ok()?;
@@ -488,25 +500,18 @@ fn askpass_peer(stream: &UnixStream) -> Option<AskpassPeer> {
         .clone()
         .map(|key| pipe_holders(&key, peer))
         .unwrap_or_default();
-    Some(AskpassPeer {
+    let facts = AskpassPeer {
         peer_uid,
         me,
-        own_exe,
-        peer_exe,
+        own_exe: (own.dev(), own.ino()),
+        peer_exe: (peer_exe.dev(), peer_exe.ino()),
         parent_comm,
         parent_real_uid: ids[0],
         parent_effective_uid: ids[1],
         stdout,
         stdout_holders,
-    })
-}
-
-/// The executable `pid` runs, without the ` (deleted)` suffix.
-#[cfg(target_os = "linux")]
-fn exe_of(pid: u32) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/exe"))
-        .ok()
-        .map(|p| PathBuf::from(p.to_string_lossy().trim_end_matches(" (deleted)")))
+    };
+    facts.trusted().then_some(parent)
 }
 
 /// `pipe:[<inode>]`, the link target of an anonymous pipe's fd. A regular file, a tty or a named
@@ -548,11 +553,6 @@ fn pipe_holders(key: &str, except: u32) -> Vec<u32> {
     }
     holders.sort_unstable();
     holders
-}
-
-#[cfg(not(target_os = "linux"))]
-fn peer_is_sudo_askpass(_: &UnixStream) -> bool {
-    false
 }
 
 #[cfg(target_os = "linux")]
@@ -627,7 +627,9 @@ impl OwnerConfirm {
             closed: AtomicBool::new(false),
             limits,
             active: AtomicUsize::new(0),
-            askpass_window: AtomicUsize::new(0),
+            askpass_launch: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            askpass_exe: std::fs::File::open("/proc/self/exe").ok(),
             peer_check: Mutex::new(None),
         });
         Ok((broker, listener))
@@ -642,22 +644,81 @@ impl OwnerConfirm {
         self.sock.parent().unwrap_or(Path::new("")).join(ASKPASS_NAME)
     }
 
-    /// Open the window in which a password prompt may be served: held by an attended,
-    /// unsandboxed privileged bash call until it ends. Outside it every prompt is answered `none`.
-    pub fn open_askpass_window(self: &Arc<Self>) -> AskpassWindow {
-        self.askpass_window.fetch_add(1, Ordering::SeqCst);
-        AskpassWindow(Arc::clone(self))
+    /// Register a literal sudo call. The selector only routes the in-process spawn;
+    /// a socket peer still has to prove that it came from that exact sudo process.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn open_askpass_window(
+        self: &Arc<Self>,
+        command: &str,
+        argv: Vec<String>,
+    ) -> Option<(String, AskpassWindow)> {
+        self.askpass_exe.as_ref()?;
+        let mut current = lock(&self.askpass_launch);
+        if current.is_some() || self.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+        let launch = oxa_sandbox::SudoLaunch::register(self.askpass_path(), command.to_owned(), argv)?;
+        let selector = launch.selector().to_owned();
+        *current = Some(launch);
+        Some((selector, AskpassWindow(Arc::clone(self))))
     }
 
-    /// Replace the real peer check for password prompts. For tests that stand a fake `sudo` in.
-    pub fn set_askpass_peer_check(&self, check: impl Fn(&UnixStream) -> bool + Send + Sync + 'static) {
+    /// In-process test seam for the CLI's fake sudo, with no production launch grant.
+    #[doc(hidden)]
+    pub fn test_askpass_window(
+        self: &Arc<Self>,
+        check: impl Fn(&UnixStream) -> bool + Send + Sync + 'static,
+    ) -> TestAskpassWindow {
         *lock(&self.peer_check) = Some(Box::new(check));
+        TestAskpassWindow(Arc::clone(self))
     }
 
-    fn askpass_peer_ok(&self, stream: &UnixStream) -> bool {
-        match lock(&self.peer_check).as_ref() {
-            Some(check) => check(stream),
-            None => peer_is_sudo_askpass(stream),
+    fn claim_askpass(&self, stream: &UnixStream) -> Option<SecretPeer> {
+        if let Some(check) = lock(&self.peer_check).as_ref() {
+            return check(stream).then_some(SecretPeer::Test);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let launch = lock(&self.askpass_launch).clone()?;
+            let lifetime = oxa_sandbox::PeerLifetime::from_socket(stream)?;
+            let parent = askpass_parent(stream, self.askpass_exe.as_ref()?)?;
+            (lifetime.is_live() && launch.claim(parent)).then_some(SecretPeer::Sudo {
+                parent,
+                launch,
+                lifetime,
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        None
+    }
+
+    fn deliver_askpass(&self, stream: &UnixStream, peer: SecretPeer, secret: &str) -> bool {
+        let send = || {
+            let reply = json!({"secret": secret});
+            let mut out = stream;
+            let _ = writeln!(out, "{reply}");
+        };
+        match peer {
+            #[cfg(target_os = "linux")]
+            SecretPeer::Sudo {
+                parent,
+                launch,
+                lifetime,
+            } => {
+                self.askpass_exe
+                    .as_ref()
+                    .and_then(|exe| askpass_parent(stream, exe))
+                    == Some(parent)
+                    && lifetime.is_live()
+                    && launch.deliver(parent, send)
+            }
+            SecretPeer::Test => lock(&self.peer_check).as_ref().is_some_and(|check| {
+                if !check(stream) {
+                    return false;
+                }
+                send();
+                true
+            }),
         }
     }
 
@@ -770,6 +831,9 @@ impl OwnerConfirm {
     pub fn close(&self) {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
+        }
+        if let Some(launch) = lock(&self.askpass_launch).take() {
+            launch.revoke();
         }
         self.cv.notify_all();
         // Wake the accept loop so its thread ends, then remove the socket file.
@@ -986,20 +1050,17 @@ impl OwnerConfirm {
         };
         let reply = match request {
             Request::Secret { prompt } => {
-                // The password dialog opens only for sudo's own askpass child, during a
-                // privileged call the owner is attending. Anything else gets `none`, no dialog.
-                let allowed = self.askpass_window.load(Ordering::SeqCst) > 0 && self.askpass_peer_ok(&stream);
-                let secret = if allowed {
-                    self.request_secret(prompt)
-                } else {
-                    None
-                };
-                let _ = stream.set_write_timeout(Some(self.limits.read_timeout));
-                let line = match secret {
-                    Some(value) => json!({"secret": value}),
-                    None => json!({"answer": "none", "source": "none"}),
-                };
-                let _ = writeln!(&stream, "{line}");
+                // Reserve this launch before showing a dialog, then re-check the peer
+                // and foreground scope before releasing the owner's answer.
+                let delivered = self.claim_askpass(&stream).is_some_and(|peer| {
+                    self.request_secret(prompt).is_some_and(|secret| {
+                        stream.set_write_timeout(Some(self.limits.read_timeout)).is_ok()
+                            && self.deliver_askpass(&stream, peer, &secret)
+                    })
+                });
+                if !delivered {
+                    self.write_reply(&stream, &Reply::nobody("no_secret"));
+                }
                 return;
             }
             request @ Request::Ask { .. } => self.request(&request),
@@ -1200,8 +1261,7 @@ mod tests {
         let d = dir("secret");
         let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Yolo)).expect("start");
         b.set_servable(true);
-        b.set_askpass_peer_check(|_| true);
-        let _window = b.open_askpass_window();
+        let _window = b.test_askpass_window(|_| true);
         let sock = b.sock_path().to_path_buf();
         let t = std::thread::spawn(move || ask_secret(&sock, "Password:"));
         let mut dialog = SecretDialog {
@@ -1222,8 +1282,7 @@ mod tests {
         let d = dir("secret-typed");
         let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
         b.set_servable(true);
-        b.set_askpass_peer_check(|_| true);
-        let _window = b.open_askpass_window();
+        let _window = b.test_askpass_window(|_| true);
         let sock = b.sock_path().to_path_buf();
         let t = std::thread::spawn(move || ask_secret(&sock, "Password:"));
         while lock(&b.state).pending.is_empty() {
@@ -1263,8 +1322,11 @@ mod tests {
         let d = dir("secret-peer");
         let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
         b.set_servable(true);
-        // Window open, real peer check: this test process is not oxa under sudo.
-        let _window = b.open_askpass_window();
+        // Registered but not launched; a raw connection must not consume the scope.
+        #[cfg(target_os = "linux")]
+        let _window = b
+            .open_askpass_window("sudo true", vec!["true".to_owned()])
+            .unwrap();
         let sock = b.sock_path().to_path_buf();
         let direct = std::thread::spawn(move || ask_secret(&sock, "Password:"));
         assert_eq!(direct.join().expect("join"), None);
@@ -1288,8 +1350,8 @@ mod tests {
         let genuine = AskpassPeer {
             peer_uid: 1000,
             me: 1000,
-            own_exe: PathBuf::from("/usr/bin/oxa"),
-            peer_exe: PathBuf::from("/usr/bin/oxa"),
+            own_exe: (1, 42),
+            peer_exe: (1, 42),
             parent_comm: "sudo\n".into(),
             parent_real_uid: 1000,
             parent_effective_uid: 0,
@@ -1297,6 +1359,12 @@ mod tests {
             stdout_holders: Vec::new(),
         };
         assert!(genuine.trusted(), "the helper sudo starts is served");
+        let mut replaced = genuine.clone();
+        replaced.peer_exe = (1, 43);
+        assert!(
+            !replaced.trusted(),
+            "a different inode at the installation path is not oxa"
+        );
         let mut redirected = genuine.clone();
         redirected.stdout = None;
         assert!(!redirected.trusted(), "`exec > file` must be refused");
@@ -1346,11 +1414,10 @@ mod tests {
         let d = dir("secret-window");
         let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
         b.set_servable(true);
-        b.set_askpass_peer_check(|_| true);
         assert_eq!(ask_secret(b.sock_path(), "Password:"), None);
         assert!(lock(&b.state).pending.is_empty(), "no dialog was queued");
         {
-            let _window = b.open_askpass_window();
+            let _window = b.test_askpass_window(|_| true);
         }
         assert_eq!(
             ask_secret(b.sock_path(), "Password:"),
