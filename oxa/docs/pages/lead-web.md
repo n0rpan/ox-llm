@@ -160,6 +160,16 @@ the pages did not read before. The server no longer makes its own partial read.
   of the Lead owner binding, never a session list. No workers recorded and no runner
   observation render the "Lane status unavailable" text; a corrupt registry renders
   "Live workers refused" and is left untouched.
+- **Capacity** (home and Workers pages) shows the owner's user-only `oxa.lead.capacity`
+  map next to observed use: one row per host as `running workers / configured capacity`,
+  for example `air 2/6`. A host the owner did not configure shows an unknown capacity;
+  without a runner observation the use is unknown, never zero. It also reports the Ready
+  queue depth (eligible items the loop would propose first) and the stuck work the
+  situation reports (stalled tasks, idle hosts, blocked task/host subjects). A board or
+  situation that did not reach the page leaves the corresponding line explicitly
+  unavailable, and an unreadable user settings file shows "Capacity unavailable". An
+  invalid capacity entry is ignored and counted, never refused. This is display only:
+  nothing schedules, refuses or starts work on it, and a project file cannot set it.
 - **Usage** adds a line for each optional GitHub read the reserve deferred
   (`oxa.lead.github_reserve`), saying whether it waits for a window reset or for a first
   observation. Model plan windows still render only from an observation that reached the
@@ -168,7 +178,7 @@ the pages did not read before. The server no longer makes its own partial read.
   advertises it and the page opens `GET /events/live`, behind the same authorization as
   every other path. The server sends `retry: 5000` and a `lead-update` event at once and
   again only when a fingerprint of the observation changes (board time, situation
-  sequence, ask revisions, worker states), polled once a second; a `: keep-alive`
+  sequence, ask revisions, worker states, capacity edits), polled once a second; a `: keep-alive`
   comment goes out every 15 seconds and the stream ends after five minutes so the
   client reconnects. The event carries the SHA-256 of the serving executable, so a
   changed digest after an update reloads the page. Streams use the existing

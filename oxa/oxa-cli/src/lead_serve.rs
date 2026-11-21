@@ -636,6 +636,9 @@ struct Source {
     form: Option<crate::lead_http::FixedForm>,
     owner: Option<Arc<OwnerChat>>,
     desk: Option<ApprovalDesk>,
+    /// Where the owner's user settings live, for the live per-host capacity read
+    /// (#2369). `None` keeps capacity unavailable (tests and pre-start sources).
+    capacity_settings: Option<(Dirs, PathBuf)>,
 }
 /// The stable part of the worker bindings: a status age that merely grows each second
 /// is not a change, only crossing the stale mark is.
@@ -684,6 +687,7 @@ impl Source {
             form: None,
             owner: None,
             desk: None,
+            capacity_settings: None,
         })
     }
 
@@ -715,6 +719,21 @@ impl Source {
         })
     }
 
+    /// The owner's configured per-host capacity (#2369), read live from the user
+    /// settings on every render and fingerprint. User layer only: a project file
+    /// cannot set it. `None` when no settings source is bound or the user file
+    /// cannot be read, which the page shows as unavailable rather than unset.
+    fn capacity(&self) -> Option<crate::lead::capacity::Capacity> {
+        let (dirs, cwd) = self.capacity_settings.as_ref()?;
+        let settings = Settings::load(dirs, cwd, false);
+        if settings.layer_failed() {
+            return None;
+        }
+        Some(crate::lead::capacity::Capacity::parse(
+            settings.user_value("oxa.lead.capacity"),
+        ))
+    }
+
     /// A hash of what the pages show: it changes exactly when an observation does (board
     /// time, situation sequence, ask revisions, worker states), so a quiet system sends nothing.
     fn fingerprint(&self) -> u64 {
@@ -736,6 +755,8 @@ impl Source {
                 .collect::<Vec<_>>()
                 .hash(&mut hash);
         }
+        // A capacity edit is a change the pages show, so live refresh fires on it.
+        self.capacity().hash(&mut hash);
         hash.finish()
     }
 
@@ -766,6 +787,8 @@ impl Source {
         // The authenticated live readback (#1391): open owner asks are read from
         // the authorized durable Session on every render, never from a sample.
         let durable_asks = self.durable_asks();
+        // The owner's per-host capacity, read live from the user settings (#2369).
+        let capacity = self.capacity();
         // The attached session's newest part is read without its writer lock (#2075).
         let current = owner.and_then(|owner| owner.current());
         let attached = match (&current, owner) {
@@ -831,6 +854,7 @@ impl Source {
                 }),
             board: observed.map(|o| &o.board),
             situation: observed.and_then(|o| o.situation.as_ref()),
+            capacity: capacity.as_ref(),
             workers: observation.as_ref().and_then(|o| o.bindings.as_ref()),
             quota_deferred: observed.map_or(&[][..], |o| o.quota_deferred.as_slice()),
             live_events: self.live,
@@ -937,6 +961,8 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     let mut source = Source::new(env, uid)?;
     source.agent_dir = dirs.agent_dir.clone();
     source.sessions_dir = dirs.sessions_dir.clone();
+    // The per-host capacity is read live from the owner's user settings (#2369).
+    source.capacity_settings = Some((dirs.clone(), cwd.to_path_buf()));
     // The approval desk is read on every board render; a desk that cannot open shows as unavailable.
     source.desk = ApprovalDesk::open(&dirs.agent_dir).ok();
     // The one real service journal: fixed allowlisted lines on stderr, carried to
@@ -1820,5 +1846,82 @@ mod approval_answer_tests {
             ["lead chat refusal status=403 stage=identity reason=not_allowed fix=use the configured owner identity and exact authority"]
         );
         drop(client);
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    use crate::lead_page::Page;
+    use oxa_fake::TestEnv;
+
+    fn source(test: &TestEnv, dirs: &Dirs) -> Source {
+        let mut source = Source::new(&Env::from_pairs(&[]), 0).unwrap();
+        source.capacity_settings = Some((dirs.clone(), test.work()));
+        source
+    }
+
+    fn write_user(dirs: &Dirs, capacity: serde_json::Value) {
+        std::fs::write(
+            dirs.settings_file(),
+            serde_json::json!({"oxa":{"lead":{"capacity":capacity}}}).to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn capacity_edit_refreshes_live_and_moves_the_fingerprint() {
+        let test = TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let source = source(&test, &dirs);
+        // No user file yet: the page offers the set-it hint, not an error.
+        let unset = source.fingerprint();
+        assert!(source
+            .render(Page::Workers, false)
+            .contains("No per-host capacity configured"));
+        // The owner edits the user file; the next read shows it and live refresh fires.
+        write_user(&dirs, serde_json::json!({"air":6}));
+        let six = source.fingerprint();
+        assert_ne!(unset, six);
+        assert!(source.render(Page::Workers, false).contains("air unknown/6"));
+        // A further edit moves it again; reverting returns to the prior fingerprint.
+        write_user(&dirs, serde_json::json!({"air":8}));
+        assert_ne!(six, source.fingerprint());
+        write_user(&dirs, serde_json::json!({"air":6}));
+        assert_eq!(six, source.fingerprint());
+    }
+
+    #[test]
+    fn a_project_file_cannot_set_capacity() {
+        let test = TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let source = source(&test, &dirs);
+        // A project file states a capacity; the owner's user layer states none.
+        let project = dirs.project_settings_file(&test.work());
+        std::fs::create_dir_all(project.parent().unwrap()).unwrap();
+        std::fs::write(
+            &project,
+            serde_json::json!({"oxa":{"lead":{"capacity":{"air":6}}}}).to_string(),
+        )
+        .unwrap();
+        let html = source.render(Page::Workers, false);
+        assert!(html.contains("No per-host capacity configured"), "{html}");
+        assert!(!html.contains("air unknown/6"), "{html}");
+        // Even a trusted project load keeps the key user-only: user_value never sees it.
+        assert_eq!(
+            Settings::load(&dirs, &test.work(), true).user_value("oxa.lead.capacity"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unreadable_user_file_shows_capacity_unavailable() {
+        let test = TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let source = source(&test, &dirs);
+        std::fs::write(dirs.settings_file(), "{ not json").unwrap();
+        assert!(source
+            .render(Page::Workers, false)
+            .contains("Capacity unavailable"));
     }
 }
