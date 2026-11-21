@@ -61,15 +61,29 @@ fn get_raw(port: u16, path: &str, authority: &str, extra: &str) -> String {
 fn start(test: &TestEnv, sample: &std::path::Path) -> Running {
     start_with_situation(test, sample, None)
 }
+fn start_with_path(test: &TestEnv, sample: &std::path::Path, path: &str) -> Running {
+    spawn(test, sample, None, Some(path))
+}
 fn start_with_situation(
     test: &TestEnv,
     sample: &std::path::Path,
     situation: Option<&std::path::Path>,
 ) -> Running {
+    spawn(test, sample, situation, None)
+}
+fn spawn(
+    test: &TestEnv,
+    sample: &std::path::Path,
+    situation: Option<&std::path::Path>,
+    path: Option<&str>,
+) -> Running {
     AGENT.with(|agent| *agent.borrow_mut() = Some(test.agent_dir()));
     let mut invocation = command(test);
     if let Some(path) = situation {
         invocation.env("OXA_LEAD_SITUATION", path);
+    }
+    if let Some(path) = path {
+        invocation.env("PATH", path);
     }
     let mut child = Running(
         invocation
@@ -1539,5 +1553,248 @@ fn projection_decode_stays_bounded_on_a_full_sample_tail() {
     assert!(
         elapsed < std::time::Duration::from_millis(250),
         "projection cost regressed: {elapsed:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The in-process sampler (#2262). The server samples GitHub itself: a fake trusted `gh` on the
+// test's PATH answers a well-formed empty sample, a mint helper prints a fresh token for every
+// sample, and the board log is the owner's own private file.
+// ---------------------------------------------------------------------------------------------
+
+/// The resources a sample reads: a well-formed empty PR listing, the merge queue and the
+/// free rate_limit probe. Anything else is not a sample. The token is checked, so a sample
+/// that kept or reused a token fails the way an expired App token would.
+const EMPTY_SAMPLE: &str = r##"if test "${GH_TOKEN-}" != synthetic-sampler-token; then
+  printf 'token-refused\n' >> "$HOME/tokens"
+  printf 'HTTP/2.0 401 Unauthorized\r\n\r\n{"message":"bad credentials"}'
+  exit 1
+fi
+printf 'token-read\n' >> "$HOME/tokens"
+case "$*" in
+  *rate_limit*)
+    if test -f "$HOME/rate-limit-unavailable"; then exit 1; fi
+    printf 'HTTP/2.0 200 OK\r\n\r\n{"resources":{"core":{"limit":5000,"remaining":5000,"reset":9999999999},"graphql":{"limit":5000,"remaining":5000,"reset":9999999999}}}' ;;
+  *graphql*) printf 'HTTP/2.0 200 OK\r\n\r\n{"data":{"repository":{"id":"R_synthetic","pullRequests":{"totalCount":0,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"mergeQueue":null}}}' ;;
+  *) printf 'HTTP/2.0 404 Not Found\r\n\r\n{"message":"unexpected read"}' ;;
+esac
+exit 0
+"##;
+
+/// The top bar's sampler line, so a test asserts what the owner reads, not the markup.
+fn sampler_line(page: &str) -> String {
+    let start = page
+        .split("id=connection")
+        .nth(1)
+        .expect("the top bar names the sample");
+    // The attributes after the id are whatever the header renders; the text follows them and
+    // ends at the element's close, before the theme toggle.
+    start
+        .split_once('>')
+        .and_then(|(_, text)| text.split("</span>").next())
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}
+
+/// A lead on the healthy synthetic frame with `configure` written into its user settings.
+fn with_configured_lead(
+    configure: impl FnOnce(&mut serde_json::Value, &std::path::Path),
+    run: impl FnOnce(u16, &str, &TestEnv, &std::path::Path),
+) {
+    let test = TestEnv::new();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    // The service finds `gh` through the trusted tool locations of its PATH.
+    let tools = test.home().join(".local/bin");
+    std::fs::create_dir_all(&tools).unwrap();
+    let gh = tools.join("gh");
+    std::fs::write(&gh, EMPTY_SAMPLE).unwrap();
+    let mint = test.write(
+        "tmp/mint-token",
+        "#!/bin/sh\nprintf 'synthetic-sampler-token\\n'\n",
+    );
+    for path in [&gh, &mint] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    // A private frame the service reads, with one older sample already in it, and the same
+    // healthy frame the fixture tests use, so a test asserts board rows and not a bare log.
+    let directory = test.root().join("inputs");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let board = directory.join("board.jsonl");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut frame = fixture("healthy");
+    let observed = frame["board_record"]["observed_at"].as_u64().unwrap();
+    shift_timestamps(&mut frame["board_record"], now as i64 - observed as i64);
+    let mut line = serde_json::to_string(&frame["board_record"]).unwrap();
+    line.push('\n');
+    std::fs::write(&board, line).unwrap();
+    std::fs::set_permissions(&board, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // The project is trusted interactively, as the sampler requires; settings stay flat, since
+    // `oxa.lead.serve` accepts only its listener and sampler keys.
+    test.write(
+        "home/.oxa/agent/trust.json",
+        &serde_json::json!({test.work().to_str().unwrap(): true}).to_string(),
+    );
+    let mut settings = serde_json::json!({"oxa":{
+        "github":{"tokenCommand":[mint.to_str().unwrap()]},
+        "lead":{"serve":{"sample_secs":1,"repo":"example/repo","enabled":true,"port":port}},
+    }});
+    // A configure step may replace the mint helper.
+    configure(&mut settings, &test.home());
+    test.write("home/.oxa/agent/settings.json", &settings.to_string());
+    drop(reservation);
+    // The trusted tool directory is this test's, not the machine's PATH.
+    let path = format!(
+        "{}:{}",
+        tools.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let _server = start_with_path(&test, &board, &path);
+    run(port, &format!("127.0.0.1:{port}"), &test, &board);
+}
+
+fn samples(board: &std::path::Path) -> usize {
+    std::fs::read_to_string(board).unwrap_or_default().lines().count()
+}
+
+fn wait_for(mut check: impl FnMut() -> bool) -> bool {
+    for _ in 0..200 {
+        if check() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn last_observed(text: &str) -> u64 {
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|value| value["observed_at"].as_u64())
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn an_unauthorized_retry_starts_no_sample_and_the_top_bar_names_the_timer() {
+    with_fixed_chat(|port, authority, _stderr| {
+        let page = get(port, "/", authority, "");
+        // No token source: the external timer keeps the board and the page says so instead of
+        // claiming a sample this service does not run.
+        let line = sampler_line(&page);
+        assert_eq!(line.trim(), "Sampling: external timer", "{line}");
+        let refused = get_raw(port, "/retry", authority, "");
+        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+    });
+}
+
+#[test]
+fn the_server_samples_and_retry_samples_at_once() {
+    with_configured_lead(
+        |_, home| std::fs::write(home.join("sampled-at"), "").unwrap(),
+        |port, authority, _test, board| {
+            // The server samples on its own interval, with a fresh token, into the owner's log.
+            assert!(
+                wait_for(|| samples(board) >= 2),
+                "the server did not sample the board"
+            );
+            let first = std::fs::read_to_string(board).unwrap();
+            assert!(
+                first.lines().last().unwrap().contains("\"observed_at\":"),
+                "{first}"
+            );
+            assert!(
+                !first.contains("synthetic-sampler-token"),
+                "the token reached the log"
+            );
+            let line = sampler_line(&get(port, "/", authority, ""));
+            assert!(
+                line.contains("Sample ") && line.contains("every second"),
+                "{line}"
+            );
+            // Retry samples now, works without JS, and answers with the page in its new state.
+            let before = samples(board);
+            let reply = get(port, "/retry", authority, "");
+            assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+            assert!(reply.contains("<!doctype html>"), "{reply}");
+            assert!(
+                wait_for(|| samples(board) > before),
+                "Retry did not start a sample"
+            );
+            // Two Retries in a row still run one sample at a time: every line is a whole record.
+            for _ in 0..3 {
+                let _ = get(port, "/retry", authority, "");
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            let text = std::fs::read_to_string(board).unwrap();
+            for line in text.lines() {
+                assert!(serde_json::from_str::<serde_json::Value>(line).is_ok(), "{line}");
+            }
+        },
+    );
+}
+
+#[test]
+fn a_refused_token_keeps_the_last_board_and_names_its_cause() {
+    // The mint helper prints a token GitHub refuses: the board keeps its last sample and the
+    // top bar says why and when the next attempt is.
+    with_configured_lead(
+        |settings, home| {
+            let revoked = home.join("revoked-token");
+            std::fs::write(&revoked, "#!/bin/sh\nprintf 'revoked-token\\n'\n").unwrap();
+            std::fs::set_permissions(&revoked, std::fs::Permissions::from_mode(0o700)).unwrap();
+            settings["oxa"]["github"]["tokenCommand"] = serde_json::json!([revoked.to_str().unwrap()]);
+        },
+        |port, authority, _test, board| {
+            let observed_before = last_observed(&std::fs::read_to_string(board).unwrap());
+            assert!(
+                wait_for(|| {
+                    let page = get(port, "/", authority, "");
+                    sampler_line(&page).contains("Sample failed")
+                }),
+                "the failed sample was not reported"
+            );
+            let page = get(port, "/", authority, "");
+            let line = sampler_line(&page);
+            assert!(line.contains("check the App installation"), "{line}");
+            assert!(line.contains("next sample"), "{line}");
+            assert!(line.contains("every second"), "{line}");
+            assert!(!line.contains("revoked-token"), "{line}");
+            assert!(line.contains("/retry"), "{line}");
+            // The refused sample wrote nothing: the last good board stays as it was.
+            assert_eq!(
+                last_observed(&std::fs::read_to_string(board).unwrap()),
+                observed_before
+            );
+            assert!(page.contains("Board"), "the last board sample stays on the page");
+        },
+    );
+}
+
+#[test]
+fn a_refused_github_read_names_its_cause() {
+    with_configured_lead(
+        |_, home| std::fs::write(home.join("rate-limit-unavailable"), "").unwrap(),
+        |port, authority, _test, _board| {
+            // Without the free rate_limit response the sample's read fails; the page names
+            // that, and an unauthorized Retry starts nothing and is refused.
+            assert!(
+                wait_for(|| {
+                    let page = get(port, "/", authority, "");
+                    sampler_line(&page).contains("Sample failed")
+                }),
+                "the failed sample was not reported"
+            );
+            let line = sampler_line(&get(port, "/", authority, ""));
+            assert!(line.contains("GitHub failed the read"), "{line}");
+            let refused = get_raw(port, "/retry", authority, "");
+            assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+        },
     );
 }

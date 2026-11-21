@@ -4,6 +4,7 @@ use crate::lead_access::{self, proxy, Config, IdentityProvider, Mode, VerifiedId
 use crate::lead_attach::{self, AttachedSession, TAIL_BYTES};
 use crate::lead_chat::conversation::ConversationReply;
 use crate::lead_http::{OwnerForm, OwnerSubmission, RefusalFact, RefusalLog, Stage};
+use crate::lead_sampler::Sampler;
 use oxa_config::{Dirs, Env, Settings};
 use oxa_perm::ApprovalDesk;
 use oxa_proto::{codes, Entry, OxaError};
@@ -55,6 +56,17 @@ impl ServiceJournal {
             fact.stage.as_str(),
             fact.reason,
             fact.fix
+        );
+    }
+
+    /// The sampler was configured but this service could not start it. One fixed line.
+    fn sampler_off(&self) {
+        let Ok(mut out) = self.out.lock() else {
+            return;
+        };
+        let _ = writeln!(
+            out,
+            "lead sampler off: needs a trusted project, the board log, a repository and a trusted gh"
         );
     }
 
@@ -636,6 +648,8 @@ struct Source {
     form: Option<crate::lead_http::FixedForm>,
     owner: Option<Arc<OwnerChat>>,
     desk: Option<ApprovalDesk>,
+    /// The in-process sample (#2262); `None` when no token source is configured.
+    sampler: Option<Sampler>,
     /// Where the owner's user settings live, for the live per-host capacity read
     /// (#2369). `None` keeps capacity unavailable (tests and pre-start sources).
     capacity_settings: Option<(Dirs, PathBuf)>,
@@ -708,6 +722,7 @@ impl Source {
             form: None,
             owner: None,
             desk: None,
+            sampler: None,
             capacity_settings: None,
             last_good: Mutex::new(None),
             target: crate::lead_projection::DEFAULT_TARGET,
@@ -925,12 +940,26 @@ impl Source {
             board_cause: cause,
             board_retained,
             fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
+            sampler: self.sampler.as_ref().map(Sampler::status),
             ..Default::default()
         };
         if fragment {
             crate::lead_page::content_for(page, &view, now)
         } else {
             crate::lead_page::document_for(page, &view, now)
+        }
+    }
+
+    /// Retry: sample now instead of at the next scheduled attempt. A Retry only asks for a
+    /// sample this service already runs; it starts no job of its own, so two Retries in a row
+    /// cannot run two samples at once.
+    fn retry(&self) -> bool {
+        match &self.sampler {
+            Some(sampler) => {
+                sampler.retry();
+                true
+            }
+            None => false,
         }
     }
 
@@ -1095,6 +1124,26 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         None
     };
     let form = source.form.clone();
+    // The in-process sampler (#2262): it writes the same board log on its own interval, so the
+    // board stays fresh with no external timer. No token source means no sampler; the external
+    // timer keeps working and the page says so.
+    //
+    // A sample may only read a project the owner has trusted in an interactive start; an
+    // untrusted project (or one whose trust needs the owner's answer) gets no sampler. This
+    // never prompts: the service must not block its start on a stdin that is not a terminal.
+    let announced = Settings::load(dirs, cwd, false)
+        .user_value("oxa.github.tokenCommand")
+        .is_some();
+    // One journal line when the owner configured a token source but this start cannot use it
+    // (no board log, no repository or no trusted `gh`): fixed text only, never a path or token.
+    let sampler = match crate::work_board::sampler_trusted(cwd, dirs) {
+        true => Sampler::start(dirs, cwd, env),
+        false => None,
+    };
+    if announced && sampler.is_none() {
+        journal.sampler_off();
+    }
+    source.sampler = sampler.clone();
     let client_token = oxa_mcp::pkce_pair(&oxa_mcp::random_bytes()?).0;
     let local = config.mode() == Mode::Local;
     let identity_journal = journal.clone();
@@ -1139,10 +1188,28 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         running_sha256: source.running_sha256.clone(),
         poll: std::time::Duration::from_secs(1),
     };
+    let served_source = source.clone();
+    // The sampler loads the page that just opened: after an idle period, a page load samples
+    // now instead of waiting out the interval. It never starts a sample per socket, and a
+    // request with no sampler costs nothing.
+    let served_sampler = sampler.clone();
     let served = crate::lead_http::serve_fixed(
         listener,
-        move |stream, request| authorized(&config, uid, stream, request, &identity_journal, &served_token),
-        move |page, fragment| source.render(page, fragment),
+        move |stream, request| {
+            let allowed = authorized(&config, uid, stream, request, &identity_journal, &served_token);
+            // Only an authorized page load may sample: an unauthenticated request asks nothing.
+            if allowed {
+                if let Some(sampler) = &served_sampler {
+                    if request.path == "/retry" {
+                        sampler.retry();
+                    } else {
+                        sampler.page_load();
+                    }
+                }
+            }
+            allowed
+        },
+        move |page, fragment| served_source.render(page, fragment),
         form,
         owner,
         Some(refusal_log),

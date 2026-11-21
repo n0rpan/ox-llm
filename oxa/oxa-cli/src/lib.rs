@@ -49,6 +49,7 @@ mod lead_preset;
 pub mod lead_projection;
 pub mod lead_quota;
 pub mod lead_runs;
+pub mod lead_sampler;
 pub mod lead_serve;
 mod limits;
 mod local_cmd;

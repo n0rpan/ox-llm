@@ -497,6 +497,13 @@ fn connection_fixed(
             form_action,
             referrer,
         ),
+        // A Retry is a sample request the caller starts before this response; the answer is the
+        // Home page in its new state, so the link works without JS and without a redirect.
+        Ok(("/retry", None, _)) => {
+            let body = render(Page::Home, false);
+            let tag = etag("/retry", false, &body);
+            Reply::page("200 OK", body, &tag, &request_headers, form_action, referrer)
+        }
         Ok((path, None, _)) => match Reply::asset(path, &request_headers) {
             Some(reply) => reply,
             None => match Page::request(path) {
