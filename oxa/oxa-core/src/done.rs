@@ -1866,6 +1866,15 @@ mod tests {
         ];
         state.note_proof(&calls, &results);
         state.note_artifacts(true);
+        if state.verified_artifacts(&work).is_none() {
+            panic!(
+                "no line: failed={} checked={} written={:?} unchecked={:?}",
+                state.failed_command,
+                state.proof.checked(),
+                state.written,
+                state.unchecked_writes
+            );
+        }
         let line = state
             .verified_artifacts(&work)
             .expect("a verified result is named");
