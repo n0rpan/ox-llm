@@ -53,7 +53,7 @@ fn go_args(env: &TestEnv, argv: Vec<String>) -> (i32, String) {
             stdout_is_tty: false,
             cwd,
         };
-        let code = run(argv, &env, io);
+        let code = run(&argv, &env, io);
         let text = String::from_utf8_lossy(&err.0.lock().unwrap()).into_owned();
         let _ = tx.send((code, text));
     });
