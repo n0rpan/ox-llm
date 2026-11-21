@@ -767,8 +767,17 @@ fn a_held_native_task_runs_online_and_ends_locally_verified_with_publication_hel
     );
     let checkpoint = checkpoint(&fixture);
     assert_eq!(checkpoint["record"]["step"], "finished");
-    assert_eq!(checkpoint["record"]["outcome"], "done");
-    assert_eq!(checkpoint["record"]["detail"], "local verified; publication held");
+    // The held task is accepted but owes its publication receipt, so it never reports done.
+    assert_eq!(checkpoint["record"]["outcome"], "publication_pending");
+    assert_eq!(checkpoint["record"]["acceptance_outcome"], "done");
+    assert!(
+        checkpoint["record"]["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("local verified; publication held; publication pending: committed_no_push_recorded"),
+        "{}",
+        checkpoint["record"]["detail"]
+    );
     // `--publish` on the native queue stays refused.
     let (_, refused) = fixture.invoke(
         &server,

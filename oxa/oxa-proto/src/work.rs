@@ -207,11 +207,10 @@ macro_rules! tagged {
     }
 }
 
+// `publication_pending`: finished work whose publication action left no exact-head receipt (#2304).
 choice!(WorkerOutcome {
     Done => "done", NothingToDo => "nothing_to_do", Blocked => "blocked",
-    Failed => "failed", Interrupted => "interrupted",
-    /// Finished work whose publication action left no exact-head receipt (#2304).
-    PublicationPending => "publication_pending",
+    Failed => "failed", Interrupted => "interrupted", PublicationPending => "publication_pending",
 });
 choice!(TaskStep {
     Preparing => "preparing", Worker => "worker", Acceptance => "acceptance",
