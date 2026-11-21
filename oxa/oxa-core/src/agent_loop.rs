@@ -153,7 +153,11 @@ fn run_inner(
     // T6: the tool a task names for its acceptance, read once at run start. In a goal-engaged
     // run the conversation is the model's own pursuit, not the task: nothing is read from it.
     let planning = !crate::fire::goal_engaged(st);
-    let task = planning.then(|| crate::fire::opening_text(st)).unwrap_or_default();
+    let task = if planning {
+        crate::fire::opening_text(st)
+    } else {
+        String::new()
+    };
     done.begin_toolchain(st, &task, planning);
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;

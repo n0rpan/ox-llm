@@ -53,7 +53,7 @@ pub(crate) struct DoneState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Toolchain {
     pub(crate) tool: String,
-    /// The first run of the tool, as `proof.checked()` then. Acceptance evidence only when it is
+    /// The first run of the tool, as `proof.any_pass()` then. Acceptance evidence only when it is
     /// true (that call, or one after it, passed a check).
     first_use: Option<bool>,
 }
@@ -64,7 +64,7 @@ impl Toolchain {
     /// asked of a run that changed no file and ran no check (a read-only or failing run).
     pub(crate) fn unverified(&self, proof: &Proof) -> Option<&str> {
         let used = self.first_use.is_some_and(|checked| checked);
-        if used || !(proof.edited() || proof.checked()) {
+        if used || !(proof.edited() || proof.any_pass()) {
             return None;
         }
         Some(self.tool.as_str())
@@ -107,14 +107,13 @@ impl DoneState {
             if ran {
                 if first_use == Some(None) {
                     if let Some(state) = self.toolchain.as_mut() {
-                        state.first_use = Some(self.proof.checked());
+                        state.first_use = Some(self.proof.any_pass());
                     }
                 }
-            } else if first_use == Some(None)
-                && crate::think::mentions_tool(command, &tool)
-                && self.toolchain_tries.len() < TRIES_SHOWN
-            {
-                self.toolchain_tries.push(one_line(command, TRIES_LINE));
+            } else if first_use == Some(None) && self.toolchain_tries.len() < TRIES_SHOWN {
+                if let Some(attempt) = crate::think::attempt_at(command, &tool) {
+                    self.toolchain_tries.push(one_line(&attempt, TRIES_LINE));
+                }
             }
         }
     }
@@ -193,7 +192,7 @@ impl Proof {
     }
 
     /// Any passing check ran in this run (T6 `Toolchain::unverified`).
-    fn checked(&self) -> bool {
+    fn any_pass(&self) -> bool {
         self.ran
     }
 
@@ -551,6 +550,8 @@ pub(crate) fn record_end(
 ) -> Result<(), OxaError> {
     st.stats.proved = state.proof.edited().then(|| !state.proof.unproven());
     st.stats.jobs_left = 0;
+    // Read once, as `proved` above: a proof or check that settles after this record does not
+    // revise the claim frozen with it.
     st.stats.verifier = state
         .toolchain
         .as_ref()
@@ -1132,10 +1133,10 @@ mod tests {
             ..DoneState::default()
         };
         proved.proof.changed();
-        let (call, _) = bash("c3", "python3 check.py", 0);
-        proved.note_toolchain(&[call]);
-        let (passed, result) = bash("c4", "cargo test", 0);
+        let (passed, result) = bash("c3", "cargo test", 0);
         proved.note_proof(&[passed], &[result]);
+        let (call, _) = bash("c4", "python3 check.py", 0);
+        proved.note_toolchain(&[call]);
         assert_eq!(proved.toolchain.as_ref().unwrap().first_use, Some(true));
         assert_eq!(unverified(&proved), None);
         proved.proof.changed();

@@ -532,10 +532,17 @@ pub(crate) fn declared_verifier(text: &str) -> Option<String> {
         }
         let words = tool_words(line);
         for (i, word) in words.iter().enumerate() {
-            let Some(tool) = named_tool(word) else { continue };
-            // `Python 3.12`: the version the task pins is part of the name it must run.
-            let version = words.get(i + 1).filter(|w| is_version(w));
-            return Some(match version {
+            // `python3.` closes a sentence; a name never ends in a stop.
+            let Some(tool) = named_tool(word.trim_end_matches('.')) else {
+                continue;
+            };
+            // `Python 3.12`: the version the task pins is part of the name it must run. A
+            // sentence-ending stop is not a version.
+            let version = words
+                .get(i + 1)
+                .filter(|w| is_version(w))
+                .map(|word| word.trim_end_matches('.').trim_end_matches(','));
+            return Some(match version.filter(|v| !v.is_empty()) {
                 Some(version) => format!("{tool}{version}"),
                 None => tool,
             });
@@ -562,16 +569,14 @@ fn tool_words(line: &str) -> Vec<&str> {
 
 /// `3`, `3.12`, `8.2`: a version a task pins beside a tool word.
 fn is_version(word: &str) -> bool {
-    word.starts_with(|c: char| c.is_ascii_digit())
-        && word.chars().all(|c| c.is_ascii_digit() || c == '.')
+    word.starts_with(|c: char| c.is_ascii_digit()) && word.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 /// Words this file accepts as a tool name on the task's verifier line. A fixed list keeps
 /// ordinary prose ("5 task") and a trailing stop from naming a tool.
 const TOOL_WORDS: [&str; 23] = [
-    "python", "bash", "sh", "perl", "ruby", "node", "php", "java", "go", "rustc", "cargo",
-    "dotnet", "swift", "lua", "julia", "gcc", "g++", "clang", "clang++", "tsc", "mypy", "pytest",
-    "rscript",
+    "python", "bash", "sh", "perl", "ruby", "node", "php", "java", "go", "rustc", "cargo", "dotnet", "swift",
+    "lua", "julia", "gcc", "g++", "clang", "clang++", "tsc", "mypy", "pytest", "rscript",
 ];
 
 /// Whether `line` is about how the task is judged: it carries one of the words that name the
@@ -606,10 +611,7 @@ fn verifier_line(line: &str) -> bool {
 /// it (`python3.12` -> `python3.12`). Lowercase: a program name, and `Python` names `python`.
 fn named_tool(word: &str) -> Option<String> {
     let lower = word.to_ascii_lowercase();
-    if lower.is_empty()
-        || lower.len() > 32
-        || !lower.starts_with(|c: char| c.is_ascii_alphabetic())
-    {
+    if lower.is_empty() || lower.len() > 32 || !lower.starts_with(|c: char| c.is_ascii_alphabetic()) {
         return None;
     }
     let known = TOOL_WORDS.iter().find(|t| lower.starts_with(*t))?;
@@ -621,23 +623,32 @@ fn named_tool(word: &str) -> Option<String> {
     }
 }
 
-/// Whether `cmd` names `tool` anywhere (`echo python3`, `grep python3 README`): a command that
-/// tried to use the tool, for the finish nudge to show.
-pub(crate) fn mentions_tool(cmd: &str, tool: &str) -> bool {
+/// The simple command of `cmd` that names `tool` without running it (`python99 check.py`,
+/// `echo python3`): the attempt the finish question shows. `None` when no part names the tool.
+pub(crate) fn attempt_at(cmd: &str, tool: &str) -> Option<String> {
     let bare = tool
         .split_once('.')
         .filter(|(_, version)| version.chars().all(|c| c.is_ascii_digit()))
         .map_or(tool, |(name, _)| name);
-    cmd.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/')))
-        .any(|word| {
+    let names = |words: &[String]| {
+        words.iter().any(|w| {
+            let word = w
+                .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/')))
+                .find(|w| !w.is_empty())
+                .unwrap_or(w);
             let word = word.split('/').next_back().unwrap_or(word);
             word == tool || word == bare
         })
+    };
+    simple_commands(cmd)
+        .into_iter()
+        .find(|words| names(words))
+        .map(|words| words.join(" "))
 }
 
 /// The words of `cmd` split into simple commands at unquoted `;`, `&`, `|` and newlines, with
 /// quotes removed (a small shell tokenizer: enough to find program positions).
-fn simple_commands(cmd: &str) -> Vec<Vec<String>> {
+pub(crate) fn simple_commands(cmd: &str) -> Vec<Vec<String>> {
     let mut out = vec![Vec::new()];
     let mut word = String::new();
     let mut in_word = false;
@@ -694,7 +705,7 @@ fn simple_commands(cmd: &str) -> Vec<Vec<String>> {
 
 /// The words from the program on: leading `VAR=x` assignments, redirections and wrappers
 /// (`time`, `env`, `nice`, `command`, `exec`, `sudo`, `timeout <d>`) are skipped.
-fn program_words(words: &[String]) -> &[String] {
+pub(crate) fn program_words(words: &[String]) -> &[String] {
     let mut i = 0;
     while i < words.len() {
         let w = words[i].as_str();
@@ -923,6 +934,11 @@ mod tests {
             Some("python3")
         );
         assert_eq!(
+            verifier("Write a regex; the grader applies it with Python 3.12.").as_deref(),
+            Some("python3.12"),
+            "a sentence-ending stop is not a version"
+        );
+        assert_eq!(
             verifier("The harness reads the file with perl.").as_deref(),
             Some("perl")
         );
@@ -944,8 +960,11 @@ mod tests {
         ] {
             assert_eq!(verifier(text), None, "{text}");
         }
-        assert!(mentions_tool("echo python3", "python3"));
-        assert!(!mentions_tool("echo python", "python3"));
+        assert_eq!(
+            attempt_at("command -v python3.12 && ls", "python3.12").as_deref(),
+            Some("command -v python3.12")
+        );
+        assert_eq!(attempt_at("cargo test", "python3"), None);
     }
 
     #[test]
