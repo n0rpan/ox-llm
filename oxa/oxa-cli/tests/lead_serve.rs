@@ -1174,10 +1174,14 @@ fn partial_frame_keeps_known_sources_and_names_each_gap() {
         assert!(board.contains("#106") && board.contains("#107"));
         let home = get(port, "/", authority, "");
         // One absent source is an explicit state, never an alarm and never silence.
+        // The frame has every alarm source but the queued-run capture, so the sample
+        // names exactly that one (#2342) and says where the reader goes next.
         assert!(home.contains("id=attention role=status"));
         assert!(!home.contains("role=alert"));
-        assert!(home.contains("Queued workflow runs unavailable"));
-        assert!(!home.contains("Main checks unavailable"));
+        assert!(home.contains("<b>Not in this sample:</b> queued workflow runs."));
+        assert!(home.contains("The latest board sample did not carry them."));
+        assert!(home.contains("Last good value "));
+        assert!(home.contains("Refresh to read a newer sample."));
         let usage = get(port, "/usage", authority, "");
         assert!(usage.contains("Deferred by the GitHub reserve"));
         assert!(usage.contains("queue-age (graphql)"));
@@ -1210,15 +1214,24 @@ fn failed_board_replacement_degrades_explicitly_and_a_fresh_sample_recovers() {
         let board = inputs.join("board.jsonl");
         let good = std::fs::read(&board).unwrap();
         assert!(get(port, "/board", authority, "").contains("#101"));
-        // A malformed replacement never fabricates rows or panics the service. The observer
-        // slice (#2343) evolves this to last-good retention; until then the gap is explicit.
+        // A malformed replacement never fabricates rows or panics the service. The reader
+        // keeps the one last-good sample (#2342), so its rows stay, labelled as last-good
+        // and carrying the allow-listed cause and age; the rejected bytes never render.
         std::fs::write(&board, b"not a board sample\n").unwrap();
         let degraded = get(port, "/board", authority, "");
-        assert!(degraded.contains("Board unavailable"));
-        assert!(!degraded.contains("#101"));
+        assert!(degraded.contains("Board is last-good"));
+        assert!(degraded.contains("The protected Board observation is not a valid board sample"));
+        assert!(degraded.contains("Last good value "));
+        assert!(degraded.contains("Last-good snapshot"));
+        assert!(!degraded.contains("GitHub snapshot"));
+        for number in [101, 102, 103] {
+            assert!(degraded.contains(&format!("#{}", number)), "{number}");
+        }
+        assert!(!degraded.contains("not a board sample"));
         assert!(get(port, "/", authority, "").starts_with("HTTP/1.1 200"));
         std::fs::write(&board, &good).unwrap();
         let recovered = get(port, "/board", authority, "");
         assert!(recovered.contains("#101") && recovered.contains("GitHub snapshot"));
+        assert!(!recovered.contains("Board is last-good"));
     });
 }
