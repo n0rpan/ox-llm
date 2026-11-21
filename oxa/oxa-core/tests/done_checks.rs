@@ -172,6 +172,8 @@ fn failing_check_feeds_model_then_passes() {
         .unwrap();
     assert!(last_user.content.as_ref().unwrap().contains("MISSING-FIXED"));
     assert_eq!(engine.remaining(), 0);
+    // What reached the model, for a later failure's message.
+    eprintln!("REPAIR {:?}", last_user(&engine, 2));
 }
 
 #[test]
@@ -768,8 +770,9 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
             tools_turn(vec![
                 call("w", "write", json!({"path": "answer.json", "content": "decoded"})),
                 call("b", "bash", json!({"command": "false"})),
-                // A passing run prints its pass summary (a silent exit does not count).
-                call("c", "bash", json!({"command": "sh -c 'echo ok 1 test_a'"})),
+                // A test run that prints its pass summary is the check (a silent exit 0 is
+                // not one).
+                call("c", "bash", json!({"command": "make all"})),
             ]),
             ScriptTurn::text("done"),
         ],
