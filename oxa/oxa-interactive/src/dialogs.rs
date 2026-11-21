@@ -15,9 +15,9 @@ use std::sync::mpsc::{channel, Sender};
 
 /// Rows a choice list shows before it scrolls.
 const MAX_VISIBLE: usize = 10;
-/// Publication and dangerous-command previews are deliberately bounded independently of
-/// terminal height. Page keys expose every row, and approval remains disabled until every
-/// row has been viewed.
+/// The most preview rows a page shows. A short terminal shows fewer (see
+/// [`DialogHost::render_in`]); page keys expose every row, and approval remains disabled
+/// until every row has actually been on screen.
 const PREVIEW_ROWS: usize = 10;
 /// The permission prompt's choices, in display order. Deny is the default focus so that a
 /// stray Enter never grants access.
@@ -38,6 +38,9 @@ pub const DANGER_ANSWERS: [DangerAnswer; 4] = [
     DangerAnswer::Deny,
 ];
 const HINT_CHOICE: &str = "up/down move  enter choose  esc cancel";
+/// Dialog rows a fullscreen choice dialog spends around the preview page: the two frame
+/// borders and the blank and hint rows. The choices and the row counter are counted apart.
+const CHROME_ROWS: usize = 5;
 const HINT_TEXT: &str = "enter submit  esc cancel";
 
 /// The `oxa_proto::Ui` handed to `Session::prompt` on the worker thread: every call becomes a
@@ -531,8 +534,18 @@ impl DialogHost {
         changed
     }
 
-    /// Lines of the open dialog (empty when none).
+    /// Lines of the open dialog (empty when none), without a viewport bound.
     pub fn render(&mut self, width: u16, theme: &Theme) -> Vec<String> {
+        self.render_in(width, None, theme)
+    }
+
+    /// Lines of the open dialog (empty when none) when the terminal has `height` rows for it.
+    ///
+    /// The fullscreen layout keeps only the last terminal rows, so a dialog taller than the
+    /// screen loses its head. A preview therefore counts a row as reviewed only when that row
+    /// is inside the visible page, and a paged preview sizes its page to the rows the terminal
+    /// can actually show.
+    pub fn render_in(&mut self, width: u16, height: Option<usize>, theme: &Theme) -> Vec<String> {
         self.cursor_at = None;
         let clock = self.clock;
         let Some(dialog) = self.open.as_mut() else {
@@ -547,16 +560,21 @@ impl DialogHost {
         let mut header = Some(title.clone());
         let mut body: Vec<String> = Vec::new();
         let mut cursor: Option<(usize, u16)> = None;
+        // Dialog rows the terminal can show: its height, or none for an unbounded draw.
+        let available = height.map(|h| h.max(1));
         match &mut dialog.body {
             Body::Choice {
                 lines,
                 list,
                 kind,
                 scroll,
+                page,
                 seen,
                 seen_width,
                 reviewed,
             } => {
+                // The choices are drawn below the preview; their row count bounds its page.
+                let choices = list.render(inner, theme);
                 match kind {
                     // A select has no body text: its title is the question, wrapped.
                     ChoiceKind::Select => {
@@ -570,9 +588,15 @@ impl DialogHost {
                         for line in lines.iter() {
                             preview.extend(hard_wrap(line, inner as usize));
                         }
-                        let max_scroll = preview.len().saturating_sub(PREVIEW_ROWS);
+                        // A page is at most the preview's cap and never more than the rows the
+                        // terminal has left once the list, the hint, the frame and the row
+                        // counter are drawn.
+                        let fixed = CHROME_ROWS + choices.len() + 1;
+                        let cap = available.map_or(PREVIEW_ROWS, |h| h.saturating_sub(fixed));
+                        *page = cap.clamp(1, PREVIEW_ROWS);
+                        let max_scroll = preview.len().saturating_sub(*page);
                         *scroll = (*scroll).min(max_scroll);
-                        let end = (*scroll + PREVIEW_ROWS).min(preview.len());
+                        let end = (*scroll + *page).min(preview.len());
                         body.extend(preview[*scroll..end].iter().cloned());
                         // A resize re-wraps the text: review starts over at the new width.
                         if seen.len() != preview.len() || *seen_width != inner as usize {
@@ -580,11 +604,24 @@ impl DialogHost {
                             seen.resize(preview.len(), false);
                             *seen_width = inner as usize;
                         }
-                        for row in &mut seen[*scroll..end] {
-                            *row = true;
+                        // A short terminal shows the dialog's tail: the rows above this one are
+                        // cut off, and only rows at or below it were on screen.
+                        let dialog_rows = 2
+                            + (end - *scroll)
+                            + 1
+                            + choices.len()
+                            + 1
+                            + 1
+                            + usize::from(preview.len() > *page);
+                        let visible_from =
+                            available.map_or(0, |h| dialog_rows.saturating_sub(h).saturating_sub(1));
+                        for (i, row) in seen[*scroll..end].iter_mut().enumerate() {
+                            if i >= visible_from {
+                                *row = true;
+                            }
                         }
                         *reviewed = seen.iter().all(|&row| row);
-                        if preview.len() > PREVIEW_ROWS {
+                        if preview.len() > *page {
                             body.push(theme.fg(
                                 "muted",
                                 &format!(
@@ -603,7 +640,7 @@ impl DialogHost {
                     }
                 }
                 body.push(String::new());
-                body.extend(list.render(inner, theme));
+                body.extend(choices);
                 body.push(String::new());
                 body.push(theme.fg("muted", HINT_CHOICE));
             }
@@ -975,6 +1012,8 @@ enum Body {
         kind: ChoiceKind,
         /// Wrapped-row offset of the paged preview.
         scroll: usize,
+        /// Preview rows the last draw showed in one page.
+        page: usize,
         /// Preview rows already displayed, at `seen_width`.
         seen: Vec<bool>,
         /// The inner width the `seen` rows were recorded at.
@@ -1027,6 +1066,7 @@ impl Dialog {
                 list: Box::new(list),
                 kind,
                 scroll: 0,
+                page: PREVIEW_ROWS,
                 seen: Vec::new(),
                 seen_width: 0,
                 reviewed: false,
@@ -1062,15 +1102,16 @@ impl Dialog {
                 list,
                 kind,
                 scroll,
+                page,
                 reviewed,
                 ..
             } => {
                 if matches!(kind, ChoiceKind::Approve | ChoiceKind::Danger) && key.is("pagedown") {
-                    *scroll = scroll.saturating_add(PREVIEW_ROWS);
+                    *scroll = scroll.saturating_add(*page);
                     return KeyFlow::Pending;
                 }
                 if matches!(kind, ChoiceKind::Approve | ChoiceKind::Danger) && key.is("pageup") {
-                    *scroll = scroll.saturating_sub(PREVIEW_ROWS);
+                    *scroll = scroll.saturating_sub(*page);
                     return KeyFlow::Pending;
                 }
                 match list.key(key, keymap) {

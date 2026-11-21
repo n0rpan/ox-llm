@@ -62,6 +62,35 @@ fn press(host: &mut DialogHost, keymap: &Keymap, id: &str) -> DialogKey {
     host.key(&Key::press(id), keymap)
 }
 
+/// Rows a small fullscreen terminal leaves the dialog once the footer is taken: its frame,
+/// the choices, the hint and two preview rows. `SHORT_ROWS` is what the driver passes on such
+/// a screen, not the preview cap of a tall one.
+const SHORT_ROWS: usize = 12;
+
+/// A key press as the real TUI delivers it: the dialog is redrawn before the next key arrives,
+/// because a row only counts as reviewed once it was on screen.
+fn press_shown(
+    host: &mut DialogHost,
+    keymap: &Keymap,
+    width: u16,
+    height: Option<usize>,
+    id: &str,
+) -> DialogKey {
+    let key = host.key(&Key::press(id), keymap);
+    host.render_in(width, height, &Theme::plain());
+    key
+}
+
+/// The framed dialog's lines (from its top edge to its bottom edge), so assertions see only
+/// what the dialog itself shows: the transcript's tool header shows the command too.
+fn dialog_box(host: &mut DialogHost, width: u16, height: Option<usize>) -> Vec<String> {
+    let lines = host.render_in(width, height, &Theme::plain());
+    match (lines.first(), lines.last()) {
+        (Some(top), Some(bottom)) if top.contains('╭') && bottom.contains('╰') => lines,
+        _ => Vec::new(),
+    }
+}
+
 /// A custom component that counts `up` presses and answers its count on `enter`.
 struct Counter {
     n: u32,
@@ -688,11 +717,18 @@ fn dangerous_dialog_always_writes_user_settings_never_project() {
     );
     let mut host = DialogHost::new();
     let mut vm = ViewModel::default();
+    let theme = Theme::plain();
     let (tx, rx) = channel();
     host.handle(danger_request(tx), &mut vm, 0);
-    // Deny is focused: one step up is "Always allow".
-    press(&mut host, &keymap, "up");
-    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
+    // The dialog is on screen before the owner presses anything.
+    let shown = host.render(100, &theme).join("\n");
+    assert!(shown.contains("git push --force origin main"), "{shown}");
+    // Deny is focused: one step up is "Always allow"; each press is followed by the redraw.
+    press_shown(&mut host, &keymap, 100, None, "up");
+    assert_eq!(
+        press_shown(&mut host, &keymap, 100, None, "enter"),
+        DialogKey::Closed
+    );
     assert!(rx.try_recv().is_err(), "the worker waits for the save");
     let (keys, reply) = host.take_danger_always().expect("always is pending");
     assert_eq!(keys, vec![DANGER_KEY.to_string()]);
@@ -722,10 +758,20 @@ fn dangerous_dialog_always_write_failure_still_grants_session() {
     std::fs::create_dir_all(dirs.settings_file()).unwrap();
     let mut host = DialogHost::new();
     let mut vm = ViewModel::default();
+    let theme = Theme::plain();
     let (tx, rx) = channel();
     host.handle(danger_request(tx), &mut vm, 0);
-    press(&mut host, &keymap, "up");
-    press(&mut host, &keymap, "enter");
+    let shown = host.render(100, &theme).join("\n");
+    for label in DANGER_LABELS {
+        assert!(shown.contains(label), "{label}\n{shown}");
+    }
+    // Deny is focused: one step up is "Always allow". The dialog redraws between the keys.
+    press_shown(&mut host, &keymap, 100, None, "up");
+    assert_eq!(
+        press_shown(&mut host, &keymap, 100, None, "enter"),
+        DialogKey::Closed
+    );
+    assert!(rx.try_recv().is_err(), "the worker waits for the save");
     let (keys, reply) = host.take_danger_always().expect("always is pending");
     let mut settings = Settings::load(&dirs, &cwd, false);
     assert!(append_always(&mut settings, &dirs, &cwd, &keys).is_err());
@@ -784,6 +830,22 @@ fn long_danger_request(reply: std::sync::mpsc::Sender<DangerAnswer>) -> UiReques
     }
 }
 
+/// #2165: the same 24 rows, each one named, so a test can count the command rows a page shows.
+fn numbered_danger_request(reply: std::sync::mpsc::Sender<DangerAnswer>) -> UiRequest {
+    let mut command = "rm -rf /srv/data step-01".to_string();
+    for n in 2..=23 {
+        command.push_str(&format!("\nstep-{n:02}"));
+    }
+    command.push_str("\necho tail-visible step-24");
+    UiRequest::AskDangerous {
+        access: Access::Exec { command, net: false },
+        // One reason row would be a 25th preview row; the named rows alone are the review here.
+        reasons: Vec::new(),
+        keys: vec!["rm-recursive-outside rm -rf /srv/data".into()],
+        reply,
+    }
+}
+
 /// #2165: Deny and Escape answer a long dangerous command immediately, before any page review.
 #[test]
 fn dangerous_dialog_deny_and_escape_answer_before_review() {
@@ -800,6 +862,12 @@ fn dangerous_dialog_deny_and_escape_answer_before_review() {
     host.handle(long_danger_request(tx), &mut vm, 0);
     host.render(100, &Theme::plain());
     assert_eq!(press(&mut host, &keymap, "escape"), DialogKey::Closed);
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Deny);
+
+    // Deny answers even before the dialog has been drawn once: it never waits for a review.
+    let (tx, rx) = channel();
+    host.handle(long_danger_request(tx), &mut vm, 0);
+    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
     assert_eq!(rx.recv().unwrap(), DangerAnswer::Deny);
 }
 
@@ -867,6 +935,123 @@ fn dangerous_dialog_skipping_to_the_end_keeps_allow_disabled() {
     }
     assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
     assert_eq!(rx.recv().unwrap(), DangerAnswer::Once);
+}
+
+/// #2165: a short terminal pages by the rows it can show. Every page holds only rows that are
+/// on screen, and an allow stays disabled until every row has been displayed.
+#[test]
+fn dangerous_dialog_short_terminal_reviews_every_displayed_row() {
+    let keymap = Keymap::defaults();
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let (tx, rx) = channel();
+    host.handle(numbered_danger_request(tx), &mut vm, 0);
+    let first = dialog_box(&mut host, 100, Some(SHORT_ROWS));
+    // The dialog fits the rows it was given: nothing is cut off the top.
+    assert_eq!(first.len(), SHORT_ROWS, "{first:#?}");
+    let shown = first.join("\n");
+    assert!(shown.contains("Dangerous command"), "{shown}");
+    assert!(shown.contains("step-01") && shown.contains("step-02"), "{shown}");
+    assert!(!shown.contains("step-03"), "{shown}");
+    assert!(shown.contains("rows 1–2 of 24"), "{shown}");
+    assert!(shown.contains("Deny"), "{shown}");
+
+    // "Always allow" is one up from Deny; before the review it does not answer.
+    press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "up");
+    assert_eq!(
+        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "enter"),
+        DialogKey::Consumed
+    );
+    assert!(rx.try_recv().is_err(), "allow stayed disabled");
+
+    // Page down to the last page; each page is drawn before the next key, and only the rows it
+    // shows count. The next page starts where the previous one ended: no rows are skipped.
+    let mut pages = 1;
+    loop {
+        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "pagedown");
+        pages += 1;
+        assert!(pages < 20, "the pages end");
+        let shown = dialog_box(&mut host, 100, Some(SHORT_ROWS)).join("\n");
+        let steps: Vec<&str> = shown.lines().filter(|l| l.contains("step-")).collect();
+        assert!(steps.len() <= 2, "a page shows what fits: {shown}");
+        if shown.contains("step-24") {
+            assert!(shown.contains("rows 23–24 of 24"), "{shown}");
+            break;
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "page {pages} of {pages} is not the review"
+        );
+    }
+    assert_eq!(pages, 12, "24 rows in pages of two");
+    // Focus is still "Always allow"; the last page was on screen, so it answers.
+    assert_eq!(
+        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "enter"),
+        DialogKey::Closed
+    );
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Always);
+}
+
+/// #2165: a tall screen's review does not cover rows it never showed. When the terminal
+/// shrinks, the page follows the rows it can show and an allow still waits for the tail.
+#[test]
+fn dangerous_dialog_short_terminal_keeps_unseen_rows_unreviewed() {
+    let keymap = Keymap::defaults();
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let (tx, rx) = channel();
+    host.handle(numbered_danger_request(tx), &mut vm, 0);
+    // A tall screen reviews rows 1-20 in two pages of ten.
+    host.render_in(100, Some(30), &Theme::plain());
+    press_shown(&mut host, &keymap, 100, Some(30), "pagedown");
+    press_shown(&mut host, &keymap, 100, Some(30), "up");
+    // The terminal shrinks: rows 21-24 were never on any screen.
+    let short = dialog_box(&mut host, 100, Some(SHORT_ROWS)).join("\n");
+    assert!(short.contains("rows 11–12 of 24"), "{short}");
+    assert_eq!(
+        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "enter"),
+        DialogKey::Consumed
+    );
+    assert!(rx.try_recv().is_err(), "rows 21-24 are still unseen");
+    // Page down the rest of the rows; only after the last one was drawn does allow answer.
+    for _ in 0..6 {
+        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "pagedown");
+    }
+    let last = dialog_box(&mut host, 100, Some(SHORT_ROWS)).join("\n");
+    assert!(last.contains("rows 23–24 of 24"), "{last}");
+    assert_eq!(
+        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "enter"),
+        DialogKey::Closed
+    );
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Always);
+}
+
+/// #2165: a terminal too short for the dialog's own rows keeps commands cut off above the
+/// screen unseen: an allow stays disabled there too, and Deny is still immediate. Nothing is
+/// granted.
+#[test]
+fn dangerous_dialog_terminal_shorter_than_the_dialog_never_allows() {
+    let keymap = Keymap::defaults();
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let (tx, rx) = channel();
+    host.handle(numbered_danger_request(tx), &mut vm, 0);
+    // Eight rows for a dialog that needs ten around its first preview row.
+    for _ in 0..40 {
+        press_shown(&mut host, &keymap, 100, Some(8), "pagedown");
+    }
+    press_shown(&mut host, &keymap, 100, Some(8), "up");
+    assert_eq!(
+        press_shown(&mut host, &keymap, 100, Some(8), "enter"),
+        DialogKey::Consumed
+    );
+    assert!(rx.try_recv().is_err(), "a row cut off the screen is not reviewed");
+    // Deny answers at once, before any review.
+    assert_eq!(
+        press_shown(&mut host, &keymap, 100, Some(8), "escape"),
+        DialogKey::Closed
+    );
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Deny);
 }
 
 /// #1772: two sessions that loaded their settings before either saved each add a different

@@ -74,6 +74,11 @@ const NO_EDITOR: &str = "No editor: set externalEditor, VISUAL or EDITOR";
 /// Most files indexed for `@` completion.
 const FILE_INDEX_MAX: usize = 5000;
 
+/// Rows the fullscreen footer below a dialog spends before any extension status line: the
+/// activity line, the HUD and the hint bar. A dialog bounds its preview page by what is left,
+/// so a row counted as reviewed is a row on screen; an over-estimate only shortens the page.
+const FULLSCREEN_FOOTER_ROWS: usize = 3;
+
 /// The selector shown in place of the editor.
 enum Overlay {
     Model(ModelSelector),
@@ -2917,7 +2922,8 @@ impl<'a> Loop<'a> {
 
     /// Everything below the transcript: loader, widgets, the editor (or the open dialog or
     /// selector), the search bar and the footer. The cursor is relative to these lines.
-    fn bottom(&mut self, width: u16) -> (Vec<String>, Option<CursorPos>) {
+    /// `rows` is the terminal height when only its last rows stay visible (fullscreen).
+    fn bottom(&mut self, width: u16, rows: Option<usize>) -> (Vec<String>, Option<CursorPos>) {
         let mut lines: Vec<String> = Vec::new();
         // The loader line: a run in progress, or a run that waits for the user's answer.
         let status = if self.running() {
@@ -3063,7 +3069,26 @@ impl<'a> Loop<'a> {
         let outer = width;
         let width = if framed { frame_inner_width(outer) } else { outer };
         let (body, cursor) = if self.dialogs.is_open() {
-            let body = self.dialogs.render(width, &self.theme);
+            // Fullscreen keeps only the last terminal rows. Everything drawn below the dialog
+            // is counted first (the footer, an extension's own footer, widgets and the search
+            // bar), so the dialog pages inside the rows that are really left for it.
+            let below: usize =
+                self.vm.widgets_below.values().map(Vec::len).sum::<usize>() + usize::from(self.search_open);
+            let footer = match &self.vm.footer_override {
+                Some(lines) => lines.len(),
+                None => {
+                    let statuses = self
+                        .vm
+                        .status
+                        .ext_status
+                        .values()
+                        .filter(|text| !text.is_empty())
+                        .count();
+                    FULLSCREEN_FOOTER_ROWS + statuses
+                }
+            };
+            let height = rows.map(|r| r.saturating_sub(below + footer));
+            let body = self.dialogs.render_in(width, height, &self.theme);
             (body, self.dialogs.cursor())
         } else if let Some(ov) = self.overlay.as_mut() {
             let theme = &self.theme;
@@ -3226,7 +3251,9 @@ impl<'a> Loop<'a> {
         }
         let mut live = step.live;
         let top = live.len();
-        let (bottom, cursor) = self.bottom(width);
+        // The regular layout keeps the frame lines in the scrollback, so the dialog is not
+        // bounded to the terminal height here.
+        let (bottom, cursor) = self.bottom(width, None);
         live.extend(bottom);
         let cursor = cursor.map(|p| CursorPos {
             row: p.row + top,
@@ -3252,7 +3279,8 @@ impl<'a> Loop<'a> {
         let width = cols.max(1);
         let rows = rows as usize;
         self.reset_screen = false;
-        let (bottom, cursor) = self.bottom(width);
+        // Only the screen's rows survive here: the dialog pages within them.
+        let (bottom, cursor) = self.bottom(width, Some(rows));
         let bottom_rows = bottom.len().min(rows);
         let vp_rows = rows - bottom_rows;
         self.viewport.resize(width, vp_rows);
