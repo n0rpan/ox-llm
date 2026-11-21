@@ -120,6 +120,7 @@ pub struct Shared {
     /// W4: the frontend's hook told when a background job wakes its session (see
     /// [`Handle::set_wake_notifier`]); `None` for a headless host.
     pub wake: Mutex<Option<WakeNotify>>,
+    pub(crate) wire_evidence: std::sync::OnceLock<crate::wire_evidence::WireEvidence>,
 }
 
 /// W4: the frontend's wake for a session. Called with the session id that has queued input.
@@ -471,6 +472,7 @@ impl Shared {
             dirty: std::sync::atomic::AtomicBool::new(false),
             gate: Gate::default(),
             wake: Mutex::new(None),
+            wire_evidence: std::sync::OnceLock::new(),
         }
     }
 

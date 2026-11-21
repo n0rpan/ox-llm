@@ -18,6 +18,7 @@ oxa-perm.workspace = true
 oxa-compact.workspace = true
 oxa-config.workspace = true
 oxa-resources.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 

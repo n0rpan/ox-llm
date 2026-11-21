@@ -285,6 +285,9 @@ fn run_inner(
         let mut retried = false;
         let mut empty_retries: u32 = 0;
         let mut replays: u32 = 0;
+        if let Some(capture) = st.shared.wire_evidence.get() {
+            capture.new_request();
+        }
         let turn = loop {
             // A run that continues after a persisted cut, failure or wrap-up is still foreground
             // work: re-arm the signal that `persist` cleared, so input during the replay or the
