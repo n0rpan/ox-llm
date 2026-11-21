@@ -1269,6 +1269,16 @@ impl oxa_proto::Hooks for Probe {
     ) -> Option<Result<Option<String>, String>> {
         (self.0)(kind, args)
     }
+    /// A `ci` condition is answered over the network, like the GitHub probe's.
+    fn poll_access(&self, until: &serde_json::Value) -> Vec<oxa_proto::Access> {
+        if until["kind"] == "ci" {
+            vec![oxa_proto::Access::Net {
+                host: "github.com".into(),
+            }]
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// Deps with one probe hook set and a 1-second poll interval.
@@ -1910,6 +1920,46 @@ fn a_goal_whose_controls_were_deselected_pauses_with_a_reason_instead_of_looping
         .count();
     assert_eq!(continues, 0);
     assert_eq!(engine.requests().len(), 1);
+}
+
+/// #1919: a `wait` whose probe uses the network is network access in plan and ask mode (plan
+/// denies, ask asks once per host) and unchanged elsewhere; a local `job_done` asks nothing.
+#[test]
+fn wait_on_a_network_probe_declares_net_access_in_plan_and_ask_only() {
+    use oxa_proto::{Access, Mode, Tool, ToolCtx};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let probe = Probe(Box::new(|_, _| None));
+    let session = Session::open(probe_deps(&env, engine, probe), Open::New).unwrap();
+    let wait = session.inner().active.get("wait").expect("wait is declared");
+    let cancel = oxa_proto::CancelToken::new();
+    let spill = env.tmp();
+    let work = env.work();
+    let sandbox = NoSandbox;
+    let access = |mode: Mode, until: &str| {
+        let cx = ToolCtx {
+            checked: &[],
+            cwd: &work,
+            spill_dir: &spill,
+            sandbox: &sandbox,
+            mode,
+            cancel: &cancel,
+            env: &[],
+            tune: Default::default(),
+            hidden: None,
+        };
+        let args: serde_json::Value =
+            serde_json::from_str(&format!(r#"{{"seconds":60,"reason":"probe","until":{until}}}"#)).unwrap();
+        wait.access(&args, &cx).unwrap()
+    };
+    let ci = r#"{"kind":"ci","sha":"abc123","workflow":"lane"}"#;
+    let net = vec![Access::Net {
+        host: "github.com".into(),
+    }];
+    assert_eq!(access(Mode::Plan, ci), net);
+    assert_eq!(access(Mode::Ask, ci), net);
+    assert!(access(Mode::Workspace, ci).is_empty());
+    assert!(access(Mode::Ask, r#"{"kind":"job_done","job":"j1"}"#).is_empty());
 }
 
 /// #2183: what `oxa send` queues for a busy goal session. `steer` and `later` are admitted once,

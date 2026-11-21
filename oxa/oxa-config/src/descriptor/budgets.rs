@@ -162,6 +162,19 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     .web(WebEdit::ReadOnly)
     .advanced()
     .user_only(),
+    d(
+        "oxa.run.wrapUpTokens",
+        Group::Budgets,
+        "Run limits",
+        "Wrap-up reply size",
+        "Output cap of the final turn when --max-time, --max-tokens or SIGTERM ends a run. Unset = the model's own output limit, at most 4096.",
+    )
+    .key(Kind::Number, "null")
+    .number(Unit::Tokens)
+    .apply(Apply::Reload)
+    .web(WebEdit::ReadOnly)
+    .advanced()
+    .user_only(),
 ];
 
 #[cfg(test)]

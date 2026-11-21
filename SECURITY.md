@@ -17,6 +17,12 @@ Treat as **high** severity:
 Skill reactivation after compaction is a user-only opt-in. A project setting cannot add
 the skill reactivation instructions to later turns.
 
+Dangerous-command rules read one parsed `Effects` value per shell command (launchers unwrapped, the directory
+chain of `env -C`, files read, token-printing commands). `credential-read` and `git-hook-write` are approval
+prompts in standard mode, not a sandbox; yolo does not reach them. A saved unattended grant never covers a
+pipeline fed by anything but a literal `echo`/`printf`, or an input redirect. A `wait` probe that runs `gh`
+is network access (plan denies, ask asks once per session).
+
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.
 The native cloud gateway's default recommendations use only configured API-key providers
@@ -31,6 +37,7 @@ and nonempty values from oxa's environment or the command spec whose names conta
 execution, without changing sandbox or network policy. Output masking is not isolation.
 Unattended runs include ownerless RPC and headless runs pursuing a goal. Exec hooks
 keep their dedicated sandbox. Network-disabled model shells mask host runtime IPC.
+Where a command runs is one decision (`oxa-sandbox/src/decision.rs`, `ExecPolicy`). Exec hooks run in the sandbox: on Linux they are refused without bwrap, never run on the host instead; under yolo and off Linux they run with your rights, and `--offline` still holds. An attended interactive session with no OS sandbox requested and no usable bwrap keeps `oxa.sandbox.net: off` as a start warning only. The output of every command that runs with your rights has the host credentials scrubbed at one sink, on every path, and the GitHub CLI credential discovery for that scrub never gives `gh` the network the owner turned off.
 Local model setup refuses agent tool invocations before running engine admission or writing user
 settings.
 
@@ -86,7 +93,7 @@ Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursio
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
 
-Image input (B2b): `read` sends an image to a model that takes images only through the same pinned, private-path-checked open as text, when the engine says it takes images, and when `images.blockImages` is off. A project may enable that opt-out but cannot disable the owner's user setting. The user-only `oxa.read.maxImageBytes` (default 20 MiB, `0` = no limit) bounds both an individual image and the aggregate images across retained session history and the current tool-call batch; a result that would cross the limit is not sent and names the limit. An image read that skips the pinned open or the private-path rules is high severity.
+Image input (B2b): `read` sends an image to a model that takes images only through the same pinned, private-path-checked open as text, when the engine says it takes images, and when `images.blockImages` is off. A project may enable that opt-out but cannot disable the owner's user setting. The user-only `oxa.read.maxImageBytes` (default 20 MiB, `0` = no limit) bounds an individual tool-call batch of images and the images each request sends: the newest fit and older ones are replaced by a text marker (a lowered limit applies to resumed history too, and `images.blockImages` hides stored images the same way), the stored session is unchanged, and one warning is recorded when the session stores more image bytes than the limit (also after a compaction). A batch over the limit is not sent and names the limit. An image read that skips the pinned open or the private-path rules is high severity.
 
 Before `oxa work` publishes or pushes a lane candidate, the runner scans the exact commits added
 to the destination for credential-like content and refuses the push on a finding. Lane workers do
@@ -106,6 +113,19 @@ can select it. The normal permission check covers both the source and the new wo
 launch still uses the same child permission ceiling and sandbox policy.
 
 Dangerous commands are a floor prompt in the interactive run, and an unattended run (a worker, a subagent, a headless goal: no one to ask) never waits for an answer (#1512). `oxa.approval.unattended` is the owner setting, user settings only: `auto` (the default) refuses the command under the OS sandbox and files an approval request without one, `refuse` always refuses, `request` always files a request. Refusals are returned without writing an approval record, so repeated model-controlled commands cannot grow the desk. Requests live in `<agent dir>/approvals/` (directory 0700, one record per request at 0600, written atomically under a private temporary name, never following a symlink or an agent directory owned by another user) and are answered only by the owner through `oxa send <session> --approve <id> once|session|always|deny`, authenticated through the session's owner-confirm broker (or a direct terminal confirmation), or on the lead web approvals page, never by inbox text or model output. A `once` grant is consumed by the run that retries the command; `session` grants last only for the run that filed the request, including when the persisted session is resumed. `always` is recorded in the user-only `oxa.approval.always` list: its desk record also holds only in the run that was answered, and later runs read the list, so removing a line there revokes it. A command that reads its input from a file or stdin (an input redirection, `xargs`, `read`, `--files-from`) is refused unattended like shell input, and no saved grant covers it, because the reviewed text does not fix what it acts on. A grant is bound to the canonical directory it was reviewed in, a wipe takes the desk lock, the newest 500 `refused` and 500 `pending` records are kept (older ones of that status rotate out; answered grants never do), and listings escape control, bidi and zero-width format characters. A finding that asks for a default-off switch, for an unattended run to wait indefinitely, or for the desk to take an answer from a model or a project file is answered here.
+
+## Loopback surfaces
+
+Each loopback listener that can start a model request or spend cloud budget needs a client proof beyond the same-user peer. The in-process cloud gateway has no listener.
+
+| Listener | Client proof |
+| --- | --- |
+| share (`oxa share`) | guest bearer |
+| a2a server | capability token |
+| oxe-server (started by oxa) | `OXE_API_KEY_FILE` key |
+| `oxa lead serve`, local mode | per-start client token, cookie or bearer (#193) |
+
+`oxa lead serve` mints a 256-bit token at start, prints `http://127.0.0.1:<port>/?t=<token>` once on the owner's foreground stdout (never the journal), and writes it to `<agent dir>/lead-client-token` (directory 0700, file 0600, replaced on every start, removed on clean exit). A request without it, page or POST, is refused with 401 and the fixed journal fact `reason=client_token`. Limit: under the interactive no-sandbox default, a same-user command that deliberately reads the agent directory can still obtain the token. The token stops the silent, accidental and scripted path (a `curl` to a known port) and every sandboxed or unattended run; no OS sandbox is added to close the rest.
 
 ## Sandbox standard (owner decision)
 
@@ -182,14 +202,12 @@ confirmation only from the owner: yolo chosen for the session (answer yes, shown
 owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
 A typed yes answers only a confirmation whose dialog oxa has already shown to the owner (the broker
 records shown requests; a yes with no shown dialog, or for a different request id, does not count).
-A consumer a model-run command starts cannot tell a fake listener from the broker by the socket
-path, because the command controls its environment: it trusts only the sandbox's pinned mount point
-or a listener verified through the peer's credentials as the session's own oxa process (an ancestor
-of the consumer running the same executable as the same user). A consumer that accepts an answer
-from an unverified socket is high. In yolo nothing changes: the model already has the owner's rights
-and the broker answers yes. The question text is the requesting process's own words and is shown as
-data, marked as requested by the process. Off Linux the peer check is unavailable and a consumer
-trusts only the sandbox's pinned mount.
+The socket path is not authority. In the Linux sandbox, clients require the pinned mount and a
+same-user peer outside the sandbox's PID namespace. Outside the sandbox on Linux or macOS, they
+require the peer to be the same user and the unique ancestor running the same oxa executable.
+Clients authenticate the connection before sending the question; unknown or ambiguous identities
+cannot approve. In yolo the broker answers yes, without changing publication scans or credentials.
+The question is shown as the requesting process's text, not an oxa instruction.
 A confirmation that a model-run command can satisfy without the broker is high. A broker answer
 derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
 The broker's state machine, bounds and records do not depend on the extension host pump. A request is a structured, length-prefixed frame (title and body fields); an over-limit length is refused unread with a `reason` (`too_large`, `not_servable`, `closed`, `busy_limit`, `bad_request`). The session thread's `serve` picks a request, creates its per-dialog cancel ticket and marks it shown in one step under the broker's lock, so a typed yes that arrives before the UI has registered the dialog is neither lost nor able to dismiss another dialog. In yolo a request is answered at once, keeps no pending state and leaves a compact record (hash, size, first title line, a count for identical consecutive requests), never the text; a dialog or typed answer keeps the full text, which the owner paced. A finding that asks for yolo to retain every request body is answered here.
@@ -200,7 +218,10 @@ Linux sandbox the broker socket is mounted only where bwrap denies nested user n
 (`--disable-userns`), so a command cannot stack a fake listener over the trusted mount point; a
 broker mount without that denial is high. Publishing hands `gh` the approved bytes through a sealed
 descriptor (`--body-file /dev/fd/N`), never a pathname a command could swap after the yes.
- Lane-push approval uses this broker when a session launches `oxa work`, including through an
-agent child; terminal and ambient-variable compatibility approval is unavailable to agent
-processes.
+
+Lane-push approval, `oxa work --publish` and `--report-problems` use this broker when a session
+launches `oxa work`. A direct owner invocation can still use `/dev/tty`; agent markers and piped
+input do not approve. The legacy work-report workflow asks before sending scrubbed worker search
+queries, then separately previews any write. Semantic dedupe uses the owner's explicit opt-in.
+
 Named cloud providers (`oxa.cloud.providers`) are user-only. A provider selects a distinct non-built-in key entry in the existing protected cloud secret store. The owner's HTTPS API base pins discovery and chat; redirects are not followed. A model list, project setting or per-model override cannot replace the base, protocol, key selector or billing class. Cached lists are bound to the base and credential, and catalog replies that echo the credential are refused. Public metadata lookup sends no key and cannot supply another provider's prices for a named route.

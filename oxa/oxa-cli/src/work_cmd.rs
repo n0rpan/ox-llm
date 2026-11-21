@@ -263,8 +263,10 @@ pub(crate) fn run(
             }
             end -= 1;
         }
-        if (publish || reports) && agent_launched(env) {
-            return Err("publishing and problem reporting require the owner outside an agent tool".into());
+        if (publish || reports) && agent_launched(env) && !crate::report_cmd::has_session_broker(env) {
+            return Err(
+                "publishing and problem reporting from an agent tool require the session owner broker".into(),
+            );
         }
         let task_args = &args[..end];
         let is_trusted = trusted(&root, env, dirs)?;
@@ -543,7 +545,7 @@ impl oxa_work::PacketFeed for GhPacketFeed {
 
 /// Whether the process runs under a coding agent or subagent, whose actions are never
 /// the owner's own confirmation.
-fn agent_launched(env: &Env) -> bool {
+pub(crate) fn agent_launched(env: &Env) -> bool {
     env.pairs().iter().any(|(name, _)| {
         matches!(
             name.as_str(),
@@ -583,21 +585,17 @@ fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs
     // Compatibility for an owner-controlled launcher. Agent children authenticate the owner's
     // answer through the broker instead. Resolved on both paths: a queue launch has no single
     // question to ask, so its lane tasks would stay unapprovable without this.
-    if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1") && !agent_launched(env) {
+    if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1")
+        && !agent_launched(env)
+        && env.get(oxa_core::owner_confirm::SOCK_ENV).is_none()
+    {
         policy.push_approved = true;
     }
     if ask && !policy.push_approved {
         let question = "Lane acceptance will push each accepted commit to origin and wait for lane CI. Type yes to allow pushes for this run: ";
-        if let Some(socket) = env.get(oxa_core::owner_confirm::SOCK_ENV) {
-            policy.push_approved = oxa_core::owner_confirm::ask(
-                Path::new(socket),
-                &oxa_core::owner_confirm::Request::ask("Allow lane pushes", question),
-            )
-            .answer()
-                == Some(true);
-        } else if !agent_launched(env) {
-            policy.push_approved = crate::report_cmd::tty_confirm(env)(question) == Some(true);
-        }
+        // One authenticated ask: the broker when the session exported one, otherwise the
+        // owner's own terminal. An agent child has neither.
+        policy.push_approved = crate::report_cmd::tty_confirm(env)(question) == Some(true);
     }
 }
 
