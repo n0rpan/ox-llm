@@ -31,28 +31,22 @@ pub(super) fn blocks(text: &str) -> Vec<String> {
     for event in Parser::new_ext(text, options) {
         match event {
             Event::Start(tag) => {
-                match tag {
-                    Tag::Paragraph if depth == 0 => {
+                if let Tag::Paragraph = tag {
+                    if depth == 0 {
                         current.clear();
                         block_paragraphs = 0;
-                        depth += 1;
-                        block_paragraphs += 1;
-                        current.push_str("<p>");
-                        continue;
                     }
-                    Tag::Paragraph => {
-                        block_paragraphs += 1;
-                        current.push_str(if block_paragraphs > 1 { "</p><p>" } else { "<p>" });
-                        depth += 1;
-                        continue;
-                    }
-                    _ => {}
+                    block_paragraphs += 1;
+                    current.push_str(if block_paragraphs > 1 { "</p><p>" } else { "<p>" });
+                    depth += 1;
+                    continue;
                 }
                 if depth == 0 {
                     current.clear();
                 }
                 depth += 1;
                 match tag {
+                    Tag::Paragraph => {}
                     Tag::Heading { level, .. } => {
                         let _ = write!(current, "<h{} class=md-h{}>", level as u8, level as u8);
                     }

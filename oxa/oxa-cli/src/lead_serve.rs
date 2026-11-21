@@ -801,7 +801,10 @@ impl Source {
             Some(OwnerSession::Dedicated(binding)) => Some(binding),
             _ => None,
         };
-        let entries = dedicated.and_then(|binding| binding.read_entries().ok());
+        let entries = dedicated.and_then(|binding| match binding.read_entries() {
+            Ok(entries) => Some(entries),
+            Err(_) => None,
+        });
         let view = crate::lead_page::View {
             sessions: owner
                 .zip(rows.as_deref())

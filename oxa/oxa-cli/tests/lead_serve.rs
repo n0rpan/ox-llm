@@ -1030,7 +1030,10 @@ fn chat_page_renders_the_session_as_messages_with_one_composer() {
     assert_eq!(page.matches("method=post action=/chat").count(), 2, "{page}");
     // The header's session popover lists the owner's running sessions; a dedicated Lead
     // chat is reached through its own setting, not from that list.
-    assert!(page.contains("<details class=sessions><summary>Sessions"), "{page}");
+    assert!(
+        page.contains("<details class=sessions><summary>Sessions"),
+        "{page}"
+    );
     assert_eq!(page.matches("name=message").count(), 1, "{page}");
     assert!(page.contains("id=lead-message"), "{page}");
     // Session identity is not rendered: no session id and no project path.
