@@ -183,9 +183,10 @@ situation) and every rule is a derivation over it:
 - `review_held` reports each PR with unresolved review threads (queued PRs first,
   then oldest thread first, within the report bound): exact head, thread counts,
   oldest thread age, authors, `incomplete` when the thread page was cut off, and
-  the assignee. `queued_findings:<pr>` and the ask `lead:stuck:queued-findings:<pr>`
-  mark such a PR in the queue at its exact head; the signal ending on a later
-  pass is the recorded dequeue.
+  the assignee. Only a current thread holds landing or escalates: an
+  outdated-only hold is reported and never asks. `queued_findings:<pr>` and the
+  ask `lead:stuck:queued-findings:<pr>` mark such a PR in the queue at its exact
+  head; the signal ending on a later pass is the recorded dequeue.
 - A stall with no report row that has an assignee and no escalation does not end
   the pass: it still proposes the next Board action, with `stuck.signals` attached.
 
@@ -213,6 +214,12 @@ Three more rules close the loop on what the Lead cannot see or send:
   with its account-not-connected refusal and posts no summary afterwards, the
   decision is `requester_rejected`: nothing is re-sent under that identity, and the
   Lead escalates `lead:stuck:review-identity:<pr>` (signal `review_rejected:<pr>`).
+
+
+- **Worker gone.** The loop reads the Lead session's worker registry with each pass. A
+  stall-report assignee whose worker is Dead or Stopped adds `worker_gone:<name>` and
+  gets no assignee, so the existing no-worker escalation asks the owner instead of
+  reporting `stuck_assigned`.
 
 
 ## Event integration after L1

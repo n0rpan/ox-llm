@@ -444,7 +444,15 @@ fn a_thread_held_pr_is_reported_with_its_head_age_and_owner() {
     assert_eq!(row["assignee"], json!("idle-worker"));
     assert!((3600..3700).contains(&row["oldest_thread_age_secs"].as_u64().unwrap()));
     assert_eq!(row["incomplete"], json!(false));
-    assert_eq!(state["state"], "stuck_assigned", "{state}");
+    // The hold is a report only: the pass still proposes the next Board action.
+    assert_eq!(state["state"], "awaiting_owner", "{state}");
+    assert!(
+        state["asks"][0]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("lead:board:"),
+        "{state}"
+    );
 
     add_landing(&board, json!({"90": held(true)}));
     let state = run_once(&command, None);
@@ -487,6 +495,45 @@ fn a_refused_review_identity_is_escalated_never_waited_on() {
 }
 
 #[test]
+fn an_assignee_with_a_dead_worker_is_escalated_instead_of_reported_assigned() {
+    // #1382: a lease holder whose worker process is gone cannot take the red PR.
+    let (_test, dirs, board, _situation, id, command) = lead_test();
+    let now = oxa_proto::time::now_ms() / 1000;
+    let gone = oxa_cli::workers::registry::WorkerRecord {
+        name: "gone-worker".into(),
+        session_id: "child-gone".into(),
+        pid: u32::MAX - 1,
+        pgid: u32::MAX - 1,
+        ..Default::default()
+    };
+    oxa_cli::workers::registry::save(&dirs.agent_dir, &id, &[gone]).unwrap();
+    write_sample(
+        &board,
+        now,
+        &[(
+            68,
+            Action::FixRequiredCi,
+            true,
+            Some(now + 60),
+            Some("gone-worker"),
+        )],
+        Some(panels_record(now, 46 * 60)),
+    );
+    let state = run_once(&command, None);
+    assert_eq!(state["state"], "stuck_escalated", "{state}");
+    assert!(state["stuck"]["signals"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("worker_gone:gone-worker")));
+    assert_eq!(escalated(&state), ["lead:stuck:ci:68"]);
+    let row = stall_report(&state)
+        .into_iter()
+        .find(|row| row["pr"] == json!(68))
+        .unwrap();
+    assert_eq!(row["assignee"], Value::Null);
+}
+
+#[test]
 fn a_queued_pr_with_a_current_thread_is_escalated_for_dequeue() {
     // #1673: a queued head with an unresolved current thread asks the owner to dequeue.
     let (_test, _dirs, board, _situation, _id, command) = lead_test();
@@ -511,6 +558,28 @@ fn a_queued_pr_with_a_current_thread_is_escalated_for_dequeue() {
         .as_array()
         .unwrap()
         .contains(&json!("queued_findings:95")));
+}
+
+#[test]
+fn a_queued_pr_with_only_outdated_threads_is_not_escalated() {
+    let (_test, _dirs, board, _situation, _id, command) = lead_test();
+    let now = oxa_proto::time::now_ms() / 1000;
+    let panels = queue_of(panels_record(now, 10 * 60), &[(95, "a".repeat(40))]);
+    write_sample(
+        &board,
+        now,
+        &[(95, Action::Ready, true, None, None)],
+        Some(panels),
+    );
+    add_landing(
+        &board,
+        json!({"95": {"queue_alarm": false, "queue": {"enqueued_at": now - 60}, "threads": {
+            "unresolved": 1, "current": 0, "oldest_at": now - 120, "authors": ["reviewer"], "incomplete": false,
+        }}}),
+    );
+    let state = run_once(&command, None);
+    assert!(escalated(&state).is_empty(), "{state}");
+    assert!(!state["asks"].to_string().contains("queued-findings"), "{state}");
 }
 
 #[test]

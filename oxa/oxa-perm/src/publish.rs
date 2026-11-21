@@ -781,6 +781,11 @@ fn urls_unchanged(session: &Path, target: &Path) -> bool {
     }
 }
 
+/// A `core.*` key (lower case, without the section) whose value is a program git runs.
+pub(crate) fn program_running_core_key(key: &str) -> bool {
+    matches!(key, "sshcommand" | "gitproxy" | "hookspath")
+}
+
 fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Option<Vec<String>>) {
     let mut fp: Vec<String> = Vec::new();
     let mut config_risky = false;
@@ -840,7 +845,7 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Option<Vec<St
             ("remote", None) => key == "pushdefault",
             ("remote", Some("origin")) => matches!(key.as_str(), "push" | "pushurl" | "mirror"),
             ("url", _) => key == "pushinsteadof",
-            ("core", _) => matches!(key.as_str(), "sshcommand" | "gitproxy" | "hookspath"),
+            ("core", _) => program_running_core_key(&key),
             ("branch", Some(b)) if b == branch && implicit => match key.as_str() {
                 "remote" | "pushremote" => val != "origin",
                 "merge" => val != format!("refs/heads/{branch}"),
