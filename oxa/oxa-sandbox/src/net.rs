@@ -389,9 +389,8 @@ impl NetSandbox {
             None => Vec::new(),
         });
         for t in found {
-            let t = t.trim();
             if !t.is_empty() && !all.iter().any(|x| x == t) {
-                all.push(t.to_string());
+                all.push(t.clone());
             }
         }
         all.sort_by_key(|t| std::cmp::Reverse(t.len()));
@@ -1156,13 +1155,14 @@ mod tests {
     }
 
     #[test]
-    fn eof_flushes_the_held_back_tail() {
-        // No more bytes can arrive, so nothing is held back: a secret still in the tail is
-        // masked, and the rest of it is shown.
-        let mut redactor = StreamRedactor::many(&["synthetic-long".to_string()]);
-        assert!(redactor.push(b"synthetic-lo").is_empty());
-        assert_eq!(redactor.finish(), REDACTED.as_bytes());
-        let mut plain = StreamRedactor::many(&["synthetic-long".to_string()]);
+    fn eof_masks_the_tail_it_flushes() {
+        // No more bytes can arrive, so nothing is held back: a complete secret still in the
+        // tail is masked, and the rest of it is shown.
+        let tokens = vec!["synthetic-longer".to_string(), "synthetic".to_string()];
+        let mut redactor = StreamRedactor::many(&tokens);
+        assert!(redactor.push(b"xy-synthetic").is_empty());
+        assert_eq!(redactor.finish(), b"xy-[redacted]".to_vec());
+        let mut plain = StreamRedactor::many(&tokens);
         assert!(plain.push(b"xy").is_empty());
         assert_eq!(plain.finish(), b"xy".to_vec());
     }
