@@ -124,8 +124,10 @@ def timing(job):
                f"/attempts/{env.get('GITHUB_RUN_ATTEMPT', '1')}/jobs?per_page=100")
         if not url.startswith('https://'):
             raise ValueError('unexpected API address')
-        request = urllib.request.Request(url, headers={
-            'Accept': 'application/vnd.github+json', 'Authorization': f"Bearer {env['GH_TOKEN']}"})
+        headers = {'Accept': 'application/vnd.github+json'}
+        if env.get('GH_TOKEN'):  # empty on a PR from a fork: the workflow gives that run no token
+            headers['Authorization'] = f"Bearer {env['GH_TOKEN']}"
+        request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=20) as response:
             jobs = json.load(response)['jobs']
         mine = [entry for entry in jobs if entry.get('runner_name') == env['RUNNER_NAME']

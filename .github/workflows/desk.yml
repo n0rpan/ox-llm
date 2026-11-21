@@ -126,7 +126,8 @@ jobs:
       - name: Duration and runner wait
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          # A PR from a fork runs its own copy of the script: it gets no token and asks the public API without one.
+          GH_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
         run: python3 -I tools/ci/desk_contract.py timing "desk check"
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         # Only main seeds caches: queue and PR refs cannot share theirs (see checks.yml).
@@ -195,7 +196,8 @@ jobs:
       - name: Duration and runner wait
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          # A PR from a fork runs its own copy of the script: it gets no token and asks the public API without one.
+          GH_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
         run: python3 -I tools/ci/desk_contract.py timing "desk test"
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         # Only main seeds caches: queue and PR refs cannot share theirs (see checks.yml).
