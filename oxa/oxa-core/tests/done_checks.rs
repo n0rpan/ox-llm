@@ -767,8 +767,7 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
             // One batch: write the result, a command fails, a check passes over both.
             tools_turn(vec![
                 call("w", "write", json!({"path": "answer.json", "content": "decoded"})),
-                // A test run that reports a failure is a failure signal to adaptive thinking.
-                call("b", "bash", json!({"command": "cargo test -- --fail"})),
+                call("b", "bash", json!({"command": "false"})),
                 call("c", "bash", json!({"command": "true"})),
             ]),
             ScriptTurn::text("done"),

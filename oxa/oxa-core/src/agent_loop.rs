@@ -802,12 +802,10 @@ fn run_inner(
             done.note_artifacts(crate::done::checks_run(st));
             done.note_bash(st, &results);
             crate::exec::note_stored_images(st, &results, sink)?;
-            // Adaptive thinking (`think.rs`): the batch decides the next follow-up. It runs
-            // before the line below, because its first notice of a run decides whether the
-            // request carries `extra` (`think::before_reply`).
-            crate::think::observe(st, &calls, &results, sink, ui);
             // A new batch replaces the line: the next request carries this batch's result.
             artifacts = done.verified_artifacts(&st.cwd);
+            // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
+            crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;
             st.stats.tool_results += results.len() as u32;
             st.stats.context_tokens = st.transcript.context();
@@ -1020,6 +1018,8 @@ fn run_inner(
             )));
         }
         if let Some(text) = failed_check {
+            // #2295: the repair request carries the run's verified files (taken once).
+            artifacts = done.verified_artifacts(&st.cwd);
             crate::done::inject(st, text, sink, ui, run_msgs)?;
             continue;
         }
