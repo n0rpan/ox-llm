@@ -10,6 +10,7 @@
 mod advanced;
 mod budgets;
 mod compaction;
+mod desk;
 mod display;
 mod hidden;
 mod lead;
@@ -418,13 +419,14 @@ impl Descriptor {
     }
 }
 
-/// Every row, hidden ones included: the Display rows, then Models, Compaction, Lead and web,
-/// Safety, Advanced and the hidden schema-only rows.
+/// Every row, hidden ones included: the Display rows (the desktop app's last), then Models,
+/// Compaction, Lead and web, Safety, Advanced and the hidden schema-only rows.
 pub(crate) fn all_rows() -> &'static [Descriptor] {
     static ROWS: OnceLock<Vec<Descriptor>> = OnceLock::new();
     ROWS.get_or_init(|| {
         [
             display::ENTRIES,
+            desk::ENTRIES,
             budgets::ENTRIES,
             tools::ENTRIES,
             models::ENTRIES,

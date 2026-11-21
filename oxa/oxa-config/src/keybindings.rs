@@ -498,6 +498,59 @@ const ACTIONS: &[ActionDef] = &[
     },
 ];
 
+/// The desktop app's own actions (desk slice Z12). They are not part of [`ACTIONS`]: the terminal
+/// keymap, its `/hotkeys` listing and its key handling stay exactly as they are. The desktop
+/// loads [`Keymap::load_desk`], which holds both tables, so one keybindings.json rebinds both
+/// front ends. Defaults avoid every default of the `app.` ids and never use `super` alone on
+/// Linux, where it belongs to the window manager; `cmd` is the macOS spelling of the same action.
+const DESK_ACTIONS: &[ActionDef] = &[
+    ActionDef {
+        id: "desk.palette",
+        default_keys: &["ctrl+shift+k", "cmd+k"],
+        description: "Open the command palette",
+    },
+    ActionDef {
+        id: "desk.settings",
+        default_keys: &["ctrl+,", "cmd+,"],
+        description: "Open the settings pane",
+    },
+    ActionDef {
+        id: "desk.split",
+        default_keys: &["ctrl+\\", "cmd+\\"],
+        description: "Split the view, or close the split",
+    },
+    ActionDef {
+        id: "desk.focus.threads",
+        default_keys: &["alt+1", "cmd+1"],
+        description: "Focus the thread list",
+    },
+    ActionDef {
+        id: "desk.focus.transcript",
+        default_keys: &["alt+2", "cmd+2"],
+        description: "Focus the transcript",
+    },
+    ActionDef {
+        id: "desk.focus.compose",
+        default_keys: &["alt+3", "cmd+3"],
+        description: "Focus the compose box",
+    },
+    ActionDef {
+        id: "desk.focus.glance",
+        default_keys: &["alt+4", "cmd+4"],
+        description: "Focus the glance pane",
+    },
+    ActionDef {
+        id: "desk.focus.nextPane",
+        default_keys: &["ctrl+alt+right"],
+        description: "Focus the next pane of a split",
+    },
+    ActionDef {
+        id: "desk.focus.previousPane",
+        default_keys: &["ctrl+alt+left"],
+        description: "Focus the previous pane of a split",
+    },
+];
+
 fn warn(source: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic {
         level: Level::Warning,
@@ -506,12 +559,13 @@ fn warn(source: &str, message: impl Into<String>) -> Diagnostic {
     }
 }
 
-/// The conflict context of an id: `app` is one context; `tui.editor`, `tui.select`, ... are
-/// their own two-segment prefixes.
+/// The conflict context of an id: `app` is one context, and the desktop's `desk` ids share it
+/// (both are window-wide in the desktop app); `tui.editor`, `tui.select`, ... are their own
+/// two-segment prefixes.
 fn context_of(id: &str) -> String {
     let mut parts = id.split('.');
     match (parts.next(), parts.next()) {
-        (Some("app"), _) => "app".to_string(),
+        (Some("app" | "desk"), _) => "app".to_string(),
         (Some(a), Some(b)) => format!("{a}.{b}"),
         _ => id.to_string(),
     }
@@ -544,9 +598,20 @@ impl Keymap {
     pub fn actions() -> &'static [ActionDef] {
         ACTIONS
     }
+    /// The desktop app's own actions (`desk.palette`, `desk.settings`, `desk.split`,
+    /// `desk.focus.*`), which the terminal keymap does not hold.
+    pub fn desk_actions() -> &'static [ActionDef] {
+        DESK_ACTIONS
+    }
     pub fn defaults() -> Keymap {
-        let bindings = ACTIONS
-            .iter()
+        Keymap::of(ACTIONS.iter())
+    }
+    /// The desktop app's defaults: every terminal action, then [`Keymap::desk_actions`].
+    pub fn desk_defaults() -> Keymap {
+        Keymap::of(ACTIONS.iter().chain(DESK_ACTIONS))
+    }
+    fn of(actions: impl Iterator<Item = &'static ActionDef>) -> Keymap {
+        let bindings = actions
             .map(|a| {
                 let keys = a
                     .default_keys
@@ -561,7 +626,14 @@ impl Keymap {
     /// Defaults overridden by `<agent_dir>/keybindings.json`. Unknown id or unparsable key = a
     /// diagnostic; the default stays.
     pub fn load(dirs: &Dirs) -> (Keymap, Vec<Diagnostic>) {
-        let mut keymap = Keymap::defaults();
+        Keymap::load_over(Keymap::defaults(), dirs)
+    }
+    /// [`Keymap::desk_defaults`] overridden by the same `<agent_dir>/keybindings.json`, so an
+    /// owner rebind applies to the terminal and the desktop alike.
+    pub fn load_desk(dirs: &Dirs) -> (Keymap, Vec<Diagnostic>) {
+        Keymap::load_over(Keymap::desk_defaults(), dirs)
+    }
+    fn load_over(mut keymap: Keymap, dirs: &Dirs) -> (Keymap, Vec<Diagnostic>) {
         let path = dirs.keybindings_file();
         let source = path.display().to_string();
         let text = match std::fs::read_to_string(&path) {
@@ -603,7 +675,10 @@ impl Keymap {
                 continue;
             }
             let Some(slot) = self.bindings.iter_mut().find(|(name, _)| name == id) else {
-                diagnostics.push(warn(source, format!("unknown keybinding id {id:?}; ignored")));
+                // A desktop id in the file is not a mistake in the terminal: it is the desktop's.
+                if !DESK_ACTIONS.iter().any(|a| a.id == id) {
+                    diagnostics.push(warn(source, format!("unknown keybinding id {id:?}; ignored")));
+                }
                 continue;
             };
             match parse_keys(value) {
@@ -684,5 +759,57 @@ impl Keymap {
             .filter(|(_, _, ids)| ids.len() > 1)
             .map(|(_, key, ids)| (key, ids))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(s: &str) -> KeyId {
+        KeyId::parse(s).expect("key id")
+    }
+
+    /// The terminal keymap does not know the desktop ids: their keys stay free there (an
+    /// extension shortcut may use them), and a desktop rebind in keybindings.json is no warning.
+    #[test]
+    fn terminal_keymap_ignores_desk_ids_quietly() {
+        let mut terminal = Keymap::defaults();
+        for action in Keymap::desk_actions() {
+            assert!(terminal.keys_for(action.id).is_empty(), "{}", action.id);
+        }
+        let palette = Keymap::desk_defaults().keys_for("desk.palette");
+        assert!(!palette.is_empty());
+        assert!(terminal.actions_for(&palette[0]).is_empty());
+        let diagnostics =
+            terminal.apply(&serde_json::json!({"desk.palette": "ctrl+shift+y", "desk.nope": "f9"}));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("desk.nope"));
+    }
+
+    /// One file rebinds both front ends: the desktop keymap holds the terminal ids and its own.
+    #[test]
+    fn desk_keymap_takes_owner_rebinds_of_both_tables() {
+        let mut desk = Keymap::desk_defaults();
+        let diagnostics = desk.apply(&serde_json::json!({"desk.palette": "f1", "app.mode.cycle": "f2"}));
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert!(desk.matches(&key("f1"), "desk.palette"));
+        assert!(desk.matches(&key("f2"), "app.mode.cycle"));
+        // A terminal action the file does not name keeps the terminal's default in the desktop.
+        assert_eq!(
+            desk.keys_for("app.interrupt"),
+            Keymap::defaults().keys_for("app.interrupt")
+        );
+    }
+
+    /// No desktop default takes a key that an `app.` or another `desk.` action has by default.
+    #[test]
+    fn desk_defaults_do_not_clash() {
+        let clashes: Vec<_> = Keymap::desk_defaults()
+            .conflicts()
+            .into_iter()
+            .filter(|(_, ids)| ids.iter().any(|id| id.starts_with("desk.")))
+            .collect();
+        assert!(clashes.is_empty(), "{clashes:?}");
     }
 }
