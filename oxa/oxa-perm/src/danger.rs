@@ -389,7 +389,9 @@ impl DangerRules {
                 guard: ctx.guard,
             };
             match base.resolve(dir) {
-                Some(next) => moved = Some(next),
+                // The shell chdirs into the directory itself, so a symbolic link is followed before the next
+                // wrapper's `..`: `env -C link env -C ..` lands in the target's parent (#1768).
+                Some(next) => moved = Some(std::fs::canonicalize(&next).unwrap_or(next)),
                 None => unknown = true,
             }
         }
