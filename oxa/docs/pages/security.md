@@ -4,6 +4,8 @@ oxa is a local agent. The model reads your project, runs commands and writes fil
 
 The short threat model is in [SECURITY.md](../../SECURITY.md) at the repository root.
 
+oxa is built to be powerful, so it accepts some risk on purpose. The guards catch mistakes and ordinary model misbehaviour; they are not a wall against code that already runs as you, such as a hostile script in a project you trust and can write. What oxa holds firm: your secrets never leave the machine or reach the model, remote parties never get your credentials, code or spend, a project cannot change your user settings, and default settings never wipe your system. See "Risk we accept" in [docs/threat-model.md](../../../docs/threat-model.md).
+
 Execution context matters independently of the permission mode. Interactive CLI sessions do not use an OS sandbox by default; dangerous commands ask for your approval. Unattended runs without yolo keep the Bubblewrap sandbox by default. Yolo never uses an OS sandbox, including for unattended work it starts. In every context, the in-process guards remain: secret masking, private-path denials, user-only settings, and offline mode.
 
 ## Permission modes
