@@ -364,6 +364,7 @@ mod tests {
     fn a_recorded_pr_is_published_even_when_the_push_readback_is_unknown() {
         let head = "b".repeat(40);
         let mut record = accepted(&head);
+        record.acceptance_outcome = None;
         record.publish_receipt = Some(crate::PublishReceipt {
             requested: head.clone(),
             remote: None,
@@ -402,6 +403,7 @@ mod tests {
         assert!(!publication_pending(&published));
         // A record that only awaits its lane run does not owe publication yet.
         let mut awaiting_lane = accepted(&head);
+        awaiting_lane.acceptance_outcome = None;
         awaiting_lane.lane = Some(crate::lane::LaneVerdict {
             head,
             run_id: 1,

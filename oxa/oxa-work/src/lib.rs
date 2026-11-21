@@ -1971,6 +1971,14 @@ fn run_locked(
             }
         }
     }
+    // A record that reached its verdict keeps it: a publication step still owed is not an
+    // unspecified end (`acceptance_outcome`). A lane task that waited on its run owes that
+    // run's evidence, which its own outcome already carries.
+    if state.record.acceptance_outcome.is_none()
+        && matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo)
+    {
+        state.record.acceptance_outcome = Some(state.record.outcome);
+    }
     // #1376: a native task is held for publication; say what finished and what did not.
     if planned.native && state.record.outcome == Outcome::Done && state.record.detail.is_empty() {
         state.record.detail = "local verified; publication held".into();
@@ -1978,19 +1986,22 @@ fn run_locked(
     // #2304: a run whose own publication step (lane acceptance, or the native hold) leaves no
     // useful exact-head receipt is pending, not done. A lane task without lane CI performs no
     // publication step here (#1376 holds it), and a plain task publishes only on request.
-    let Some(step) = publication_step(state.task.lane_ci, state.record.lane.is_some(), planned.native) else {
-        writer
-            .save(&mut state, Step::Finished, observer)
-            .map_err(RunError::Checkpoint)?;
-        return Ok(state.record);
-    };
-    let pending = matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo)
-        .then(|| crate::PublicationStatus::summary(&state.record, state::now_ms()))
-        .flatten();
+    let step = publication_step(state.task.lane_ci, state.record.lane.is_some(), planned.native);
+    let pending = step.and_then(|step| {
+        matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo)
+            .then(|| {
+                crate::PublicationStatus::summary(&state.record, state::now_ms())
+                    .map(|pending| format!("{step}: {pending}"))
+            })
+            .flatten()
+    });
     if let Some(pending) = pending {
+        if state.record.acceptance_outcome.is_none() {
+            state.record.acceptance_outcome = Some(state.record.outcome);
+        }
         state.record.outcome = Outcome::PublicationPending;
         state.record.detail = if state.record.detail.is_empty() {
-            format!("{step}: {pending}")
+            pending
         } else {
             format!("{}; {pending}", state.record.detail)
         };
