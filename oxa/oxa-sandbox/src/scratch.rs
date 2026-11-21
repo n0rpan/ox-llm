@@ -83,9 +83,37 @@ fn start_time(pid: u32) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// The most a `.oxa-owner` record can hold: two numbers and a newline.
+const OWNER_RECORD_MAX: u64 = 64;
+
 /// The pid and start time a directory records, when it has the file.
+///
+/// `.oxa-owner` sits in the session directory, which is bound read-write at `/tmp` inside the
+/// sandbox, so a command writes it. The host therefore opens it without following a symlink and
+/// without waiting for a writer (`O_NOFOLLOW | O_NONBLOCK`), requires a plain regular file and
+/// reads at most [`OWNER_RECORD_MAX`] bytes: a FIFO, a link, a device or a longer file is no
+/// record at all, never a blocked or unbounded read in the owner's process.
 fn recorded_owner(dir: &Path) -> Option<(u32, u64)> {
-    let text = std::fs::read_to_string(dir.join(".oxa-owner")).ok()?;
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = dir.join(".oxa-owner");
+    if !std::fs::symlink_metadata(&path).ok()?.file_type().is_file() {
+        return None;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .ok()?;
+    // The entry may have been swapped between the check and the open.
+    if !file.metadata().ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(OWNER_RECORD_MAX + 1).read_to_string(&mut text).ok()?;
+    if text.len() as u64 > OWNER_RECORD_MAX {
+        return None;
+    }
     let mut it = text.split_whitespace();
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
 }
@@ -281,6 +309,53 @@ mod tests {
         assert!(!stale.exists(), "reused pid must be pruned");
         assert!(live.path().exists(), "the live session keeps its directory");
         assert!(plain.exists());
+    }
+
+    /// `make_a_fifo` in a session directory, as a sandboxed command could leave it.
+    fn a_fifo_at_owner(dir: &Path) {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let p = CString::new(dir.join(".oxa-owner").as_os_str().as_bytes()).unwrap();
+        // SAFETY: `p` is a valid NUL-terminated path; the call only creates that entry.
+        assert_eq!(unsafe { libc::mkfifo(p.as_ptr(), 0o600) }, 0, "mkfifo");
+    }
+
+    #[test]
+    fn a_model_written_owner_record_never_blocks_the_host_and_prunes_nothing() {
+        let env = oxa_fake::TestEnv::new();
+        let root = env.root().join("scratch");
+        let live = Scratch::create(&root).unwrap();
+        let start = start_time(std::process::id()).unwrap();
+        let stale = format!("{} {}\n", std::process::id(), start + 1);
+        let cases = [
+            ("fifo", Some(stale.clone())),
+            ("link-zero", None),
+            ("link-owner", Some(stale.clone())),
+            ("large", Some(format!("{stale}{}", "0".repeat(64)))),
+        ];
+        for (i, (name, record)) in cases.iter().enumerate() {
+            let dir = root.join(format!("{}-{}", std::process::id(), 900 + i));
+            std::fs::create_dir_all(&dir).unwrap();
+            let owner = dir.join(".oxa-owner");
+            match name {
+                &"fifo" => a_fifo_at_owner(&dir),
+                &"link-zero" => std::os::unix::fs::symlink("/dev/zero", &owner).unwrap(),
+                &"link-owner" => {
+                    let target = root.join(format!("{}-target", std::process::id()));
+                    std::fs::write(&target, record.as_deref().unwrap()).unwrap();
+                    std::os::unix::fs::symlink(&target, &owner).unwrap();
+                }
+                _ => std::fs::write(&owner, record.as_deref().unwrap()).unwrap(),
+            }
+            assert_eq!(recorded_owner(&dir), None, "{name} is no record");
+        }
+        // A session start after them (local) and the prune still complete, and a shape the
+        // model wrote under a live session's directory does not delete that session.
+        let _next = Scratch::create(&root).unwrap();
+        for i in 0..cases.len() {
+            assert!(root.join(format!("{}-{}", std::process::id(), 900 + i)).exists());
+        }
+        assert!(live.path().exists());
     }
 
     #[test]
