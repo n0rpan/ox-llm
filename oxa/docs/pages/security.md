@@ -93,6 +93,8 @@ On Linux, unattended non-yolo bash runs in a `bubblewrap` (`bwrap`) sandbox. Wit
 
 When a tool shell runs with host rights (including yolo bash and portable exec hooks), oxa masks exact copies of known GitHub credentials, the configured engine bearer key, and nonempty values from oxa's environment or the command's environment whose variable names contain `KEY`, `SECRET`, `TOKEN`, or `PASSWORD` (case insensitive). This applies to live and captured output even if the variable was not passed to the child. It does not keep a host command from reading or sending data, or detect transformed or unknown secrets.
 
+Where a command runs is one decision (`oxa-sandbox/src/decision.rs`, `ExecPolicy`). Exec hooks run in the sandbox: on Linux they are refused without bwrap, never run on the host instead; under yolo and off Linux they run with your rights, and `--offline` still holds. An attended interactive session with no OS sandbox requested and no usable bwrap keeps `oxa.sandbox.net: off` as a start warning only. The output of every command that runs with your rights has the host credentials scrubbed at one sink, on every path, and the GitHub CLI credential discovery for that scrub never gives `gh` the network the owner turned off.
+
 Off Linux (macOS) there is no OS sandbox. Bash and exec hooks run as `bash -c` with your full user rights, every result is flagged as unsandboxed, and oxa says so at start-up and to the model. The guards that live inside oxa stay: the file tools' denials and protected paths, credential masking, permissions and trust, and `--offline` for oxa's own provider and network calls. Bash gets the same cleared base environment as the Linux sandbox (a fixed `PATH`, `HOME`, `LANG`, `TERM`, toolchain variables), so credential variables of the oxa process are not inherited. A refused bash network cannot be enforced there: when `--offline` asks for one, or `oxa.sandbox.net: "off"` in an unattended run, bash is disabled for that run (start-up and the model's environment note say so) instead of running a command with the network the owner turned off. In an interactive session `oxa.sandbox.net: "off"` keeps bash and warns at start-up that the network is not restricted. With the network on, commands run as you and every result is flagged unsandboxed.
 
 What a command sees:
@@ -242,6 +244,19 @@ Offline mode is about the network only. It does not limit what those programs re
 ### Remote engine
 
 oxa refuses to send prompts to an engine on another host. The check is on the engine address (`OXA_ENGINE_URL` or `models.json`). Loopback addresses (`localhost`, `127.0.0.0/8`, `::1`) are always allowed. For any other host, set `oxa.engine.allowRemote: true` in the user settings. A project file cannot set it. oxa prints a warning at start-up while it is on.
+
+## Loopback surfaces
+
+Each loopback listener that can start a model request or spend cloud budget needs a client proof beyond the same-user peer. The in-process cloud gateway has no listener.
+
+| Listener | Client proof |
+| --- | --- |
+| share (`oxa share`) | guest bearer |
+| a2a server | capability token |
+| oxe-server (started by oxa) | `OXE_API_KEY_FILE` key |
+| `oxa lead serve`, local mode | per-start client token, cookie or bearer (#193) |
+
+`oxa lead serve` mints a 256-bit token at start, prints `http://127.0.0.1:<port>/?t=<token>` once on the owner's foreground stdout (never the journal), and writes it to `<agent dir>/lead-client-token` (directory 0700, file 0600, replaced on every start, removed on clean exit). A request without it, page or POST, is refused with 401 and the fixed journal fact `reason=client_token`. Limit: under the interactive no-sandbox default, a same-user command that deliberately reads the agent directory can still obtain the token. The token stops the silent, accidental and scripted path (a `curl` to a known port) and every sandboxed or unattended run; no OS sandbox is added to close the rest.
 
 ## Agent control channel
 
