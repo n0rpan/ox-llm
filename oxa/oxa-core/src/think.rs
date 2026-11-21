@@ -621,32 +621,6 @@ fn named_tool(word: &str) -> Option<String> {
     }
 }
 
-/// Whether `cmd` runs `tool` as a program, at a program position or as an interpreter the system
-/// will pick up: `python3`, `python3.12`, `/usr/bin/python3`, `#!/usr/bin/env python3`, or an
-/// explicit `python3 path`. A mention in a quoted argument (`echo python3`) is not a run. A
-/// versioned name also counts its bare form (`python3.12` runs when `python3` does); a bare name
-/// never counts another version (`python3` does not stand in for `python3.12`).
-pub(crate) fn executes_tool(cmd: &str, tool: &str) -> bool {
-    let bare = tool
-        .split_once('.')
-        .filter(|(_, version)| version.chars().all(|c| c.is_ascii_digit()))
-        .map_or(tool, |(name, _)| name);
-    // `#!/usr/bin/env python3` and `#!/usr/bin/python3`: the system runs it by interpreter.
-    let shebang = cmd.lines().next().and_then(|l| l.strip_prefix("#!")).is_some_and(|line| {
-        let words: Vec<&str> = line.split_ascii_whitespace().collect();
-        words.get(1) == Some(&"env") && words.get(2) == Some(&tool)
-            || words.get(1).is_some_and(|path| path.ends_with(&format!("/{tool}")))
-    });
-    shebang
-        || simple_commands(cmd).iter().any(|words| {
-            let Some(program) = program_words(words).first() else {
-                return false;
-            };
-            let program = program.split('/').next_back().unwrap_or(program);
-            program == tool || program == bare
-        })
-}
-
 /// Whether `cmd` names `tool` anywhere (`echo python3`, `grep python3 README`): a command that
 /// tried to use the tool, for the finish nudge to show.
 pub(crate) fn mentions_tool(cmd: &str, tool: &str) -> bool {
@@ -663,7 +637,7 @@ pub(crate) fn mentions_tool(cmd: &str, tool: &str) -> bool {
 
 /// The words of `cmd` split into simple commands at unquoted `;`, `&`, `|` and newlines, with
 /// quotes removed (a small shell tokenizer: enough to find program positions).
-pub(crate) fn simple_commands(cmd: &str) -> Vec<Vec<String>> {
+fn simple_commands(cmd: &str) -> Vec<Vec<String>> {
     let mut out = vec![Vec::new()];
     let mut word = String::new();
     let mut in_word = false;
@@ -720,7 +694,7 @@ pub(crate) fn simple_commands(cmd: &str) -> Vec<Vec<String>> {
 
 /// The words from the program on: leading `VAR=x` assignments, redirections and wrappers
 /// (`time`, `env`, `nice`, `command`, `exec`, `sudo`, `timeout <d>`) are skipped.
-pub(crate) fn program_words(words: &[String]) -> &[String] {
+fn program_words(words: &[String]) -> &[String] {
     let mut i = 0;
     while i < words.len() {
         let w = words[i].as_str();
@@ -970,29 +944,8 @@ mod tests {
         ] {
             assert_eq!(verifier(text), None, "{text}");
         }
-        let runs = |cmd: &str, tool: &str| executes_tool(cmd, tool);
-        for cmd in [
-            "python3.12 check.py",
-            "python3 -c 'print(1)'",
-            "/usr/bin/python3 check.py",
-            "cd src && PYTHONPATH=. python3 check.py",
-            "#!/usr/bin/env python3\nprint(1)",
-            "timeout 60 python3 check.py",
-        ] {
-            assert!(runs(cmd, "python3"), "{cmd}");
-        }
-        for cmd in [
-            "echo python3",
-            "grep -n python3 README.md",
-            "perl -e 'print 1'",
-            "pip3 install python3",
-        ] {
-            assert!(!runs(cmd, "python3"), "{cmd}");
-        }
-        // A versioned name also runs when its bare form does; a bare name never stands in.
-        assert!(runs("python3 check.py", "python3.12"));
-        assert!(!runs("python3.12 check.py", "python3"));
         assert!(mentions_tool("echo python3", "python3"));
+        assert!(!mentions_tool("echo python", "python3"));
     }
 
     #[test]

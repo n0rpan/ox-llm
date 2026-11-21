@@ -13,7 +13,7 @@ fn server() -> FakeServer {
 }
 
 fn run(env: &TestEnv, server: &FakeServer, mode: &str, task: &str) -> serde_json::Value {
-    let command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     let output = command
         .current_dir(env.work())
         .env_clear()
@@ -36,7 +36,7 @@ fn run(env: &TestEnv, server: &FakeServer, mode: &str, task: &str) -> serde_json
 fn a_named_check_tool_that_never_ran_is_recorded_as_a_substitute() {
     let env = TestEnv::new();
     let server = server();
-    // The task's own tool is the never-existing `python99`: no call to it can succeed.
+    // The task's own tool is `python99`, which exists nowhere.
     let record = run(
         &env,
         &server,
@@ -44,18 +44,8 @@ fn a_named_check_tool_that_never_ran_is_recorded_as_a_substitute() {
         "Write the regex. The grader applies it with Python 99.",
     );
     assert_eq!(record["verifier_unused"], "python99");
-    // Ordinary prose names no tool: the record says so and nothing is asked.
+    // Ordinary prose names no tool: the record says so and the run ends in its own turn.
     let plain = run(&env, &server, "json", "Explain how the prefix cache works.");
     assert!(plain["verifier_unused"].is_null());
     assert_eq!(server.requests().len(), 2);
-}
-
-#[test]
-fn a_task_that_names_no_tool_never_sees_the_question() {
-    let env = TestEnv::new();
-    let server = server();
-    let record = run(&env, &server, "print", "Explain how the cache works.");
-    assert!(record["verifier_unused"].is_null());
-    // One model turn: a run whose task names no tool gets no extra question.
-    assert_eq!(server.requests().len(), 1);
 }
