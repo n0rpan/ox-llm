@@ -61,7 +61,11 @@ fn package_list_reads_project_declarations_by_default() {
 
     // `always` is the same answer written out.
     owner_trust(&env, "always");
-    assert!(command(&env, "list", &[]).contains("(project)"));
+    let listed = command(&env, "list", &[]);
+    assert!(
+        listed.contains("project ") && listed.contains("installed at"),
+        "{listed}"
+    );
 }
 
 #[test]
@@ -94,7 +98,11 @@ fn package_list_hides_project_declarations_when_the_owner_opts_out() {
         let mut trust = TrustStore::load(&dirs.trust_file());
         trust.save(&dirs.trust_file(), &env.work(), true).unwrap();
         trust.approve(&dirs.trust_file(), &env.work()).unwrap();
-        assert!(command(&env, "list", &[]).contains("(project)"), "{value}");
+        let listed = command(&env, "list", &[]);
+        assert!(
+            listed.contains("project ") && listed.contains("installed at"),
+            "{value}: {listed}"
+        );
         owner_trust(&env, "always");
         trust.save(&dirs.trust_file(), &env.work(), false).unwrap();
         assert!(

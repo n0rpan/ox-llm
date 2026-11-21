@@ -63,7 +63,7 @@ fn terminal_loss(case: &str) {
             "synthetic gated context",
         )
         .unwrap();
-        settings.insert_str(0, r#""defaultProjectTrust":"ask","#);
+        settings.insert_str(1, r#""defaultProjectTrust":"ask","#);
     }
     let turns = if case == "tool" {
         vec![ScriptTurn::tool(
