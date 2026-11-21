@@ -825,24 +825,36 @@ fn a_failure_with_a_passing_check_names_the_verified_file_in_the_repair() {
 /// repair exactly as it was.
 #[test]
 fn a_repair_without_a_verified_result_is_unchanged() {
-    for turn in [
-        // A failing command, no check: the failure text only.
+    // A failing command and no passing check in the batch that wrote the file.
+    let no_check = vec![
         tools_turn(vec![
             call("w", "write", json!({"path": "a.txt", "content": "x"})),
             call("b", "bash", json!({"command": "false"})),
         ]),
-        // A passing check and a failing command, but this batch wrote no file.
+        ScriptTurn::text("done"),
+    ];
+    // The file was written in an earlier turn; this batch fails a command and passes a check,
+    // but wrote nothing itself, so it has nothing verified to name.
+    let no_write = vec![
+        tools_turn(vec![call("w", "write", json!({"path": "b.txt", "content": "x"}))]),
         tools_turn(vec![
             call("b", "bash", json!({"command": "false"})),
             call("c", "bash", json!({"command": "cargo test"})),
         ]),
-    ] {
+        ScriptTurn::text("done"),
+    ];
+    for (label, turns) in [("no check", no_check), ("no write", no_write)] {
         let env = TestEnv::new();
-        let (rec, engine) = run(&env, json!(["exit 1"]), vec![turn, ScriptTurn::text("done")]);
-        assert!(!rec.checks().is_empty(), "{:?}", rec.checks());
-        let repair = last_user(&engine, 2);
-        assert!(repair.contains("done checks failed"), "{repair}");
-        assert!(!repair.contains("Not re-derived"), "{repair}");
+        let (rec, engine) = run(&env, json!(["exit 1"]), turns);
+        assert!(
+            !rec.checks().is_empty(),
+            "{label}: no done check ran: {:?}",
+            rec.checks()
+        );
+        let last = engine.requests().len() - 1;
+        let repair = last_user(&engine, last);
+        assert!(repair.contains("done checks failed"), "{label}: {repair}");
+        assert!(!repair.contains("Not re-derived"), "{label}: {repair}");
     }
 }
 

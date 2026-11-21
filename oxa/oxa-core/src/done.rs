@@ -1568,7 +1568,13 @@ mod tests {
     /// fails, a check that passes over it. `state` then holds what the repair may name.
     fn failed_batch(state: &mut DoneState, work: &Path, files: &[&str]) {
         for rel in files {
-            std::fs::write(work.join(rel.trim_end_matches('/')), "written by this run").unwrap();
+            // A path ending in `/` is a folder the run created; anything else is a file.
+            let path = work.join(rel.trim_end_matches('/'));
+            if rel.ends_with('/') {
+                std::fs::create_dir_all(&path).unwrap();
+            } else {
+                std::fs::write(path, "written by this run").unwrap();
+            }
         }
         let mut calls: Vec<ToolCall> = files
             .iter()
@@ -1590,7 +1596,6 @@ mod tests {
     fn a_failure_with_a_passing_check_names_the_files_this_batch_wrote() {
         let env = oxa_fake::TestEnv::new();
         let work = env.work();
-        std::fs::create_dir(work.join("out")).unwrap();
         let mut state = DoneState::default();
         failed_batch(&mut state, &work, &["decode.json", "out/"]);
         let line = state
