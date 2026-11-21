@@ -163,8 +163,12 @@ fn human_time(timestamp: u64, now: u64) -> String {
 
 /// S3 (#2342): the age of a value as a client-ticking `<time data-at>` element.
 /// The server renders an initial label; live.js re-labels it every 10 s with no
-/// request, so a quiet page never shows a stale age.
+/// request, so a quiet page never shows a stale age. Like `human_time`, an
+/// observation the host clock cannot format shows no raw value, only a reason.
 fn age(at: u64, now: u64) -> String {
+    if i64::try_from(at).ok().and_then(oxa_session::local_time).is_none() {
+        return "age not available (the host clock cannot format this observation)".into();
+    }
     format!("<time data-at=\"{at}\">{}</time>", escape(&age_text(at, now)))
 }
 
@@ -2809,6 +2813,21 @@ return true;
         assert!(retained.contains("changed while it was being read"));
         assert!(retained.contains("<time data-at=\"40\">"));
         assert!(retained.contains("Last-good snapshot"));
+        // An observation the host clock cannot format leaks no raw value into the
+        // age (the host-zone test guards this across pages; here it guards age()).
+        let invalid = content_for(
+            Page::Board,
+            &View {
+                board: Some(&Board {
+                    observed_at: u64::MAX,
+                    ..Board::default()
+                }),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(!invalid.contains(&u64::MAX.to_string()));
+        assert!(invalid.contains("age not available"));
     }
 
     #[test]
