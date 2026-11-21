@@ -7,7 +7,10 @@
 //! the owner's yes and `gh`. In-process callers (the in-session `report_publish` tool, `oxa
 //! work` reports, a manual terminal) use [`LocalGate`], which runs the same `final_text` and
 //! posts through the same [`post_with_runner`].
-use super::{report_target, scrub, submit_runner, ApprovedBody, Confirm, Runner, ScrubCtx, REPORT_DISABLED};
+use super::{
+    publication_offline, report_destination, scrub, submit_runner, ApprovedBody, Confirm, Runner, ScrubCtx,
+    REPORT_DISABLED,
+};
 use oxa_config::{Dirs, Env, Settings};
 use oxa_core::owner_confirm::{self, Publication, Publisher, Request};
 use std::os::unix::net::UnixStream;
@@ -36,6 +39,42 @@ pub(crate) fn final_text(title: &str, body: &str, ctx: &ScrubCtx) -> Result<(Str
         return Err("the text holds a secret (a key or a credential), which is never posted".into());
     }
     Ok((scrubbed_title, scrubbed_body))
+}
+
+/// The destination a publication may go to, refused when reporting is off, when the text names
+/// another repository, or when the process's network policy is offline. Picks the repository
+/// the owner's settings name, unless the caller's own text names an explicit non-default
+/// repository (a broker request has no other way to name one).
+fn destination(settings: &Settings, requested: &str) -> Result<String, String> {
+    if let Some(refusal) = publication_offline("posting the issue with `gh`") {
+        return Err(refusal);
+    }
+    let Some((target, explicit)) = report_destination(settings) else {
+        return Err(REPORT_DISABLED.to_string());
+    };
+    if !requested.is_empty() && !requested.eq_ignore_ascii_case(&target) && !explicit {
+        return Err(format!(
+            "reports go to {target}, not {requested}; nothing was posted"
+        ));
+    }
+    Ok(target)
+}
+
+/// The text that is posted: secrets and control characters are refused, privacy text is
+/// replaced ([`final_text`]), and the repository is the one [`destination`] picks.
+pub(crate) fn prepare_publication(
+    publication: Publication,
+    ctx: &ScrubCtx,
+    settings: &Settings,
+) -> Result<Publication, String> {
+    let target = destination(settings, &publication.repository)?;
+    let (title, body) = final_text(&publication.title, &publication.body, ctx)?;
+    Ok(Publication {
+        repository: target,
+        title,
+        body,
+        ..publication
+    })
 }
 
 /// Hand `gh` exactly the approved bytes: the body goes through a sealed descriptor nothing else
@@ -87,25 +126,15 @@ impl ReportPublisher {
 
 impl Publisher for ReportPublisher {
     fn prepare(&self, publication: Publication) -> Result<Publication, String> {
-        let Some(target) = report_target(&self.settings) else {
-            return Err(REPORT_DISABLED.to_string());
-        };
-        if !publication.repository.eq_ignore_ascii_case(&target) {
-            return Err(format!(
-                "reports go to {target}, not {}; nothing was posted",
-                publication.repository
-            ));
-        }
-        let (title, body) = final_text(&publication.title, &publication.body, &self.ctx)?;
-        Ok(Publication {
-            repository: target,
-            title,
-            body,
-            ..publication
-        })
+        prepare_publication(publication, &self.ctx, &self.settings)
     }
 
     fn post(&self, publication: &Publication) -> Result<String, String> {
+        // The posting process checks the network policy again: the child that asked cannot
+        // loosen it, and a held `yes` is never spent on a post the policy refuses.
+        if let Err(refusal) = destination(&self.settings, &publication.repository) {
+            return Err(refusal);
+        }
         let mut runner = submit_runner(&self.dirs, &self.cwd, &self.env, &self.settings);
         match post_with_runner(publication, &mut runner) {
             Some((0, stdout)) => Ok(stdout.trim().to_string()),
@@ -359,6 +388,36 @@ mod tests {
             Some("https://github.com/oxstack/ox-llm/issues/7")
         );
         broker.close();
+    }
+
+    /// Offline refuses a publication in the parent before a dialog or `gh`: the broker runs
+    /// `gh` outside the tool's network namespace, so the process policy is checked there too.
+    #[test]
+    fn the_broker_publisher_refuses_a_publication_offline_before_the_dialog_or_gh() {
+        let f = fixture("It stalls.");
+        let dirs = Dirs::under(f.env.root());
+        let vars = Env::from_pairs(&[("PATH", f.path.as_str())]);
+        let publisher = ReportPublisher::new(&dirs, &vars, &Settings::default(), &f.env.work());
+        let publication = Publication {
+            repository: "oxstack/ox-llm".into(),
+            issue: None,
+            title: "Engine stalls".into(),
+            body: "It stalls.".into(),
+            note: None,
+        };
+        oxa_proto::set_net_policy(true, false);
+        let prepared = publisher.prepare(publication.clone());
+        oxa_proto::set_net_policy(false, false);
+        let refusal = prepared.expect_err("offline refuses the publication");
+        assert!(refusal.contains("offline mode is on"), "{refusal}");
+        // The same publication prepares and posts online: the refusal is the policy, not the text.
+        let prepared = publisher.prepare(publication).expect("online prepares");
+        oxa_proto::set_net_policy(true, false);
+        let posted = publisher.post(&prepared);
+        oxa_proto::set_net_policy(false, false);
+        let refusal = posted.expect_err("offline refuses the post");
+        assert!(refusal.contains("offline mode is on"), "{refusal}");
+        assert!(!f.log.exists(), "no gh while offline");
     }
 
     /// A listener the model started can answer yes, but it cannot post: the child runs no `gh`.

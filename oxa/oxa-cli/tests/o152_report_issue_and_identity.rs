@@ -337,7 +337,58 @@ fn submit_refuses_a_draft_with_a_secret() {
     .unwrap();
     assert_eq!(code, 1);
     assert!(!asked && !ran);
-    assert!(String::from_utf8(out).unwrap().contains("never posted"));
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("never posted"));
+    assert!(
+        !text.contains("synthetic fixture"),
+        "a credential reached the preview: {text}"
+    );
+}
+
+/// The preview is a tool result and the semantic check sends the observation to a model: a
+/// credential in an edited draft must be refused before either sees it.
+#[test]
+fn submit_refuses_a_secret_before_the_preview_or_the_semantic_planner() {
+    let env = TestEnv::new();
+    let token = format!("ghp_{}", "Q3w4E5r6T7".repeat(4));
+    let draft = write_draft(
+        &env,
+        "Engine stalls",
+        &format!(
+            "## What happened\n\nTask: task-1\nWorker: worker-1\nRun: run-1\nObserved: it stalls with {token}\nEvidence: oxa/oxa-cli/src/report_cmd.rs:12"
+        ),
+    );
+    let settings = Settings::from_values(
+        json!({"oxa": {"reportIssue": {"repo": "owner/ox-llm", "semanticDedupe": true}}}),
+        json!({}),
+    );
+    let mut asked = false;
+    let mut calls: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    let code = submit(
+        &draft,
+        &settings,
+        &ctx(),
+        &mut |_: &str| {
+            asked = true;
+            Some(true)
+        },
+        &mut |program: &str, _: &[String]| {
+            calls.push(program.to_string());
+            Some((0, "[]".to_string()))
+        },
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(code, 1);
+    assert!(!asked, "no approval is asked for a refused draft");
+    assert!(
+        calls.is_empty(),
+        "the semantic search and model never ran: {calls:?}"
+    );
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains(&token), "a credential reached the preview: {text}");
+    assert!(text.contains("holds a secret"), "{text}");
 }
 
 #[test]

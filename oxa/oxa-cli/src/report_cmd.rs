@@ -294,6 +294,20 @@ pub(crate) fn report_target(settings: &Settings) -> Option<String> {
     }
 }
 
+/// The repository a publication may go to: `Some((target, true))` when the owner set it
+/// explicitly, `Some((target, false))` when it is [`DEFAULT_REPORT_REPO`], `None` when
+/// reporting is off.
+pub(crate) fn report_destination(settings: &Settings) -> Option<(String, bool)> {
+    let explicit = settings.string(SETTING_REPORT_REPO).is_some();
+    report_target(settings).map(|target| (target, explicit))
+}
+
+/// The same offline refusal a posting command gets ([`oxa_proto::check_online`]): a publication
+/// is a network write, wherever it is posted from.
+pub(crate) fn publication_offline(name: &str) -> Option<String> {
+    oxa_proto::check_online(name).err().map(|e| e.to_string())
+}
+
 /// `OWNER/NAME` from the settings; `None` = reporting is off.
 pub fn report_repo(settings: &Settings) -> Option<String> {
     let repo = settings.string(SETTING_REPORT_REPO)?;
@@ -301,10 +315,12 @@ pub fn report_repo(settings: &Settings) -> Option<String> {
     valid.is_match(repo.trim()).then(|| repo.trim().to_string())
 }
 
-/// Post a saved draft. Order: read the draft; refuse one with text the scrubber would still
-/// change; refuse while no repository is configured ([`REPORT_DISABLED`]); print the exact
-/// title and body and ask `confirm` before a GitHub write. Semantic mode also
-/// verifies the report against main and routes duplicates to comments. Exit codes:
+/// Post a saved draft. Order: read the draft; scrub it and refuse one whose text holds a secret
+/// or control characters (`publisher::final_text` checks this before anything is shown or
+/// verified);
+/// refuse while no repository is configured ([`REPORT_DISABLED`]); print the exact scrubbed
+/// title and body and ask `confirm` before a GitHub write. Semantic mode verifies the report
+/// against main and routes duplicates to comments. Exit codes:
 /// 0 posted, 1 kept locally, 3 reporting is off.
 pub fn submit(
     draft: &Path,
@@ -388,6 +404,15 @@ pub(crate) fn submit_record(
             "not an oxa issue draft (expected `Title: ..`, a blank line, the body)",
         )
     })?;
+    // The preview below is a tool result and the semantic check sends the observation to a
+    // model, so the draft is scrubbed and a secret is refused before either side effect.
+    let (title, body) = match publisher::final_text(&title, &body, ctx) {
+        Ok(text) => text,
+        Err(refusal) => {
+            writeln!(out, "Not posted: {refusal}").map_err(w)?;
+            return Ok(Submission::Local(refusal));
+        }
+    };
     let Some(repo) = report_target(settings) else {
         writeln!(out, "{REPORT_DISABLED}\nDraft: {}", draft.display()).map_err(w)?;
         return Ok(Submission::Disabled);
