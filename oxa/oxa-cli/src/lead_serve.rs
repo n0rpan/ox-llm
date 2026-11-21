@@ -639,6 +639,20 @@ struct Source {
     /// Where the owner's user settings live, for the live per-host capacity read
     /// (#2369). `None` keeps capacity unavailable (tests and pre-start sources).
     capacity_settings: Option<(Dirs, PathBuf)>,
+    /// The last successfully-read board sample (#2342). A transient read failure
+    /// keeps showing this last good value with its age and cause instead of
+    /// blanking the page. Bounded: exactly one sample, replaced on each good read.
+    last_good: Mutex<Option<LastGood>>,
+}
+
+/// The board-derived part of one good observation, retained across a failed read.
+/// The runner situation and worker bindings are independent sources and are always
+/// read fresh, so a board hiccup never blanks them.
+struct LastGood {
+    board: oxa_work::board::Board,
+    alarms: crate::lead_page::Alarms,
+    app_quota: Option<oxa_work::shadow::AppQuota>,
+    quota_deferred: Vec<oxa_work::shadow::Deferral>,
 }
 /// The stable part of the worker bindings: a status age that merely grows each second
 /// is not a change, only crossing the stale mark is.
@@ -688,6 +702,7 @@ impl Source {
             owner: None,
             desk: None,
             capacity_settings: None,
+            last_good: Mutex::new(None),
         })
     }
 
@@ -761,13 +776,30 @@ impl Source {
     }
 
     fn render(&self, page: crate::lead_page::Page, fragment: bool) -> String {
-        let observation = self.observe();
-        let observed = observation.as_ref().filter(|o| o.cause.is_none());
+        let mut observation = self.observe();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let github_quotas = observed.and_then(|o| {
-            crate::lead_quota::GitHubQuotas::from_app_sample(o.app_quota?, o.board.observed_at, now)
+        // #2342: stop dropping the observation on a read cause. Keep the last good
+        // board sample so a transient failure shows it with its age and cause; the
+        // cause reaches the view from the allowlist, never a raw diagnostic.
+        let cause = match observation.as_ref() {
+            Some(o) => o.cause,
+            None => Some(crate::lead_input::BoardCause::Missing),
+        };
+        let mut last_good = self.last_good.lock().unwrap();
+        if let Some(o) = observation.as_mut().filter(|_| cause.is_none()) {
+            *last_good = Some(LastGood {
+                board: std::mem::take(&mut o.board),
+                alarms: std::mem::take(&mut o.alarms),
+                app_quota: o.app_quota.take(),
+                quota_deferred: std::mem::take(&mut o.quota_deferred),
+            });
+        }
+        let good = last_good.as_ref();
+        let board_retained = cause.is_some() && good.is_some();
+        let github_quotas = good.and_then(|g| {
+            crate::lead_quota::GitHubQuotas::from_app_sample(g.app_quota?, g.board.observed_at, now)
         });
         use crate::lead_page::Page;
         let approvals_page = matches!(page, Page::Home | Page::Board | Page::BoardQuery(_));
@@ -852,18 +884,20 @@ impl Source {
                     proposal: latest.as_ref().and_then(|latest| latest.proposal.as_ref()),
                     confirmed: latest.as_ref().is_some_and(|latest| latest.confirmed),
                 }),
-            board: observed.map(|o| &o.board),
-            situation: observed.and_then(|o| o.situation.as_ref()),
+            board: good.map(|g| &g.board),
+            situation: observation.as_ref().and_then(|o| o.situation.as_ref()),
             capacity: capacity.as_ref(),
             workers: observation.as_ref().and_then(|o| o.bindings.as_ref()),
-            quota_deferred: observed.map_or(&[][..], |o| o.quota_deferred.as_slice()),
+            quota_deferred: good.map_or(&[][..], |g| g.quota_deferred.as_slice()),
             live_events: self.live,
             running_sha256: self.running_sha256.as_deref(),
             github_quotas: github_quotas.as_ref(),
             durable_asks: durable_asks.as_deref(),
             // Stuck-work signals from the same protected record, with each
             // unobserved source explicit in the view (#1391).
-            alarms: observed.map(|o| &o.alarms),
+            alarms: good.map(|g| &g.alarms),
+            board_cause: cause,
+            board_retained,
             fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
             ..Default::default()
         };
@@ -1531,13 +1565,62 @@ mod tests {
         }
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let refused = source.render(crate::lead_page::Page::Home, true);
-        assert!(refused.contains("Board unavailable"));
+        // #2342: a failed read keeps the last good board and names the allow-listed
+        // cause; it never blanks the page nor reflects the path or error bytes.
+        assert!(refused.contains("No open PRs in this snapshot"));
+        assert!(refused.contains("Board is last-good"));
+        assert!(refused.contains("not readable by this owner"));
         assert!(!refused.contains(path_text));
         assert!(Source::new(
             &Env::from_pairs(&[("OXA_LEAD_BOARD_LOG", "relative-private-marker")]),
             uid
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_failed_read_retains_the_last_good_board_and_recovers() {
+        let test = TestEnv::new();
+        let directory = test.root().join("board-input");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("board.jsonl");
+        let uid = std::fs::metadata(&directory).unwrap().uid();
+        let env = Env::from_pairs(&[("OXA_LEAD_BOARD_LOG", path.to_str().unwrap())]);
+        let source = Source::new(&env, uid).unwrap();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let record = |observed_at, number| {
+            serde_json::json!({"schema_version":1,"observed_at":observed_at,
+                "board":{"observed_at":observed_at,"entries":[
+                    {"number":number,"head":"synthetic-head","release_pinned":false,
+                     "action":"ready","lease":null,"attempts_today":0,"eligible":true}]}})
+        };
+        // A first read that fails has no last good value: it names the cause.
+        std::fs::write(&path, b"not a board sample\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let first = source.render(crate::lead_page::Page::Board, true);
+        assert!(first.contains("Board unavailable."));
+        assert!(first.contains("No good value has been read yet."));
+        assert!(!first.contains("not a board sample"));
+        // A good read establishes the last good value.
+        std::fs::write(&path, format!("{}\n", record(now, 17))).unwrap();
+        let good = source.render(crate::lead_page::Page::Board, true);
+        assert!(good.contains("href=/items/17"));
+        assert!(!good.contains("Board is last-good"));
+        // A transient failure keeps that row behind its cause and age.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let retained = source.render(crate::lead_page::Page::Board, true);
+        assert!(retained.contains("href=/items/17"));
+        assert!(retained.contains("Board is last-good"));
+        assert!(retained.contains("not readable by this owner"));
+        assert!(retained.contains("Last good value"));
+        // Recovery replaces the retained value with the fresh sample.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&path, format!("{}\n", record(now, 23))).unwrap();
+        let recovered = source.render(crate::lead_page::Page::Board, true);
+        assert!(recovered.contains("href=/items/23"));
+        assert!(!recovered.contains("Board is last-good"));
+        assert!(!recovered.contains("href=/items/17"));
     }
 }
 

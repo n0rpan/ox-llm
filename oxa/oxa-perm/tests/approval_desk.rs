@@ -758,6 +758,50 @@ fn oxa_self_approve_rule_blocks_model_running_oxa_send_approve() {
     ));
 }
 
+/// #2272: an ordinary `oxa send <session> <text>` is a plain inbox message (a steer, a
+/// follow-up, a retry or a withdraw), never an approval. It must not trip the self-approve rule,
+/// while an approval-bearing send and `oxa approve` stay owner-only.
+#[test]
+fn ordinary_oxa_send_is_not_self_approval_but_approve_stays_owner_only() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    for plain in [
+        "oxa send s1 'hello'",
+        "oxa send --steer s1 'keep going'",
+        "oxa send --follow-up s1 'task finished'",
+        "oxa send s1 'hello' --wait 5",
+        "oxa send s1 --retry msg-0001",
+        "oxa send s1 --withdraw msg-0001",
+        "oxa --offline send s1 'follow up'",
+        "oxa send s1 'please --approve the request'",
+    ] {
+        assert_eq!(
+            p.decide(Mode::Workspace, &exec(plain), &cwd),
+            Decision::Allow,
+            "{plain}"
+        );
+        assert!(p.danger_unattended(&exec(plain), &cwd).is_none(), "{plain}");
+    }
+    // No request was filed by any ordinary message.
+    assert!(desk.pending().expect("pending").is_empty());
+    for owner_only in [
+        "oxa send s1 --approve 0123456789abcdef once",
+        "oxa send --approvals",
+        "oxa approve 0123456789abcdef",
+        "oxa --offline send s1 --approve 0123456789abcdef session",
+    ] {
+        assert_eq!(
+            p.decide(Mode::Workspace, &exec(owner_only), &cwd),
+            Decision::Ask,
+            "{owner_only}"
+        );
+        let text = p.danger_unattended(&exec(owner_only), &cwd).expect(owner_only);
+        assert!(text.contains("oxa-self-approve"), "{owner_only}: {text}");
+    }
+}
+
 #[test]
 fn no_desk_keeps_the_ui_path() {
     let env = TestEnv::new();

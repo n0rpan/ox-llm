@@ -138,7 +138,7 @@ class Paths(unittest.TestCase):
             self.assertFalse(paths.classify([path])['macos'], path)
 
     def test_every_oxa_file_with_macos_only_code_selects_macos(self):
-        # New macOS-only code must join MACOS_FILES, or a PR touching it skips the macOS build.
+        # Every oxa file with macOS-only cfg selects the macOS build (listed or detected from its content).
         root = Path(__file__).resolve().parents[3]
         pattern = re.compile(r'target_os\s*=\s*"macos"|not\((any\()?target_os\s*=\s*"linux"')
         found = [str(path.relative_to(root)) for path in sorted((root / 'oxa').rglob('*.rs'))
