@@ -29,7 +29,18 @@ chain of `env -C`, files read, token-printing commands). `credential-read` and `
 prompts in standard mode, not a sandbox; yolo does not reach them. These rules are hardening, not a security
 boundary: a command that slips past them by obfuscation is P3. A saved unattended grant never covers a
 pipeline fed by anything but a literal `echo`/`printf`, or an input redirect. A `wait` probe that runs `gh`
-is network access (plan denies, ask asks once per session).
+is network access (plan denies, ask asks once per session). The `oxa-self-approve` rule covers `oxa approve`,
+an approval-bearing `oxa send` (`--approve <id> <answer>` or the `--approvals` list) and a write into the agent
+directory; an ordinary `oxa send <session> <text>` (a steer, `--follow-up`, `--retry` or `--withdraw`) is a plain
+inbox message, never an approval, and is not flagged (#2272).
+
+A dangerous-command approval can be saved for the session or always. A session grant ends with the
+run; an always grant is the exact `<rule> <command>` key in the owner's user settings, written under
+the settings write lock. The approval views (dialog, lead page, `oxa approve`) show what runs: named
+assignments (`token=`), flag operands (`--password x`), URL credentials and literals inside parameter
+expansions are masked; executable text (commands, `$(...)`, `${NAME:-` heads) is never masked. A typed
+`yes` for a publication is bound to the session and the exact text that was shown (its digest, single
+use) and is not withdrawn when the session changes.
 
 A desk grant (once or session) of a pushing command in an unattended run is bound to resolved facts:
 the source ref object ids and a digest of origin's URLs (never the URLs), re-read at every decision
@@ -124,6 +135,11 @@ Git can start workers only in the primary checkout named by the owner's `oxa.wor
 and only while that checkout is explicitly trusted. Neither project settings nor model arguments
 can select it. The normal permission check covers both the source and the new worktree; the
 launch still uses the same child permission ceiling and sandbox policy.
+
+`oxa worker run` and `oxa worker list` are owner surfaces, not model tools, and the detached
+registry is not a session's worker registry. A run uses the worker tool's unattended policy and
+local credentials. A resume keeps the saved session, repository and worktree branch, and it can
+narrow, never widen, the recorded mode or offline setting.
 
 Dangerous commands are a floor prompt in the interactive run, and an unattended run (a worker, a subagent, a headless goal: no one to ask) never waits for an answer (#1512). `oxa.approval.unattended` is the owner setting, user settings only: `auto` (the default) refuses the command under the OS sandbox and files an approval request without one, `refuse` always refuses, `request` always files a request. Refusals are returned without writing an approval record, so repeated model-controlled commands cannot grow the desk. Requests live in `<agent dir>/approvals/` (directory 0700, one record per request at 0600, written atomically under a private temporary name, never following a symlink or an agent directory owned by another user) and are answered only by the owner through `oxa send <session> --approve <id> once|session|always|deny`, authenticated through the session's owner-confirm broker (or a direct terminal confirmation), or on the lead web approvals page, never by inbox text or model output. A `once` grant is consumed by the run that retries the command; `session` grants last only for the run that filed the request, including when the persisted session is resumed. `always` is recorded in the user-only `oxa.approval.always` list: its desk record also holds only in the run that was answered, and later runs read the list, so removing a line there revokes it. A command that reads its input from a file or stdin (an input redirection, `xargs`, `read`, `--files-from`) is refused unattended like shell input, and no saved grant covers it, because the reviewed text does not fix what it acts on. A grant is bound to the canonical directory it was reviewed in, a wipe takes the desk lock, the newest 500 `refused` and 500 `pending` records are kept (older ones of that status rotate out; answered grants never do), and listings escape control, bidi and zero-width format characters. A finding that asks for a default-off switch, for an unattended run to wait indefinitely, or for the desk to take an answer from a model or a project file is answered here.
 
@@ -230,6 +246,7 @@ cannot approve. In yolo the broker answers yes, without changing publication sca
 The question is shown as the requesting process's text, not an oxa instruction.
 A broker answer derived from tool, file, web or agent-inbox text is high. A socket readable by another
 user is high. A model-run command that fakes the broker (its own listener or socket) is hardening, P3.
+The child verifies the broker before sending any publication fields. Only the parent posts, once, using the approved bytes. It checks the draft, title, body and preview-only note before showing or verifying them: privacy text is replaced; secrets and control or bidirectional text are refused, even in yolo. Offline refuses both approval and posting. An RPC dialog needs `OXA_RPC_OWNER_PRESENT=1`, never yolo. Do not make the child post or refuse privacy text.
 The broker's state machine, bounds and records do not depend on the extension host pump. A request is a structured, length-prefixed frame (title and body fields); an over-limit length is refused unread with a `reason` (`too_large`, `not_servable`, `closed`, `busy_limit`, `bad_request`). The session thread's `serve` picks a request, creates its per-dialog cancel ticket and marks it shown in one step under the broker's lock, so a typed yes that arrives before the UI has registered the dialog is neither lost nor able to dismiss another dialog. In yolo a request is answered at once, keeps no pending state and leaves a compact record (hash, size, first title line, a count for identical consecutive requests), never the text; a dialog or typed answer keeps the full text, which the owner paced. A finding that asks for yolo to retain every request body is answered here.
 The broker bounds what a request can hold in the oxa process before accepting it for confirmation:
 its size, the time to deliver it and the connections served at once (owner-configurable, generous

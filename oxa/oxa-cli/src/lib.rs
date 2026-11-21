@@ -57,6 +57,7 @@ mod models_cmd;
 mod netguard;
 mod pkg_cmd;
 mod pr_activity;
+mod pr_threads_cmd;
 mod report_cmd;
 mod result_facts;
 mod run_kind;

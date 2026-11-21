@@ -265,6 +265,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     }
                     CommandId::Usage => crate::usage_cmd::run(&words.0, &dirs, &cwd, &mut *stdout),
                     CommandId::Cache => crate::cache_cmd::run(&words.0, &dirs, &cwd, env, &mut *stdout),
+                    CommandId::PrThreads => crate::pr_threads_cmd::run(&words.0, &dirs, &cwd, &mut *stdout),
+                    CommandId::WorkerRun | CommandId::WorkerList => crate::workers::run_cmd::run(
+                        id,
+                        &words.0,
+                        &dirs,
+                        &cwd,
+                        env,
+                        &mut *stdin,
+                        &mut *stdout,
+                        &mut *stderr,
+                    ),
                     CommandId::Lead
                     | CommandId::LeadServe
                     | CommandId::LeadBoard
@@ -671,6 +682,9 @@ fn open_named(
     }
     // S1: the owner confirm broker. No broker (a bind failure) means no confirmation is possible.
     let _ = session.enable_owner_confirm(built.yolo.clone());
+    if let Some(publisher) = &built.owner_publisher {
+        session.set_owner_publisher(publisher.clone());
+    }
     session.set_output_schema(built.output_schema.clone());
     if let Some(goal) = &built.goal {
         session.set_goal(Some(goal.clone()), &mut oxa_proto::VecSink::default())?;
@@ -689,6 +703,9 @@ fn open_interactive_session(base: &Built, deps: Deps, how: Open) -> Result<Sessi
     let mut session = Session::open(deps, how)?;
     // No broker (a bind failure) means no confirmation is possible, matching the initial open.
     let _ = session.enable_owner_confirm(base.yolo.clone());
+    if let Some(publisher) = &base.owner_publisher {
+        session.set_owner_publisher(publisher.clone());
+    }
     Ok(session)
 }
 
@@ -724,6 +741,9 @@ struct Built {
     /// #1552: an interactive session offers `report_publish`, whose approval dialog only a
     /// person's key press can answer; print, json and RPC runs keep the terminal confirmation.
     report_dialog: Option<Env>,
+    /// The parent's side of a report publication, installed in the session's owner confirm
+    /// broker so a tool child's `oxa report-issue submit` is posted by this process.
+    owner_publisher: Option<Arc<dyn oxa_core::owner_confirm::Publisher>>,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -1521,6 +1541,15 @@ fn prepare(
             result_facts.with_changed_file_scope(cwd.to_path_buf(), a.allowed_changed_files.clone());
     }
     let result_facts = Arc::new(result_facts);
+    let ask_owner_present = mode != RunMode::Rpc || rpc_owner_present(mode, env);
+    // Do not offer the parent's GitHub authority to an RPC confirmation UI unless the host
+    // declared an owner. Yolo is already the owner's approval and never consults the UI.
+    let owner_publisher = (ask_owner_present || yolo.full()).then(|| {
+        let publisher: Arc<dyn oxa_core::owner_confirm::Publisher> = Arc::new(
+            crate::report_cmd::ReportPublisher::new(dirs, env, &user_settings, cwd),
+        );
+        publisher
+    });
     let built = Built {
         lead: a.lead,
         status,
@@ -1542,8 +1571,9 @@ fn prepare(
         mode: table_mode,
         supervised_child: child.nested(),
         fork_seed: child.fork.clone(),
-        ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
+        ask_owner_present,
         report_dialog: (mode == RunMode::Interactive).then(|| env.clone()),
+        owner_publisher,
         hook_sets,
         yolo,
         bash_sandbox,
@@ -3396,6 +3426,7 @@ mod session_scratch_tests {
             fork_seed: None,
             ask_owner_present: true,
             report_dialog: None,
+            owner_publisher: None,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),
@@ -3485,6 +3516,7 @@ mod session_scratch_tests {
             fork_seed: None,
             ask_owner_present: true,
             report_dialog: None,
+            owner_publisher: None,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base,
@@ -3607,6 +3639,7 @@ mod session_scratch_tests {
                 approval_desk: None,
                 unattended: UnattendedMode::default(),
                 report_dialog: None,
+                owner_publisher: None,
             }
         };
         let policy = build().deps(None).policy;

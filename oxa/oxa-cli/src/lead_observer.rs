@@ -25,11 +25,6 @@ const TICK: Duration = Duration::from_secs(1);
 /// A source is re-read when its size, modification time or file identity changes. A file: its
 /// path. The worker registry is the directory of worker records, where a new worker, a
 /// removed one or a rewritten record changes the directory itself rather than a file.
-enum Watch {
-    File(PathBuf),
-    Directory(PathBuf),
-}
-
 /// Identity of one source as the last parse saw it. A missing source keeps its own value, so
 /// it is looked up again on every tick instead of being re-parsed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -38,24 +33,17 @@ struct Stamp {
     len: u64,
     mtime: (i64, i64),
     ino: u64,
+    dev: u64,
+    mode: u32,
+    uid: u32,
 }
 
 impl Stamp {
-    fn read(watch: &Watch) -> Self {
+    fn file(path: &std::path::Path) -> Self {
         use std::os::unix::fs::MetadataExt;
-        let found = match watch {
-            Watch::File(path) => std::fs::metadata(path),
-            Watch::Directory(path) => std::fs::symlink_metadata(path),
-        };
-        let Ok(meta) = found else {
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
             return Self::default();
         };
-        if matches!(watch, Watch::File(_)) && !meta.is_file() {
-            return Self::default();
-        }
-        if matches!(watch, Watch::Directory(_)) && !meta.is_dir() {
-            return Self::default();
-        }
         let at = meta
             .modified()
             .ok()
@@ -65,6 +53,9 @@ impl Stamp {
             len: meta.len(),
             mtime: at.map_or((0, 0), |d| (d.as_secs() as i64, d.subsec_nanos() as i64)),
             ino: meta.ino(),
+            dev: meta.dev(),
+            mode: meta.mode(),
+            uid: meta.uid(),
         }
     }
 }
@@ -73,7 +64,7 @@ impl Stamp {
 /// Board sample with its stuck-work signals, the runner situation, the Lead session's worker
 /// registry and the owner's open asks. Chat stays a live read of the attached session's
 /// transcript and is not part of this frame.
-pub struct Frame {
+pub(crate) struct Frame {
     /// Increases once per published frame; a stream sends only when it changed.
     pub generation: u64,
     /// What the frame's sources read last time, without a success: the observation itself
@@ -84,6 +75,8 @@ pub struct Frame {
     pub asks: Option<Vec<oxa_session::OpenGoalAsk>>,
     /// The wall clock the frame was published at, in milliseconds.
     pub now_ms: u64,
+    pub last_good: Option<Arc<LastGood>>,
+    pub capacity: Option<crate::lead::capacity::Capacity>,
 }
 
 impl Frame {
@@ -92,12 +85,15 @@ impl Frame {
         observation: Option<Observation>,
         asks: Option<Vec<oxa_session::OpenGoalAsk>>,
         now_ms: u64,
+        state: &State,
     ) -> Arc<Self> {
         Arc::new(Self {
             generation,
             observation,
             asks,
             now_ms,
+            last_good: state.last_good.clone(),
+            capacity: state.capacity.clone(),
         })
     }
 }
@@ -107,6 +103,8 @@ impl Frame {
 /// identity rules and are re-read with the Board sample.
 pub(crate) struct Sources {
     pub board: Option<PathBuf>,
+    pub capacity_file: Option<PathBuf>,
+    pub capacity: Box<dyn Fn() -> Option<crate::lead::capacity::Capacity> + Send + Sync>,
     pub situation: Option<PathBuf>,
     pub uid: u32,
     pub agent_dir: PathBuf,
@@ -133,9 +131,10 @@ impl Observer {
         state.refresh(&sources, oxa_proto::time::now_ms());
         let first = Frame::new(
             1,
-            state.observation.take(),
-            state.asks.take(),
+            state.observation.clone(),
+            state.asks.clone(),
             oxa_proto::time::now_ms(),
+            &state,
         );
         let observer = std::sync::Arc::new(Self {
             published: Mutex::new(first),
@@ -151,7 +150,13 @@ impl Observer {
                     let now = oxa_proto::time::now_ms();
                     if state.refresh(&sources, now) {
                         generation += 1;
-                        let frame = Frame::new(generation, state.observation.take(), state.asks.take(), now);
+                        let frame = Frame::new(
+                            generation,
+                            state.observation.clone(),
+                            state.asks.clone(),
+                            now,
+                            &state,
+                        );
                         thread.publish(frame);
                     }
                 }
@@ -204,12 +209,16 @@ impl Observer {
 /// What the observer thread remembers between ticks: the stamps it last parsed at and the
 /// observation those parses produced.
 struct State {
+    last_good: Option<Arc<LastGood>>,
+    capacity_stamp: Option<Stamp>,
+    capacity: Option<crate::lead::capacity::Capacity>,
     board: Stamp,
     situation: Stamp,
     /// The Lead session's worker registry: its directory (a new, removed or rewritten record)
     /// and each recorded worker's status file, whose change moves that worker's state.
     workers: Stamp,
     statuses: Vec<Stamp>,
+    parent: Option<(String, PathBuf)>,
     observation: Option<Observation>,
     /// The owner's open asks as the last read left them, and the facts a publish compares.
     asks: Option<Vec<oxa_session::OpenGoalAsk>>,
@@ -219,10 +228,14 @@ struct State {
 impl State {
     fn new() -> Self {
         Self {
+            last_good: None,
+            capacity_stamp: None,
+            capacity: None,
             board: Stamp::default(),
             situation: Stamp::default(),
             workers: Stamp::default(),
             statuses: Vec::new(),
+            parent: None,
             observation: None,
             asks: None,
             ask_key: None,
@@ -234,6 +247,15 @@ impl State {
         // The owner's open asks are read on every tick, but only the facts (id, revision)
         // decide a publish: its owning session file changes its size as the session works.
         let mut published = false;
+        if let Some(path) = sources.capacity_file.as_deref() {
+            let stamp = Stamp::file(path);
+            if self.capacity_stamp.as_ref() != Some(&stamp) {
+                self.capacity_stamp = Some(stamp);
+                let capacity = (sources.capacity)();
+                published = capacity != self.capacity;
+                self.capacity = capacity;
+            }
+        }
         match (sources.asks)() {
             Some((key, asks)) if self.ask_key.as_ref() != Some(&key) => {
                 self.ask_key = Some(key);
@@ -241,18 +263,21 @@ impl State {
                 published = true;
             }
             Some(_) => {}
-            None if self.asks.take().is_some() || self.ask_key.take().is_some() => published = true,
-            None => {}
+            None => {
+                published |= self.ask_key.take().is_some();
+                self.asks = None;
+            }
         }
-        let board = sources.board.as_deref().map_or(Stamp::default(), Stamp::read);
-        let situation = sources.situation.as_deref().map_or(Stamp::default(), Stamp::read);
+        let board = sources.board.as_deref().map_or(Stamp::default(), Stamp::file);
+        let situation = sources.situation.as_deref().map_or(Stamp::default(), Stamp::file);
         let parent = (sources.parent)();
         let workers = parent.as_ref().map_or(Stamp::default(), |(id, directory)| {
-            Stamp::read(&Watch::Directory(directory.join(id).with_extension("json")))
+            Stamp::file(&directory.join(id).with_extension("json"))
         });
         let statuses = watched_statuses(self.observation.as_ref());
         if (board, situation, workers) == (self.board, self.situation, self.workers)
             && statuses == self.statuses
+            && parent == self.parent
         {
             let aged = self.observation.as_mut().is_some_and(|o| age(o, now));
             return published || aged;
@@ -260,6 +285,7 @@ impl State {
         self.board = board;
         self.situation = situation;
         self.workers = workers;
+        self.parent = parent.clone();
         let Some(path) = sources.board.as_deref() else {
             self.observation = None;
             self.statuses = Vec::new();
@@ -268,6 +294,9 @@ impl State {
         let mut observation = Observation::read(path, sources.situation.as_deref(), sources.uid, now);
         if let Some((parent, _)) = &parent {
             observation = observation.with_workers(&sources.agent_dir, &sources.sessions_dir, parent);
+        }
+        if observation.cause.is_none() {
+            self.last_good = Some(Arc::new(LastGood::from(&observation)));
         }
         self.observation = Some(observation);
         self.statuses = watched_statuses(self.observation.as_ref());
@@ -285,7 +314,7 @@ fn watched_statuses(observation: Option<&Observation>) -> Vec<Stamp> {
     bindings
         .iter()
         .filter_map(|binding| binding.status_file.as_deref())
-        .map(|path| Stamp::read(&Watch::File(path)))
+        .map(Stamp::file)
         .collect()
 }
 
@@ -294,8 +323,21 @@ fn watched_statuses(observation: Option<&Observation>) -> Vec<Stamp> {
 /// renders, so a quiet system publishes nothing.
 fn age(observation: &mut Observation, now: u64) -> bool {
     let before = crate::lead_page::stale(&observation.board, observation.now_ms / 1000);
+    let elapsed = (now / 1000).saturating_sub(observation.now_ms / 1000);
     observation.now_ms = now;
-    crate::lead_page::stale(&observation.board, now / 1000) != before
+    let mut changed = crate::lead_page::stale(&observation.board, now / 1000) != before;
+    if let Some(Ok(bindings)) = observation.bindings.as_mut() {
+        for age in bindings.iter_mut().filter_map(|b| b.status_age_secs.as_mut()) {
+            changed |= advance_status_age(age, elapsed);
+        }
+    }
+    changed
+}
+
+fn advance_status_age(age: &mut u64, elapsed: u64) -> bool {
+    let was_stale = *age > 300;
+    *age = age.saturating_add(elapsed);
+    (*age > 300) != was_stale
 }
 
 #[cfg(test)]
@@ -310,6 +352,8 @@ mod tests {
         let uid = std::fs::metadata(test.root()).unwrap().uid();
         Sources {
             board: Some(board.to_path_buf()),
+            capacity_file: None,
+            capacity: Box::new(|| None),
             situation: None,
             uid,
             agent_dir: test.agent_dir(),
@@ -357,6 +401,14 @@ mod tests {
     }
 
     #[test]
+    fn a_growing_status_age_only_publishes_when_it_crosses_stale() {
+        let mut age = 3;
+        assert!(!advance_status_age(&mut age, 6));
+        assert!(advance_status_age(&mut age, 391));
+        assert!(!advance_status_age(&mut age, 1));
+    }
+
+    #[test]
     fn a_transient_read_failure_keeps_the_previous_frame() {
         let test = TestEnv::new();
         let directory = private(&test);
@@ -372,6 +424,7 @@ mod tests {
         assert!(state.refresh(&sources, 11_000));
         let failed = state.observation.as_ref().unwrap();
         assert!(failed.cause.is_some());
+        assert_eq!(state.last_good.as_ref().unwrap().board.observed_at, 10);
         // The next good read is parsed again and replaces the failed one.
         std::fs::set_permissions(&sample, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::fs::write(&sample, record(12)).unwrap();
@@ -436,7 +489,7 @@ mod tests {
         }
         assert!(began.elapsed() < Duration::from_secs(2));
         // One new sample wakes every stream with the new generation.
-        observer.publish(Frame::new(seen + 1, None, None, 0));
+        observer.publish(Frame::new(seen + 1, None, None, 0, &State::new()));
         for _ in 0..5 {
             assert_ne!(observer.wait(seen, Duration::from_secs(5)), seen);
         }
@@ -444,5 +497,24 @@ mod tests {
         assert_eq!(observer.wait(seen + 1, Duration::from_millis(20)), seen + 1);
         // A render only clones the published pointer: two frames share one observation.
         assert!(Arc::strong_count(&observer.frame()) >= 2);
+    }
+}
+
+/// The board fields retained when a replacement cannot be read. Independent sources stay live.
+pub(crate) struct LastGood {
+    pub board: oxa_work::board::Board,
+    pub alarms: crate::lead_page::Alarms,
+    pub app_quota: Option<oxa_work::shadow::AppQuota>,
+    pub quota_deferred: Vec<oxa_work::shadow::Deferral>,
+}
+
+impl From<&Observation> for LastGood {
+    fn from(value: &Observation) -> Self {
+        Self {
+            board: value.board.clone(),
+            alarms: value.alarms.clone(),
+            app_quota: value.app_quota,
+            quota_deferred: value.quota_deferred.clone(),
+        }
     }
 }

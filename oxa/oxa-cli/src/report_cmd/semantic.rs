@@ -1,7 +1,8 @@
 //! Opt-in semantic reporting. The model supplies a decision over bounded inputs;
 //! GitHub and the model cannot supply commands, destinations or outbound text.
-use super::{cap, clean_notes, scrub, Confirm, Runner, ScrubCtx};
+use super::{cap, clean_notes, scrub, PublishGate, Runner, ScrubCtx};
 use oxa_config::{Dirs, Env, ModelsConfig, Settings};
+use oxa_core::owner_confirm::Publication as Proposal;
 use oxa_proto::{CancelToken, ChatRequest, Finish, FrozenPrefix, WireMsg};
 use oxa_resources::write_atomic;
 use serde_json::{json, Value};
@@ -141,7 +142,7 @@ pub(super) fn plan(
     report: (&str, &str),
     ctx: &ScrubCtx,
     daily_limit: Option<usize>,
-    confirm: Confirm<'_>,
+    gate: &mut dyn PublishGate,
     runner: Runner<'_>,
 ) -> Result<Publication, &'static str> {
     let (title, body) = report;
@@ -350,10 +351,14 @@ pub(super) fn plan(
         "{body}\n\n## Verification\n\n{evidence}\n\nCandidates rejected as different root causes: {rejected}"
     );
     // The final preview must be approved before consuming the allowance.
-    if confirm(&format!(
-        "{warning}Create an issue in {repo}?\n\nTitle: {title}\n\n{body}\n\nType yes to post: "
-    )) != Some(true)
-    {
+    let proposal = Proposal {
+        repository: repo.to_string(),
+        issue: None,
+        title: title.to_string(),
+        body: body.clone(),
+        note: (!warning.is_empty()).then(|| warning.trim_end().to_string()),
+    };
+    if gate.approve(&proposal) != Some(true) {
         return Err("creation requires confirmation");
     }
     ledger["tasks"][&task_key] =
