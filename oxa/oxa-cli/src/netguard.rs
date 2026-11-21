@@ -121,14 +121,13 @@ fn with_policy(
     let offline = oxa_proto::offline();
     // The `gh` lookup can stall (a mise shim may try to install gh): run it lazily, at the first
     // bash command that has the network, never at startup.
-    let lookup = github_auth
-        && on
-        && !offline
+    let scrub_host = github_auth
         && !test_isolated(
             std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
                 .ok()
                 .as_deref(),
         );
+    let lookup = scrub_host && on && !offline;
     // Host-rights bash can read a file-backed login with the network off too, and `gh auth token
     // --user other` names any account: every credential is scrubbed from its output, so this
     // lookup does not depend on the network setting, nor on who owns GitHub for the run (a
@@ -145,23 +144,33 @@ fn with_policy(
     } else {
         GhLaunch::Direct
     };
-    let scrub_host = github_auth
-        && !test_isolated(
-            std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
-                .ok()
-                .as_deref(),
-        );
     let mut ns = NetSandbox::new(sandbox, on, offline);
-    if let Some(workspace) = workspace.clone().filter(|_| lookup) {
-        let command = github_token_command(settings);
-        let ttl = github_token_ttl(settings);
-        ns = ns.with_gh_token_refreshing(move || gh_token(&command, &workspace), ttl);
-    }
-    // A runner-owned task never runs the owner's helper: `gh` is not started for it either.
-    let command = (scrub_host && !lookup && !runner_owns_github && !offline)
+    // A runner-owned or offline task never runs the owner's configured helper.
+    let mut command = (scrub_host && !runner_owns_github && !offline)
         .then(|| github_token_command(settings))
         .unwrap_or_default();
-    if scrub_host || !known.is_empty() || !command.is_empty() {
+    let workspace = workspace.map(|mut workspace| {
+        // A host-side lookup must not trust the shared cache even if this particular
+        // session does not mount it (for example, an interactive session).
+        if !command.is_empty() {
+            let cache = crate::worker_cache::cache_root(settings, &workspace.home, &Env::from_process());
+            workspace.writes.extend(cache.canonicalize().ok());
+            workspace.writes.push(cache);
+        }
+        workspace
+    });
+    if let Some(workspace) = workspace.clone().filter(|_| lookup) {
+        let command = std::mem::take(&mut command);
+        let ttl = github_token_ttl(settings);
+        ns = if command.is_empty() {
+            ns.with_gh_token_refreshing(move || gh_token(&command, &workspace), ttl)
+        } else {
+            // Only the runner's isolated GitHub transport authenticates with configured
+            // credentials. Keep masking them in command output without passing them to bash.
+            ns.with_gh_token_redaction_refreshing(move || gh_token(&command, &workspace), ttl)
+        };
+    }
+    if scrub_host || !known.is_empty() {
         ns = ns.with_host_secrets_lazy(move || {
             let mut secrets = known.clone();
             if scrub_host {

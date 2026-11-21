@@ -6,7 +6,7 @@ use oxa_sandbox::{
     expand_home, is_home_itself, is_home_or_above, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE,
     SETTING_READ_PATHS, SETTING_SOCKETS, SETTING_WRITE_PATHS,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What stays protected in a home workspace (O-199), in the user's words.
 const HOME_PROTECTED_SUMMARY: &str = "the home folder itself, every dotfile and dot-folder (.bashrc, .profile, .config, .local/bin, .ssh, .oxa, ...) and ~/bin are read-only; keys and tokens are hidden; bash cannot create new top-level folders in ~, so create one with the file tools or outside oxa";
@@ -110,6 +110,30 @@ mod prompt_tests {
 /// Expand a bind list from the user-only settings snapshot used to build the sandbox.
 pub(crate) fn configured_paths(user: &Settings, key: &str, home: &Path) -> Vec<std::path::PathBuf> {
     user.list(key).iter().map(|raw| expand_home(raw, home)).collect()
+}
+
+/// Locations that cannot be trusted to supply the runner's token helper. Reuse the
+/// layout's implicit cache rules without creating a cache or mounting anything.
+pub(crate) fn worker_token_write_paths(user: &Settings, env: &Env, dirs: &Dirs) -> Vec<PathBuf> {
+    let mut writes = configured_paths(user, SETTING_WRITE_PATHS, &dirs.home);
+    let implicit = Layout::build(&LayoutInputs {
+        home: dirs.home.clone(),
+        agent_dir: Some(dirs.agent_dir.clone()),
+        env: env.pairs().to_vec(),
+        ..LayoutInputs::default()
+    });
+    writes.extend(implicit.write);
+    // Workers from other worktrees or repositories can also write here. Keep the
+    // namespace untrusted even if shared caching is currently disabled.
+    writes.push(crate::worker_cache::cache_root(user, &dirs.home, env));
+    let resolved: Vec<_> = writes
+        .iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .collect();
+    writes.extend(resolved);
+    writes.sort();
+    writes.dedup();
+    writes
 }
 
 pub(crate) fn layout(
@@ -648,6 +672,40 @@ mod tests {
         let e = Env::from_pairs(&pairs);
         let dirs = dirs_from_env(&e, None).expect("dirs");
         (e, dirs)
+    }
+
+    #[test]
+    fn runner_rejects_helpers_in_implicit_worker_write_mounts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let env = TestEnv::new();
+        std::fs::create_dir_all(env.work().join(".git")).unwrap();
+        let registry = env.home().join(".cargo/registry");
+        let sccache = env.home().join(".cache/custom-sccache");
+        for dir in [&registry, &sccache] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let (e, dirs) = worker_env(&env, &[("SCCACHE_DIR", sccache.to_str().unwrap())]);
+        let user = Settings::load(&dirs, &env.work(), false);
+        // The runner's policy is established before the worker creates the shared target.
+        let writes = worker_token_write_paths(&user, &e, &dirs);
+        let worker = layout(&e, &dirs, &env.work(), false, &mut Vec::new());
+        let target = PathBuf::from(target_of(&worker).expect("shared target"));
+        let owner_tools = env.home().join("owner-tools");
+        std::fs::create_dir_all(&owner_tools).unwrap();
+        for (dir, allowed) in [
+            (registry, false),
+            (sccache, false),
+            (target, false),
+            (owner_tools, true),
+        ] {
+            let path = dir.join("mint");
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let argv = [path.to_str().unwrap().to_owned()];
+            let helper = oxa_work::trusted_token_program(&argv, None, Some(&env.work()), &writes, None);
+            assert_eq!(helper.is_some(), allowed, "{}", path.display());
+        }
     }
 
     fn target_of(l: &Layout) -> Option<String> {

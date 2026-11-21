@@ -124,20 +124,20 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         Group::Safety,
         "GitHub",
         "GitHub token command",
-        "Command that prints a GitHub token. Operands must be trusted absolute executable paths. Empty uses `gh auth token`.",
+        "Command that prints a GitHub token for the work runner, not for shell authentication. Operands must be trusted absolute executable paths. Empty uses `gh auth token`.",
     )
     .key(Kind::StringList, "[]")
     .control(Control::List(Item::Text))
     .user_only()
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
-    .widens("Runs this command outside the sandbox and gives its output to commands that use GitHub."),
+    .widens("Runs this command outside the sandbox and lets the work runner authenticate to GitHub."),
     d(
         "oxa.github.tokenTtlSeconds",
         Group::Safety,
         "GitHub",
         "GitHub token lifetime",
-        "Seconds to cache the bash token (300 when unset, 0 to read it on each use).",
+        "Seconds between token lookups for networked bash (300 when unset, 0 on each use). Configured tokens are only used for masking.",
     )
     .key(Kind::Number, "null")
     .number(Unit::Seconds)

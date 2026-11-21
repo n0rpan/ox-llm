@@ -1136,7 +1136,7 @@ pub struct RunPolicy {
     /// `oxa.github.tokenCommand` from the user's settings: argv that prints the token the
     /// runner's `gh` and `git push` use when publishing. Empty keeps the stored `gh` login.
     pub github_token_command: Vec<String>,
-    /// Owner-configured sandbox write paths. Token commands cannot load code from them.
+    /// Worker-writable roots, including implicit caches. Token commands cannot load code from them.
     pub github_token_write_paths: Vec<PathBuf>,
     /// The owner's level for the workers this runner starts. Only `Yolo` changes the worker argv.
     pub autonomy: oxa_proto::Autonomy,

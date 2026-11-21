@@ -26,6 +26,8 @@ pub struct NetSandbox {
     gh_token: Arc<Mutex<TokenState>>,
     gh_source: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     gh_ttl: Option<Duration>,
+    /// A configured source is for redaction only, never for shell authentication.
+    inject_gh_token: bool,
     /// Every credential the owner's GitHub CLI holds (all accounts and hosts), found lazily
     /// once for output redaction on host-rights paths. Unlike `gh_token` this does not depend
     /// on the bash network: a token file is readable with the network off too.
@@ -163,6 +165,7 @@ impl NetSandbox {
             gh_token: Arc::new(Mutex::default()),
             gh_source: None,
             gh_ttl: None,
+            inject_gh_token: true,
             host_secrets: Arc::new(std::sync::OnceLock::new()),
             host_source: None,
         }
@@ -221,6 +224,17 @@ impl NetSandbox {
         this
     }
 
+    /// Refresh a known credential for output masking, but never add it to a command environment.
+    pub fn with_gh_token_redaction_refreshing(
+        self,
+        source: impl Fn() -> Option<String> + Send + Sync + 'static,
+        ttl: Duration,
+    ) -> NetSandbox {
+        let mut this = self.with_gh_token_refreshing(source, ttl);
+        this.inject_gh_token = false;
+        this
+    }
+
     fn clean(net: bool, token: Option<String>) -> Option<String> {
         token
             .map(|t| t.trim().to_string())
@@ -263,8 +277,9 @@ impl NetSandbox {
         let host = self.inner.host_rights() || !self.inner.network_enforced();
         // Even a non-GitHub command may print a previously saved credential.
         let token = (s.net || host).then(|| self.token()).flatten();
-        // Git over HTTPS can use the GitHub CLI credential helper as well.
-        let token = token.filter(|_| s.net && mentions_gh(&s.command));
+        // The legacy stored login supports Git over HTTPS, including the GitHub CLI credential
+        // helper. A configured credential is only for masking; command text cannot authorize it.
+        let token = token.filter(|_| self.inject_gh_token && s.net && mentions_gh(&s.command));
         if self.gh_ttl.is_some() || token.is_some() {
             s.env.retain(|(k, _)| k != "GH_TOKEN" && k != "GITHUB_TOKEN");
         }
@@ -398,6 +413,7 @@ impl Sandbox for NetSandbox {
             gh_token: self.gh_token.clone(),
             gh_source: self.gh_source.clone(),
             gh_ttl: self.gh_ttl,
+            inject_gh_token: self.inject_gh_token,
             host_secrets: self.host_secrets.clone(),
             host_source: self.host_source.clone(),
         }))
@@ -435,8 +451,7 @@ impl Sandbox for NetSandbox {
 }
 
 /// True when `gh` or `git` appears as a command word (not inside `ghost` or `a-gh`).
-/// Best-effort exposure limiting, not a security control: `echo gh; printenv GH_TOKEN` still
-/// matches. The real protection is output redaction, which covers every networked command.
+/// Best-effort exposure limiting for the legacy stored login, not an authorization check.
 fn mentions_gh(cmd: &str) -> bool {
     let ok = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
     ["gh", "git"].iter().any(|w| {
@@ -469,6 +484,30 @@ mod tests {
             n.run(&spec(true), &CancelToken::new(), &mut |_| {});
         }
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn redaction_only_token_is_never_in_a_github_commands_environment() {
+        let echo = Arc::new(Echo(Mutex::new(Vec::new())));
+        let net = NetSandbox::new(echo.clone(), true, false)
+            .with_gh_token_redaction_refreshing(|| Some("SYNTH_CONFIGURED".into()), Duration::from_secs(300));
+        let mut command = spec(true);
+        command.command = "gh pr status".into();
+        for name in ["GH_TOKEN", "GITHUB_TOKEN"] {
+            command.env.push((name.into(), "SYNTH_AMBIENT".into()));
+        }
+        let result = net.run(&command, &CancelToken::new(), &mut |_| {});
+        assert_eq!(result.exit, Some(0));
+        let launched = echo.0.lock().unwrap();
+        assert_eq!(launched.len(), 1);
+        assert!(launched[0].iter().all(|(name, value)| {
+            name != "GH_TOKEN" && name != "GITHUB_TOKEN" && value != "SYNTH_CONFIGURED"
+        }));
+        let result = NetSandbox::redact_output(Some(&net), [], &mut |_| {}, |_| ExecResult {
+            output: b"SYNTH_CONFIGURED".to_vec(),
+            ..ExecResult::default()
+        });
+        assert_eq!(result.output, b"[redacted]");
     }
 
     #[test]

@@ -141,7 +141,9 @@ An owner-configured GitHub token command runs outside the sandbox. Its executabl
 through a trusted absolute path or the vetted tool search path. Each operand must be a trusted
 absolute executable path, even when the program is not named like an interpreter. The same
 permission and symlink checks apply to every path: none may pass through the project, a worktree,
-a sandbox write mount, or the writable parts of a home workspace.
+a sandbox write mount (including implicit cache writes and the shared worker cache directory),
+or the writable parts of a home workspace. A configured token is never injected into a shell
+command's environment. Only the runner's isolated GitHub transport uses it for authentication.
 An unresolvable configured command yields no token and an error; it never falls back to ambient
 executable lookup and never to another source. The helper runs from `/` with a fixed system PATH
 and only vetted home/config directory variables, excluding paths inside the checkout or
