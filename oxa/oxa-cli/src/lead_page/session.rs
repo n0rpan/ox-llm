@@ -729,8 +729,8 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<a href=\"/items/17\">#17</a>"), "{html}");
-        // Every step of the run folds into one details labelled by their own names.
-        assert_eq!(html.matches("<details class=tools").count(), 1, "{html}");
+        // The run folds into one details, and the failed result after the reply is its own.
+        assert_eq!(html.matches("<details class=tools").count(), 2, "{html}");
         assert!(html.contains("bash ×2, result, read, edit"), "{html}");
         assert!(html.contains("data-failed=1"), "{html}");
         // A step that carries its own text shows the masked text and a Copy button.

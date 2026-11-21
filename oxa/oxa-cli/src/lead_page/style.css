@@ -129,7 +129,7 @@ a.row:hover,a.tile:hover,.pages a:hover,.stale-notice a:hover,.top>a:hover,.filt
   .asks-layout .ask-cards{grid-template-columns:repeat(2,minmax(0,1fr))}  .filters{margin:0 0 12px;padding:2px 0}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto;transition:none!important}}
 
-/* chat (#2341): header strip, bubble thread, sticky composer. Every rule is scoped to
+/* chat: header strip, bubble thread, sticky composer. Every rule is scoped to
    .chat or a chat element, and uses the tokens above; no colour literal here. */
 .chat{--bubble:16px;--tail:5px}
 .chat-head{position:relative;z-index:2;display:flex;align-items:center;gap:8px;flex-wrap:wrap}

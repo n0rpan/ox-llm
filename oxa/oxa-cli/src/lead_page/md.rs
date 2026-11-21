@@ -309,12 +309,14 @@ mod tests {
             "[x](data:text/html,1)",
             "[x](//attacker.invalid/)",
             "[x](/\\attacker.invalid)",
-            "[x]( /items/1)",
         ] {
             let out = html(hostile);
             assert!(!out.contains("href="), "{hostile}: {out}");
             assert!(out.contains("x"), "{hostile}: {out}");
         }
+        // A destination that only looks like a path (a leading space, then no slash) keeps
+        // its text and gets no link.
+        assert!(html("[x](items/1)").contains("<span class=link>x</span>"));
         let link = html("[the item](/items/17) and [docs](https://example.invalid/a?b=1&c=2) and #17 and #0");
         assert!(link.contains("href=\"/items/17\""), "{link}");
         assert!(

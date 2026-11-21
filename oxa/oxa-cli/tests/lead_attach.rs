@@ -364,7 +364,10 @@ fn owner_lists_running_sessions_switches_and_returns() {
     // The service starts on the dedicated Lead chat and lists exactly the running sessions.
     let page = fixture.get("/chat", OWNER);
     // The page's own title; its body is the thread, not a second "Chat with Lead" section.
-    assert!(page.contains(">Chat with lead</h1>"), "{page}");
+    assert!(
+        page.contains(">Chat with lead</h1>") && !page.contains("Chat with Lead"),
+        "{page}"
+    );
     assert!(
         page.contains(&short(&first)) && page.contains(&short(&second)),
         "{page}"
@@ -432,8 +435,10 @@ fn owner_lists_running_sessions_switches_and_returns() {
     // An empty choice goes back to the dedicated Lead chat.
     assert!(attach(OWNER, "").starts_with("HTTP/1.1 303"));
     let page = fixture.get("/chat", OWNER);
+    // Back on the dedicated Lead chat: its own session is named again, and the attached
+    // session's transcript is gone.
     assert!(
-        page.contains("Chat with Lead") && !page.contains("second session question"),
+        page.contains("Lead session") && !page.contains("second session question"),
         "{page}"
     );
 }
