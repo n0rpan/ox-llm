@@ -1299,12 +1299,11 @@ mod tests {
             .collect();
         calls.push(command_call("read", "sqlite3 db .dump"));
         calls.push(command_call("check", "cargo test"));
-        let results = [
-            result("read", "bash", Some(1), true),
-            result("check", "bash", Some(0), false),
-        ];
-        let mut all = vec![result("w", "write", None, false); files.len()];
-        all.extend(results);
+        let mut all: Vec<CallResult> = (0..files.len())
+            .map(|i| result(&format!("w{i}"), "write", None, false))
+            .collect();
+        all.push(result("read", "bash", Some(1), true));
+        all.push(result("check", "bash", Some(0), false));
         state.note_proof(&calls, &all);
         state.note_artifacts(true);
     }
