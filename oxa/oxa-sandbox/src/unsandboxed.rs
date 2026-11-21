@@ -43,6 +43,9 @@ impl Sandbox for Unsandboxed {
     fn persistence_notice(&self) -> Option<&str> {
         Some(NO_OS_SANDBOX_NOTICE)
     }
+    fn host_rights(&self) -> bool {
+        true
+    }
     fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
         Vec::new()
     }

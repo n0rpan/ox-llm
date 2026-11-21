@@ -9,7 +9,40 @@ use std::sync::Arc;
 /// O-167(b): the process sandbox with the bash network decision (`oxa.sandbox.net`, default
 /// on; always off while offline). Read once at startup.
 pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<NetSandbox> {
-    with_policy(sandbox, settings, true, Vec::new())
+    with_policy(sandbox, settings, true, GhLaunch::Direct, Vec::new())
+}
+
+/// [`with_net`] for the run's [`ExecPolicy`](oxa_sandbox::ExecPolicy): credential discovery
+/// for redaction starts `gh` without network through the policy's pinned bwrap when the bash
+/// network is off.
+pub(crate) fn with_net_policy(
+    sandbox: Arc<dyn Sandbox>,
+    settings: &Settings,
+    policy: &oxa_sandbox::ExecPolicy,
+    env: &Env,
+    engine_key: Option<&str>,
+) -> Arc<NetSandbox> {
+    with_policy(
+        sandbox,
+        settings,
+        true,
+        policy
+            .pinned_bwrap
+            .clone()
+            .map_or(GhLaunch::Direct, GhLaunch::NoNet),
+        host_secrets(env, engine_key),
+    )
+}
+
+/// Values a host-rights program can echo even though oxa does not inherit them into bash. In
+/// particular, a worker's `GH_TOKEN` need not be in a `gh` login store.
+fn host_secrets(env: &Env, engine_key: Option<&str>) -> Vec<String> {
+    env.pairs()
+        .iter()
+        .filter(|(name, value)| oxa_sandbox::is_host_secret_name(name) && !value.is_empty())
+        .map(|(_, value)| value.clone())
+        .chain(engine_key.filter(|key| !key.is_empty()).map(str::to_owned))
+        .collect()
 }
 
 pub(crate) fn session_net(
@@ -18,16 +51,13 @@ pub(crate) fn session_net(
     env: &Env,
     engine_key: Option<&str>,
 ) -> Arc<NetSandbox> {
-    // These values can be echoed by a host-rights program even though oxa does not inherit
-    // them into bash. In particular, a worker's GH_TOKEN need not be in a gh login store.
-    let known = env
-        .pairs()
-        .iter()
-        .filter(|(name, value)| oxa_sandbox::is_host_secret_name(name) && !value.is_empty())
-        .map(|(_, value)| value.clone())
-        .chain(engine_key.filter(|key| !key.is_empty()).map(str::to_owned))
-        .collect();
-    with_policy(sandbox, settings, true, known)
+    with_policy(
+        sandbox,
+        settings,
+        true,
+        GhLaunch::Direct,
+        host_secrets(env, engine_key),
+    )
 }
 
 /// S11: yolo gives bash the network whatever `oxa.sandbox.net` says; the setting still applies to
@@ -40,13 +70,26 @@ pub(crate) fn yolo_net_notice(level: PermissionMode, net: Option<&str>, offline:
 
 /// Acceptance commands keep the user's network policy without GitHub authentication.
 pub(crate) fn without_github(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
-    with_policy(sandbox, settings, false, Vec::new())
+    with_policy(sandbox, settings, false, GhLaunch::Direct, Vec::new())
+}
+
+/// How credential discovery may start the owner's `gh` (#1952): the program is a PATH lookup
+/// that can be a shim, so with the bash network off it must not have the network either.
+pub(crate) enum GhLaunch {
+    /// With the network, as the owner's own `gh`.
+    Direct,
+    /// Without network, through this pinned bwrap.
+    NoNet(std::path::PathBuf),
+    /// Never started: offline, a runner-owned GitHub, or no pinned bwrap to hold the network
+    /// off. The `hosts.yml` tokens are still read and scrubbed.
+    Never,
 }
 
 fn with_policy(
     sandbox: Arc<dyn Sandbox>,
     settings: &Settings,
     github_auth: bool,
+    requested_launch: GhLaunch,
     known: Vec<String>,
 ) -> Arc<NetSandbox> {
     let runner_owns_github = std::env::var_os(oxa_work::RUNNER_GITHUB_ENV).is_some_and(|value| value == "1");
@@ -68,7 +111,16 @@ fn with_policy(
     // runner-owned task still must not print a file-backed login). Offline, or when the runner
     // owns GitHub, `gh` itself is never started (a shim could install it over the network, and
     // the run must not use GitHub authentication): the `hosts.yml` tokens are scrubbed then.
-    let run_gh = !runner_owns_github && !offline;
+    let launch = if runner_owns_github || offline {
+        GhLaunch::Never
+    } else if !on {
+        match requested_launch {
+            GhLaunch::NoNet(bwrap) => GhLaunch::NoNet(bwrap),
+            _ => GhLaunch::Never,
+        }
+    } else {
+        GhLaunch::Direct
+    };
     let scrub_host = github_auth
         && !test_isolated(
             std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
@@ -83,7 +135,7 @@ fn with_policy(
         ns = ns.with_host_secrets_lazy(move || {
             let mut secrets = known.clone();
             if scrub_host {
-                secrets.extend(gh_host_secrets(run_gh));
+                secrets.extend(gh_host_secrets(&launch));
             }
             secrets
         });
@@ -95,34 +147,72 @@ fn with_policy(
 /// `gh auth token` returns for each host and account it lists (keyring logins included), in
 /// every config store `gh` may read ([`gh_config_dirs`]). Host bash runs with a cleared
 /// environment, so its `gh` can read another store than this process: every store is scrubbed.
-/// Runs `gh` outside the sandbox with a short deadline; any failure yields what was found so
-/// far. Reads local state only. Tokens are never logged. With `run_gh` false only the
-/// `hosts.yml` files are read and no program is started.
-fn gh_host_secrets(run_gh: bool) -> Vec<String> {
+/// Runs `gh` outside the sandbox with a short deadline, as [`GhLaunch`] says; any failure yields
+/// what was found so far. Reads local state only. Tokens are never logged. With
+/// [`GhLaunch::Never`] only the `hosts.yml` files are read and no program is started.
+fn gh_host_secrets(launch: &GhLaunch) -> Vec<String> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let configs = gh_config_dirs(
         std::env::var_os("GH_CONFIG_DIR").as_deref(),
         std::env::var_os("XDG_CONFIG_HOME").as_deref(),
         home.as_deref(),
     );
-    let exe = if run_gh {
+    let exe = if matches!(launch, GhLaunch::Never) {
+        None
+    } else {
         trusted_gh_for(
             std::env::var_os("PATH").as_deref(),
             std::env::current_dir().ok().as_deref(),
             home.as_deref(),
         )
-    } else {
-        None
     };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    collect_host_secrets(launch, &configs, exe.as_deref(), &cwd)
+}
+
+/// The command that asks `exe` (`gh`) `args` for the store `config`, as `launch` allows.
+fn gh_command(
+    launch: &GhLaunch,
+    exe: &Path,
+    config: &Path,
+    cwd: &Path,
+    args: &[&str],
+) -> Option<std::process::Command> {
+    match launch {
+        GhLaunch::Never => None,
+        GhLaunch::Direct => {
+            let mut command = std::process::Command::new(exe);
+            command.args(args).env("GH_CONFIG_DIR", config);
+            Some(command)
+        }
+        GhLaunch::NoNet(bwrap) => {
+            let mut inner = vec![exe.to_string_lossy().into_owned()];
+            inner.extend(args.iter().map(|a| (*a).to_string()));
+            let env = [("GH_CONFIG_DIR".to_string(), config.to_string_lossy().into_owned())];
+            let argv = oxa_sandbox::no_network_argv(bwrap, cwd, &env, &inner);
+            let mut command = std::process::Command::new(argv.first()?);
+            command.args(&argv[1..]);
+            Some(command)
+        }
+    }
+}
+
+fn collect_host_secrets(
+    launch: &GhLaunch,
+    configs: &[std::path::PathBuf],
+    exe: Option<&Path>,
+    cwd: &Path,
+) -> Vec<String> {
     let mut found = Vec::new();
-    for config in &configs {
+    for config in configs {
         let text = std::fs::read_to_string(config.join("hosts.yml")).unwrap_or_default();
         let (tokens, accounts) = parse_gh_hosts(&text);
         found.extend(tokens);
-        let Some(exe) = &exe else { continue };
+        let Some(exe) = exe else { continue };
         let mut ask = |args: &[&str]| {
-            let mut command = std::process::Command::new(exe);
-            command.args(args).env("GH_CONFIG_DIR", config);
+            let Some(command) = gh_command(launch, exe, config, cwd, args) else {
+                return;
+            };
             if let Some((0, out)) = oxa_work::command_runner(command, Some(4096), GH_DEADLINE) {
                 let t = out.trim();
                 if !t.is_empty() && !t.chars().any(char::is_whitespace) {
@@ -471,6 +561,51 @@ mod tests {
         assert!(test_isolated(Some("1")));
         assert!(!test_isolated(None));
         assert!(!test_isolated(Some("0")));
+    }
+
+    /// #1952: with the bash network off, `gh` is started only through the no-network wrapper;
+    /// with no pinned bwrap it is not started at all, and the `hosts.yml` tokens are still found.
+    #[test]
+    fn credential_discovery_never_gives_gh_the_network_the_owner_turned_off() {
+        let d = tmp("gh-nonet");
+        let ran = d.join("ran");
+        let log = d.join("bwrap-args");
+        let gh = script(
+            &d,
+            "gh",
+            &format!("echo ran >> {}\necho SYNTH_FROM_GH", ran.display()),
+        );
+        let bwrap = script(
+            &d,
+            "bwrap",
+            &format!(
+                "echo \"$@\" >> {}\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"",
+                log.display()
+            ),
+        );
+        let config = d.join("cfg");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("hosts.yml"),
+            "github.com:\n    oauth_token: SYNTH_FROM_FILE\n",
+        )
+        .unwrap();
+
+        let none = collect_host_secrets(&GhLaunch::Never, &[config.clone()], Some(&gh), &d);
+        assert_eq!(none, ["SYNTH_FROM_FILE"]);
+        assert!(
+            !ran.exists(),
+            "gh must not start without a wrapper that holds the network off"
+        );
+
+        let found = collect_host_secrets(&GhLaunch::NoNet(bwrap), &[config], Some(&gh), &d);
+        assert_eq!(found, ["SYNTH_FROM_FILE", "SYNTH_FROM_GH"]);
+        assert!(ran.exists());
+        let wrapped = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            wrapped.contains("--unshare-net") && wrapped.contains(&gh.display().to_string()),
+            "{wrapped}"
+        );
     }
 
     fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
