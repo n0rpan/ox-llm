@@ -52,6 +52,6 @@ pub use policy::{deny_reasons, HiddenPaths, ModePolicy, PathGuard};
 pub use preserve::{destructive as destructive_rule, requirement as preservation_requirement};
 pub use shellmask::mask_command;
 pub use trust::{
-    approval_files, gated_resources, manifest, resolve_trust, summary, Approval, Changed, DefaultTrust,
-    TrustInputs, TrustOutcome, TrustStore, APPROVED_KEY,
+    approval_files, gated_resources, manifest, resolve_trust, saved_trust, summary, Approval, Changed,
+    DefaultTrust, TrustInputs, TrustOutcome, TrustStore, APPROVED_KEY, SHIPPED_DEFAULT_TRUST,
 };
