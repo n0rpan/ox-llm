@@ -1380,6 +1380,50 @@ fn status_distinguishes_a_saved_commit_from_a_push_without_a_pr_receipt() {
     assert!(status().get("publication").is_none());
 }
 
+/// The `oxa work` exit status for a saved task, composed by the CLI itself after a refused run.
+fn work_exit(env: &TestEnv, path: &str, args: &[&str]) -> (serde_json::Value, i32) {
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(args)
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.code().is_some_and(|code| code >= 0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (
+        serde_json::from_slice(&output.stdout).unwrap(),
+        output.status.code().unwrap(),
+    )
+}
+
+#[test]
+fn a_publish_refused_before_its_push_keeps_the_saved_head_pending() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let path = configure(&env);
+    // Offline refuses before any `gh` call or push, so the accepted head has no receipt.
+    let (refused, _) = work_exit(&env, &path, &["--offline", "work", "../tasks.json", "--publish"]);
+    assert_eq!(refused["outcome"], "blocked", "{refused}");
+    assert!(!env.home().join("gh-calls").exists());
+
+    // Reading the refused task back still reports the owed publication, not success.
+    let (listed, code) = work_exit(&env, &path, &["work", "../tasks.json"]);
+    assert_eq!(listed["outcome"], "publication_pending", "{listed}");
+    assert_eq!(code, 3, "{listed}");
+    let status = work_exit(&env, &path, &["work", "status"]).0;
+    let text = status.to_string();
+    assert!(text.contains("committed_no_push_recorded"), "{text}");
+
+    // Online, the same saved work publishes without replaying the agent.
+    let published = run_args(&env, vec![], &["work", "../tasks.json", "--publish"], Some(path));
+    assert_eq!(published["outcome"], "done", "{published}");
+}
+
 #[test]
 fn a_normal_publish_records_a_receipt_read_back_from_the_remote() {
     let env = TestEnv::new();

@@ -129,7 +129,8 @@ fn awaiting_publication(record: &Record) -> bool {
 /// True for a finished, accepted record whose explicit publication action left no useful
 /// exact-head receipt. The record is not "done" for anyone reading the result (#2304).
 pub fn publication_pending(record: &Record) -> bool {
-    awaiting_publication(record) && PublicationStatus::read(record, 0).is_some()
+    let recorded_pr = record.pull_request.as_deref().is_some_and(|url| !url.is_empty());
+    awaiting_publication(record) && !recorded_pr && PublicationStatus::read(record, 0).is_some()
 }
 
 /// A bounded projection of one saved task, with no worker receipt or private paths.
