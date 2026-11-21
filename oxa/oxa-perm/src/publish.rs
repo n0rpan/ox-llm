@@ -10,7 +10,7 @@
 //! `issue view|list`, `repo view`, `api` GET). A line that mixes such a command with any other
 //! command outside a short local list (`cd`, `git status`, `head`...) is a hit on the other
 //! command: the network permission of a publish command never covers a neighbour.
-use crate::danger::Stage;
+use crate::danger::{Stage, SHELLS};
 use std::path::{Path, PathBuf};
 
 /// Names (the first word) that cannot reach the network or write outside the worktree on their
@@ -487,13 +487,31 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
             {
                 return Kind::Unsafe;
             }
-            let hides = args.iter().skip(1).any(|w| {
+            // Only a direct, unambiguous shell file operand is not inline text. Leave
+            // the argv checks, other operands and the mixed-command check unchanged.
+            let script_file = if first_word(words) == Some(name.as_str()) && SHELLS.contains(&base(&name)) {
+                let i = if args.get(1).is_some_and(|w| w == "--") {
+                    2
+                } else {
+                    1
+                };
+                args.get(i)
+                    .filter(|w| {
+                        !w.starts_with('-')
+                            && w.bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))
+                    })
+                    .map(|_| i)
+            } else {
+                None
+            };
+            let hides = args.iter().enumerate().skip(1).any(|(i, w)| {
                 // Quotes and backslashes can split a word (`pu''sh`); compare the plain text.
                 let plain = w.replace(['\'', '"', '\\'], "");
                 w == "gh"
                     || w.contains("gh ")
                     || w.ends_with("/gh")
-                    || (plain.contains("git") && plain.contains("push"))
+                    || (Some(i) != script_file && plain.contains("git") && plain.contains("push"))
                     || (plain.contains("git") && w.contains(['$', '`']))
             }) || args.iter().enumerate().any(|(i, w)| {
                 // A wrapper may rewrite argv before it invokes git. Keep this

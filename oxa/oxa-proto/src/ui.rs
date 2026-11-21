@@ -116,11 +116,74 @@ pub trait Ui: Send {
     fn secret(&mut self, _title: &str, _body: &str) -> Option<String> {
         None
     }
-    /// A handle that dismisses dialogs currently waiting in this UI. RPC uses this so an
-    /// owner reply delivered through another authenticated input path can release a session
-    /// thread waiting in [`Ui::confirm`].
-    fn dialog_canceller(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
-        None
+    /// [`Ui::confirm`] that `cancel` can dismiss: only this dialog is dismissed, and a cancel
+    /// that came before the dialog was registered is never lost (the answer is `None`).
+    /// The default cannot dismiss an open dialog; it only honours a cancel that came first.
+    fn confirm_cancellable(&mut self, title: &str, body: &str, cancel: &DialogCancel) -> Option<bool> {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        self.confirm(title, body, None)
+    }
+}
+
+/// A cloneable, sticky cancel handle for one dialog. `cancel` marks it and runs the hook the
+/// dialog armed; `arm` on a handle that is already cancelled runs the hook at once. Both share
+/// one mutex, so whichever comes first, the dialog is released exactly once.
+#[derive(Clone, Default)]
+pub struct DialogCancel(std::sync::Arc<std::sync::Mutex<CancelState>>);
+
+#[derive(Default)]
+struct CancelState {
+    cancelled: bool,
+    hook: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl DialogCancel {
+    pub fn new() -> DialogCancel {
+        DialogCancel::default()
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, CancelState> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn cancel(&self) {
+        let hook = {
+            let mut st = self.state();
+            st.cancelled = true;
+            st.hook.take()
+        };
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.state().cancelled
+    }
+
+    pub fn arm(&self, hook: impl FnOnce() + Send + 'static) {
+        let now = {
+            let mut st = self.state();
+            if st.cancelled {
+                Some(hook)
+            } else {
+                st.hook = Some(Box::new(hook));
+                None
+            }
+        };
+        if let Some(hook) = now {
+            hook();
+        }
+    }
+}
+
+impl std::fmt::Debug for DialogCancel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DialogCancel")
+            .field("cancelled", &self.is_cancelled())
+            .finish()
     }
 }
 

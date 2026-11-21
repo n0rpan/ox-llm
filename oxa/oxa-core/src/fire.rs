@@ -595,8 +595,15 @@ impl Ui for PromptTap<'_> {
         self.inner.secret(title, body)
     }
 
-    fn dialog_canceller(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
-        self.inner.dialog_canceller()
+    fn confirm_cancellable(
+        &mut self,
+        title: &str,
+        body: &str,
+        cancel: &oxa_proto::DialogCancel,
+    ) -> Option<bool> {
+        self.span("confirm", Some(title), |u| {
+            u.confirm_cancellable(title, body, cancel)
+        })
     }
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {
         self.span("input", Some(title), |u| u.input(title, placeholder))

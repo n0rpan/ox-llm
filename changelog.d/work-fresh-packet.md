@@ -1,0 +1,1 @@
+- `oxa work` workers now see GitHub updates to their issue or pull request at every launch, take `oxa send` follow-ups while running, unattended shells never wait at a git or gh credential prompt, and every publish records a receipt read back from the remote with a divergence class.

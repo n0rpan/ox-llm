@@ -440,8 +440,13 @@ impl Ui for LockedUi<'_, '_> {
         self.with(|u| u.secret(title, body))
     }
 
-    fn dialog_canceller(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
-        self.with(|u| u.dialog_canceller())
+    fn confirm_cancellable(
+        &mut self,
+        title: &str,
+        body: &str,
+        cancel: &oxa_proto::DialogCancel,
+    ) -> Option<bool> {
+        self.with(|u| u.confirm_cancellable(title, body, cancel))
     }
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {
         self.with(|u| u.input(title, placeholder))
@@ -580,13 +585,20 @@ fn serve_owner_confirm(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut
 }
 
 /// Record answers without making the broker servable again after the pumped operation ends.
-fn drain_owner_confirm_records(st: &mut SessionState, sink: &mut dyn EventSink) {
+/// Called from the pump, at the start of every prompt and when the session closes, so a broker
+/// that answers without any pump (yolo) is still drained.
+pub(crate) fn drain_owner_confirm_records(st: &mut SessionState, sink: &mut dyn EventSink) {
     let Some(broker) = st.shared.owner_confirm() else {
         return;
     };
     for r in broker.take_records() {
+        let times = if r.count > 1 {
+            format!(" x{}", r.count)
+        } else {
+            String::new()
+        };
         let text = format!(
-            "owner confirm {} ({}), preview sha256 {}",
+            "owner confirm {} ({}){times}, preview sha256 {}",
             r.verdict.as_str(),
             r.origin.as_str(),
             r.preview_sha256
@@ -596,7 +608,10 @@ fn drain_owner_confirm_records(st: &mut SessionState, sink: &mut dyn EventSink) 
             text,
         });
         let data = json!({
-            "question": r.question,
+            "title": r.title,
+            "question": r.body,
+            "bytes": r.bytes,
+            "count": r.count,
             "preview_sha256": r.preview_sha256,
             "answer": r.verdict.as_str(),
             "source": r.origin.as_str(),
@@ -1595,16 +1610,13 @@ mod tests {
     /// tool runs, so the available owner can approve the tool child's request.
     #[test]
     fn owner_confirm_is_pumped_without_extension_hosts() {
-        use std::io::{BufRead, Write};
-        use std::os::unix::net::UnixStream;
-
         let mut f = fixture();
         assert!(
             f.st.host_rx.is_none(),
             "the regression requires no extension host"
         );
         let broker = crate::owner_confirm::OwnerConfirm::start(
-            &f.env.tmp().join("confirm"),
+            &f.env.root().join("confirm"),
             oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard),
         )
         .expect("start broker");
@@ -1618,30 +1630,22 @@ mod tests {
         let socket = broker.sock_path().to_path_buf();
         let mut sink = VecSink::default();
         let mut ui = ConfirmUi;
-        let answer = pumped(
+        let reply = pumped(
             &mut f.st,
             Serve::Run,
             &mut sink,
             &mut ui,
             &mut |_| {},
             move |_| {
-                let mut stream = UnixStream::connect(socket).expect("connect");
-                writeln!(
-                    stream,
-                    "{}",
-                    json!({"question": "publish the change?", "preview_sha256": "abc"})
+                crate::owner_confirm::ask(
+                    &socket,
+                    &crate::owner_confirm::Request::ask("Publish", "publish the change?"),
                 )
-                .expect("request");
-                let mut line = String::new();
-                std::io::BufReader::new(stream)
-                    .read_line(&mut line)
-                    .expect("reply");
-                serde_json::from_str::<Value>(&line).expect("JSON reply")
             },
         );
 
-        assert_eq!(answer["answer"], "yes");
-        assert_eq!(answer["source"], "dialog");
+        assert_eq!(reply.verdict, crate::owner_confirm::Verdict::Yes);
+        assert_eq!(reply.origin, crate::owner_confirm::Origin::Dialog);
         broker.close();
     }
 
@@ -1660,9 +1664,6 @@ mod tests {
     /// so it receives `none` instead of waiting behind a broker left servable by the final drain.
     #[test]
     fn pumped_tool_leaves_owner_confirm_unservable() {
-        use std::io::{BufRead, Write};
-        use std::os::unix::net::UnixStream;
-
         let mut f = fixture();
         let broker = crate::owner_confirm::OwnerConfirm::start(
             &f.env.root().join("confirm-after-tool"),
@@ -1680,21 +1681,11 @@ mod tests {
         let mut ui = HeadlessUi::default();
         pumped(&mut f.st, Serve::Run, &mut sink, &mut ui, &mut |_| {}, |_| ());
 
-        let mut stream = UnixStream::connect(broker.sock_path()).expect("connect after tool");
-        writeln!(
-            stream,
-            "{}",
-            json!({"question": "publish?", "preview_sha256": "abc"})
-        )
-        .expect("send request");
-        let mut answer = String::new();
-        std::io::BufReader::new(stream)
-            .read_line(&mut answer)
-            .expect("read answer");
-        assert_eq!(
-            serde_json::from_str::<Value>(&answer).expect("json")["answer"],
-            "none"
+        let reply = crate::owner_confirm::ask(
+            broker.sock_path(),
+            &crate::owner_confirm::Request::ask("Publish", "publish?"),
         );
+        assert_eq!(reply.verdict, crate::owner_confirm::Verdict::None);
     }
 
     /// #1512 S2: answers the dangerous-command prompt with `answer` and counts the questions.

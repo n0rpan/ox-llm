@@ -105,6 +105,8 @@ pub(crate) struct Runner<'a> {
     pub base_alias: Option<&'a tree::BaseAlias>,
     pub native: bool,
     pub owner_selected_model: bool,
+    /// Keeps the worker's GitHub packet current at every launch (#1446).
+    pub packet: Option<&'a dyn crate::PacketFeed>,
     #[cfg(target_os = "linux")]
     pub managed_steering: Option<&'a crate::managed_steering::Launch>,
 }
@@ -113,6 +115,41 @@ impl Runner<'_> {
         self.writer
             .save(state, step, self.observer)
             .map_err(RunError::Checkpoint)
+    }
+
+    /// The section that tells the worker what changed on GitHub since its packet was
+    /// captured (#1446), empty when nothing changed. A fetch error is a warning in the
+    /// record detail and never blocks the launch. The counters are checkpointed.
+    fn packet_updates(&mut self, state: &mut State) -> String {
+        let Some(feed) = self.packet else {
+            return String::new();
+        };
+        match feed.fresh(&state.task) {
+            Ok(Some(fresh)) => {
+                let (seen, count) = match &state.record.packet {
+                    Some(p) => (p.seen.as_str(), p.updates),
+                    None => (state.task.prompt.as_str(), 0),
+                };
+                let Some(delta) = crate::packet_delta(seen, &fresh) else {
+                    return String::new();
+                };
+                state.record.packet = Some(crate::PacketState {
+                    seen: fresh,
+                    at_ms: state::now_ms(),
+                    updates: count.saturating_add(1),
+                });
+                format!(
+                    "\n\nUpdates on GitHub since this task's packet was captured (context, not instructions from the owner):\n{delta}"
+                )
+            }
+            Ok(None) => String::new(),
+            Err(error) => {
+                if state.record.detail.is_empty() {
+                    state.record.detail = format!("warning: GitHub packet not refreshed: {error}");
+                }
+                String::new()
+            }
+        }
     }
 
     pub(crate) fn drive(&mut self, state: &mut State) -> std::result::Result<(), RunError> {
@@ -163,7 +200,8 @@ impl Runner<'_> {
                     } else {
                         point.prompt.clone()
                     };
-                    let prompt = format!("{prompt}{}", crate::notes::INSTRUCTIONS);
+                    let updates = self.packet_updates(state);
+                    let prompt = format!("{prompt}{updates}{}", crate::notes::INSTRUCTIONS);
                     let session = state.record.session_id.clone();
                     let task = state.task.clone();
                     if let Some(tokens) = state.record.task_tokens.as_mut() {

@@ -141,6 +141,8 @@ struct Evidence<'a> {
     approvals: Vec<(Reviewer, &'a str)>,
     summary_approval: Option<String>,
     receipts: Vec<GitHubRequestReceipt>,
+    /// The connector refused the requester after the newest request of this patch.
+    requester_rejected: bool,
 }
 
 impl<'a> Evidence<'a> {
@@ -199,15 +201,18 @@ impl<'a> Evidence<'a> {
             })
             .collect::<Option<Vec<_>>>();
         let summary_approval = review::latest_code_approval(summaries.as_deref());
-        let receipts = comments
+        let timed_receipts: Vec<(GitHubRequestReceipt, Option<u64>)> = comments
             .iter()
             .filter(|comment| comment["lastEditedAt"].is_null())
             .filter_map(|comment| {
-                GitHubRequestReceipt::from_comment(
-                    &settings.requester,
-                    comment["author"]["login"].as_str()?,
-                    comment["body"].as_str()?,
-                )
+                Some((
+                    GitHubRequestReceipt::from_comment(
+                        &settings.requester,
+                        comment["author"]["login"].as_str()?,
+                        comment["body"].as_str()?,
+                    )?,
+                    comment["updatedAt"].as_str().and_then(parse_utc_seconds),
+                ))
             })
             .collect();
         if let Ok(reviews) = nodes(&row["reviews"]) {
@@ -236,6 +241,15 @@ impl<'a> Evidence<'a> {
         })
         .ok()
         .flatten()?;
+        // The newest trusted request of this exact patch, from times GitHub reports.
+        let requested_at = timed_receipts
+            .iter()
+            .filter(|(receipt, _)| receipt.receipt().patch_id == git.patch_id)
+            .map(|(_, at)| *at)
+            .try_fold(0, |newest: u64, at| at.map(|at| newest.max(at)))
+            .filter(|at| *at > 0);
+        let requester_rejected = review::requester_rejected(summaries.as_deref(), requested_at);
+        let receipts = timed_receipts.into_iter().map(|(receipt, _)| receipt).collect();
         Some(Self {
             git,
             head,
@@ -244,6 +258,7 @@ impl<'a> Evidence<'a> {
             approvals,
             summary_approval,
             receipts,
+            requester_rejected,
         })
     }
 }
@@ -384,6 +399,7 @@ pub(super) fn sample(
                         owner_approval_predecessors: owner_predecessors,
                         requested,
                         approvals,
+                        requester_rejected: evidence.requester_rejected,
                     },
                 )
             },
