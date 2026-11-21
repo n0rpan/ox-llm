@@ -149,6 +149,8 @@ pub struct Args {
     pub max_tokens: Option<u64>,
     /// `--usage-log FILE`: one JSONL record per model call (owner-only file, no message text).
     pub usage_log: Option<PathBuf>,
+    /// `--wire-evidence`: owner-terminal-only adjacent request observations.
+    pub wire_evidence: bool,
     /// `--allowed-changed-files <list>`: the allowed changed-file set a task supplies; the
     /// terminal record reports tool-observed extra files against it (#2297). Empty = no scope.
     pub allowed_changed_files: Vec<String>,
@@ -412,6 +414,7 @@ const OPTIONS: &[(&str, &str)] = &[
         "--usage-log <file>",
         "Write one JSONL record per model call (tokens, duration, model, turn) to FILE; owner-only, no message text",
     ),
+    ("--wire-evidence", "Show bounded adjacent wire observations on exit (owner terminal only)"),
     (
         "--allowed-changed-files <list>",
         "Comma-separated allowed changed-file set; the result reports tool-observed extra files against it (acceptance evidence, never a refusal)",
@@ -851,6 +854,10 @@ fn parse_flag(
                     .filter(|n| *n > 0)
                     .ok_or_else(|| usage("--max-tokens requires a positive integer"))?,
             );
+        }
+        "--wire-evidence" => {
+            no_value(inline, flag)?;
+            a.wire_evidence = true;
         }
         "--usage-log" => {
             a.usage_log = Some(PathBuf::from(value(argv, i, inline, flag, "a file path")?));

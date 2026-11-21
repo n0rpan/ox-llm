@@ -133,6 +133,15 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Bool, "true")
     .hidden(),
+    d(
+        "oxa.done.imageCrossCheck",
+        Group::Advanced,
+        "",
+        "oxa.done.imageCrossCheck",
+        "",
+    )
+    .key(Kind::Bool, "true")
+    .hidden(),
     // V020-OPTIMIZE #1 / #2: unset = on.
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     // K3: a headless print or JSON run of a persisted session with a pursuing goal takes

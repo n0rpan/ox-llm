@@ -140,6 +140,23 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             report(err, error)
         }
     };
+    if a.wire_evidence
+        && (a.subcommand.is_some()
+            || a.export.is_some()
+            || a.list_models.is_some()
+            || a.lead
+            || choose_mode(&a, stdin_is_tty, stdout_is_tty) != RunMode::Interactive
+            || is_agent(env)
+            || crate::child::ChildIdentity::from_env(env, &mut Vec::new()).nested())
+    {
+        return report(
+            &mut *stderr,
+            &OxaError::new(
+                codes::USAGE,
+                "--wire-evidence needs a foreground owner terminal session",
+            ),
+        );
+    }
     // A long flag oxa does not know may belong to an extension (`registerFlag`): the session
     // paths resolve it once the extensions are loaded (`build_hooks`). The paths that load no
     // extension (subcommands, `--export`, `--list-models`) refuse it here.
@@ -2401,11 +2418,17 @@ fn run_tui(
         yolo: Some(yolo),
         os_sandbox: crate::run_kind::os_sandbox_active(built.os_sandbox, oxa_proto::OS_SANDBOX),
     };
+    let evidence = a.wire_evidence.then(|| session.arm_wire_evidence());
     let result = if pinned {
         oxa_interactive::run_pinned(session, opts, "oxa lead")
     } else {
         run_interactive(session, opts)
     };
+    if let Some(evidence) = evidence {
+        if let Ok(report) = serde_json::to_string(&evidence.finish()) {
+            let _ = writeln!(stderr, "Wire adjacency (oxa handoff only): {report}");
+        }
+    }
     let result = match &built.status {
         Some(status) => status.finish_interactive(result, stderr),
         None => result,

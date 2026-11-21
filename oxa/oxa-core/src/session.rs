@@ -120,6 +120,9 @@ pub struct Stats {
     pub proved: Option<bool>,
     /// Background jobs still running when the last run ended (after the finish nudge).
     pub jobs_left: u32,
+    /// The last run read an image file, changed files and ended without an independent check
+    /// of its reading (after the finish nudge).
+    pub image_unverified: bool,
     /// `bash` results of the current operation that carried the CI polling note (`ui.ciPoll`).
     pub ci_polls: u32,
     /// Whether the current agent operation's last reply stopped at its output token limit.
@@ -657,6 +660,9 @@ impl Session {
         let reason = payload["reason"].as_str().unwrap_or("new");
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
+        if let Some(capture) = self.st.shared.gate.wire_evidence.get() {
+            capture.stop();
+        }
         enter(&mut self.st, how, None, sink, ui)?;
         self.bind_jobs_owner();
         self.preloaded = false;
@@ -969,6 +975,16 @@ impl Session {
     }
 
     /// Read access for front ends (tree view, export, RPC `get_entries`).
+    /// Arm process-local evidence for this session. The owner CLI is the sole caller.
+    pub fn arm_wire_evidence(&mut self) -> crate::wire_evidence::WireEvidence {
+        self.st
+            .shared
+            .gate
+            .wire_evidence
+            .get_or_init(crate::wire_evidence::WireEvidence::start)
+            .clone()
+    }
+
     pub fn inner(&self) -> &SessionState {
         &self.st
     }
@@ -977,6 +993,9 @@ impl Session {
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
+        if let Some(capture) = self.st.shared.gate.wire_evidence.get() {
+            capture.stop();
+        }
         crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
@@ -1175,6 +1194,7 @@ impl Session {
         self.st.stats.done_failed = false;
         self.st.stats.proved = None;
         self.st.stats.jobs_left = 0;
+        self.st.stats.image_unverified = false;
         self.st.stats.ci_polls = 0;
         self.st.stats.output_truncated = false;
         crate::goal::begin(&self.st);
@@ -2210,6 +2230,9 @@ pub(crate) fn switch_model(
     }
     persist(st, EntryBody::ModelChange(m.to_string()), sink)?;
     let previous = std::mem::replace(&mut st.model, m.to_string());
+    if let Some(capture) = st.shared.gate.wire_evidence.get().filter(|_| previous != m) {
+        capture.stop();
+    }
     // The speed belongs to the model that produced it.
     st.stats.last_tok_s = 0.0;
     sink.emit(&AgentEvent::ModelSelect {
