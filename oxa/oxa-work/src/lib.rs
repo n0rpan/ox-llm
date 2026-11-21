@@ -574,56 +574,97 @@ pub fn token_from_command(command: Command, deadline: Duration) -> Option<String
         .then(|| token.to_string())
 }
 
-/// Resolve a configured token helper without consulting the ambient PATH. The
-/// canonical target, including any symlink, must stay outside the active project.
+/// Resolve a configured token command without consulting the ambient PATH. Every operand
+/// must be a trusted absolute helper: an executable can interpret arguments as code regardless
+/// of its name (including renamed interpreters and multicall binaries).
 pub fn trusted_token_program(
-    program: &str,
+    argv: &[String],
     path: Option<&std::ffi::OsStr>,
     project: Option<&Path>,
-) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let project = project.map(token_project_paths).transpose().ok()?;
-    let is_project = |path: &Path| token_project_path(path, project.as_ref());
-    let validate = |candidate: &Path| {
-        if !candidate.is_absolute() || is_project(candidate) {
-            return None;
-        }
-        let original_parent = candidate.parent()?.canonicalize().ok()?;
-        if is_project(&original_parent) {
-            return None;
-        }
-        let target = candidate.canonicalize().ok()?;
-        let file = target.metadata().ok()?;
-        let parent = target.parent()?;
-        let safe_dirs = parent.ancestors().all(|dir| {
-            dir.metadata().is_ok_and(|metadata| {
-                let mode = metadata.permissions().mode();
-                mode & 0o022 == 0 || (dir != parent && mode & 0o1000 != 0)
+    writes: &[PathBuf],
+    writable_home: Option<&Path>,
+) -> Option<Command> {
+    let (program, args) = argv.split_first()?;
+    let project_paths = project.map(token_project_paths).transpose().ok()?;
+    let real_writes: Vec<_> = writes.iter().filter_map(|p| p.canonicalize().ok()).collect();
+    let real_home = writable_home.map(Path::canonicalize).transpose().ok()?;
+    let untrusted = |p: &Path| {
+        token_project_path(p, project_paths.as_ref())
+            || writes.iter().chain(&real_writes).any(|root| p.starts_with(root))
+            || writable_home.into_iter().chain(real_home.as_deref()).any(|home| {
+                p.strip_prefix(home)
+                    .ok()
+                    .and_then(|rest| rest.iter().next())
+                    .is_some_and(|entry| {
+                        !entry.as_encoded_bytes().starts_with(b".")
+                            && !oxa_proto::guard::PROTECTED_IN_HOME
+                                .iter()
+                                .any(|name| entry == *name)
+                    })
             })
-        });
-        (file.is_file()
-            && file.permissions().mode() & 0o111 != 0
-            && file.permissions().mode() & 0o022 == 0
-            && safe_dirs
-            && !is_project(&target))
-        .then_some(target)
     };
-    if program.contains('/') {
-        return validate(Path::new(program));
+    let validate = |candidate: &Path| resolve_token_helper(candidate, &untrusted);
+    let exe = if program.contains('/') {
+        validate(Path::new(program))?
+    } else {
+        if program.is_empty() || matches!(program.as_str(), "." | "..") {
+            return None;
+        }
+        std::env::split_paths(path?).find_map(|dir| validate(&dir.join(program)))?
+    };
+    let args = args
+        .iter()
+        .map(|arg| validate(Path::new(arg)))
+        .collect::<Option<Vec<_>>>()?;
+    let mut command = token_helper_command(&exe, project);
+    command.args(args);
+    Some(command)
+}
+
+fn resolve_token_helper(path: &Path, untrusted: &impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Component;
+
+    // Check each step of resolution: an outside alias can pass through a writable directory
+    // and back out again. Use the resolved path when spawning, not the alias we inspected.
+    let mut pending = path.to_path_buf();
+    for _ in 0..=40 {
+        if !pending.is_absolute() || untrusted(&pending) {
+            return None;
+        }
+        let mut resolved = PathBuf::new();
+        let mut components = pending.components();
+        loop {
+            let part = components.next()?;
+            if part == Component::ParentDir {
+                resolved.pop();
+                continue;
+            }
+            resolved.push(part.as_os_str());
+            if untrusted(&resolved) {
+                return None;
+            }
+            let meta = resolved.symlink_metadata().ok()?;
+            let tail = components.as_path();
+            let mode = meta.permissions().mode();
+            if meta.is_symlink() {
+                let parent = resolved.parent()?;
+                if parent.metadata().ok()?.permissions().mode() & 0o022 != 0 {
+                    return None;
+                }
+                pending = parent.join(resolved.read_link().ok()?).join(tail);
+                break;
+            }
+            if tail.as_os_str().is_empty() {
+                return (meta.is_file() && mode & 0o111 != 0 && mode & 0o022 == 0).then_some(resolved);
+            }
+            let immediate_parent = components.clone().nth(1).is_none();
+            if !meta.is_dir() || (mode & 0o022 != 0 && (immediate_parent || mode & 0o1000 == 0)) {
+                return None;
+            }
+        }
     }
-    if program.is_empty() || matches!(program, "." | "..") {
-        return None;
-    }
-    std::env::split_paths(path?)
-        .filter(|dir| {
-            dir.is_absolute()
-                && !is_project(dir)
-                && dir
-                    .metadata()
-                    .is_ok_and(|meta| meta.is_dir() && meta.permissions().mode() & 0o022 == 0)
-        })
-        .find_map(|dir| validate(&dir.join(program)))
+    None
 }
 
 fn token_project_root(path: &Path) -> &Path {
@@ -712,13 +753,17 @@ fn token_helper_never_inherits_checkout_home_or_config() {
 /// The owner's token command (`oxa.github.tokenCommand`) for the runner's own GitHub calls:
 /// a trusted absolute program, or a bare name only from the vetted tool directories.
 fn policy_token(policy: &RunPolicy, repo: &Path) -> Result<Option<String>> {
-    let Some((program, args)) = policy.github_token_command.split_first() else {
+    if policy.github_token_command.is_empty() {
         return Ok(None);
-    };
-    let exe = trusted_token_program(program, Some(&policy.host_path), Some(repo))
-        .ok_or("GitHub token command is outside trusted tool locations")?;
-    let mut command = token_helper_command(&exe, Some(repo));
-    command.args(args);
+    }
+    let command = trusted_token_program(
+        &policy.github_token_command,
+        Some(&policy.host_path),
+        Some(repo),
+        &policy.github_token_write_paths,
+        None,
+    )
+    .ok_or("GitHub token command is outside trusted tool locations")?;
     token_from_command(command, COMMAND_DEADLINE)
         .map(Some)
         .ok_or_else(|| "GitHub token command failed".into())
@@ -1091,6 +1136,8 @@ pub struct RunPolicy {
     /// `oxa.github.tokenCommand` from the user's settings: argv that prints the token the
     /// runner's `gh` and `git push` use when publishing. Empty keeps the stored `gh` login.
     pub github_token_command: Vec<String>,
+    /// Owner-configured sandbox write paths. Token commands cannot load code from them.
+    pub github_token_write_paths: Vec<PathBuf>,
     /// The owner's level for the workers this runner starts. Only `Yolo` changes the worker argv.
     pub autonomy: oxa_proto::Autonomy,
     /// How much GitHub access a worker keeps when the runner owns GitHub for its task.

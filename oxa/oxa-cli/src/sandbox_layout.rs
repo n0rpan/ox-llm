@@ -107,6 +107,11 @@ mod prompt_tests {
     }
 }
 
+/// Expand a bind list from the user-only settings snapshot used to build the sandbox.
+pub(crate) fn configured_paths(user: &Settings, key: &str, home: &Path) -> Vec<std::path::PathBuf> {
+    user.list(key).iter().map(|raw| expand_home(raw, home)).collect()
+}
+
 pub(crate) fn layout(
     env: &Env,
     dirs: &Dirs,
@@ -115,12 +120,7 @@ pub(crate) fn layout(
     notices: &mut Vec<(Level, String)>,
 ) -> Layout {
     let user = Settings::load(dirs, cwd, false);
-    let paths = |key: &str| {
-        user.list(key)
-            .iter()
-            .map(|raw| expand_home(raw, &dirs.home))
-            .collect::<Vec<_>>()
-    };
+    let paths = |key| configured_paths(&user, key, &dirs.home);
     let resolved = cwd.canonicalize().ok();
     let home_root = is_home_or_above(cwd, &dirs.home)
         || resolved

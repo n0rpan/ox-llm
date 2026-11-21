@@ -1319,8 +1319,14 @@ fn prepare(
     );
     policy.os_sandbox = os_sandbox;
     policy.attended_tui = interactive;
-    let host_net =
-        crate::netguard::with_net_policy(sandbox, &settings, &policy, env, endpoint.api_key.as_deref());
+    let host_net = crate::netguard::with_net_policy(
+        sandbox,
+        &settings,
+        &policy,
+        env,
+        endpoint.api_key.as_deref(),
+        crate::netguard::TokenWorkspace::new(cwd, &dirs.home, &layout),
+    );
     let sandbox: Arc<dyn Sandbox> = host_net.clone();
     let (sandbox, net_notice) = bash_sandbox(sandbox, interactive && !os_sandbox, oxa_proto::offline());
     if let Some(notice) = net_notice {

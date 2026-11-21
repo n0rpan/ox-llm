@@ -124,7 +124,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         Group::Safety,
         "GitHub",
         "GitHub token command",
-        "Command that prints a GitHub token; empty uses `gh auth token`.",
+        "Command that prints a GitHub token. Operands must be trusted absolute executable paths. Empty uses `gh auth token`.",
     )
     .key(Kind::StringList, "[]")
     .control(Control::List(Item::Text))

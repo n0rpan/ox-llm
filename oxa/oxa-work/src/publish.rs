@@ -1282,7 +1282,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+    pub(super) fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1300,6 +1300,7 @@ mod tests {
             offline: false,
             runner_owns_github: false,
             github_token_command: command,
+            github_token_write_paths: Vec::new(),
             worker_github: Default::default(),
             autonomy: Default::default(),
             authority_now: None,
@@ -1356,7 +1357,16 @@ mod tests {
         let untrusted = script(&repo, "mint-token", "exit 0");
         let link = tools.join("shortcut");
         std::os::unix::fs::symlink(&untrusted, &link).unwrap();
-        let resolve = |name| crate::trusted_token_program(name, Some(tools.as_os_str()), Some(&repo));
+        let resolve = |name: &str| {
+            crate::trusted_token_program(
+                &[name.to_owned()],
+                Some(tools.as_os_str()),
+                Some(&repo),
+                &[],
+                None,
+            )
+            .map(|command| Path::new(command.get_program()).to_path_buf())
+        };
         assert_eq!(resolve("mint-token"), Some(safe.canonicalize().unwrap()));
         assert!(resolve("missing-tool").is_none());
         assert!(resolve("./mint-token").is_none());
@@ -1364,6 +1374,45 @@ mod tests {
         assert!(resolve("shortcut").is_none());
         std::fs::set_permissions(&tools, std::fs::Permissions::from_mode(0o775)).unwrap();
         assert!(resolve(safe.to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn runner_rejects_interpreter_operands_from_the_project() {
+        let dir = crate::test_dir::PrivateDir::new("token-operands");
+        let repo = dir.path().join("project");
+        std::fs::create_dir(&repo).unwrap();
+        let mint = script(&repo, "mint", "echo SYNTH_MINTED");
+        let argv = vec!["/bin/sh".into(), mint.display().to_string()];
+        let runner = policy(dir.path(), argv);
+        assert!(super::super::policy_token(&runner, &repo).is_err());
+    }
+
+    #[test]
+    fn runner_rejects_helpers_under_sandbox_write_mounts() {
+        let dir = crate::test_dir::PrivateDir::new("token-write-mount");
+        let repo = dir.path().join("project");
+        let mount = dir.path().join("mounted");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(&mount).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&mount, &alias).unwrap();
+        let mint = script(&mount, "mint", "echo SYNTH_MINTED");
+        let mut runner = policy(dir.path(), vec![mint.display().to_string()]);
+        assert_eq!(
+            super::super::policy_token(&runner, &repo).unwrap().as_deref(),
+            Some("SYNTH_MINTED")
+        );
+        runner.github_token_write_paths.push(alias);
+        assert!(super::super::policy_token(&runner, &repo).is_err());
+
+        // A writable link remains unsafe even when the final executable is outside the mount.
+        let safe = script(dir.path(), "trusted", "echo SYNTH_MINTED");
+        let inside = mount.join("link");
+        std::os::unix::fs::symlink(safe, &inside).unwrap();
+        let outside = dir.path().join("outside-link");
+        std::os::unix::fs::symlink(inside, &outside).unwrap();
+        runner.github_token_command = vec![outside.display().to_string()];
+        assert!(super::super::policy_token(&runner, &repo).is_err());
     }
 }
 
@@ -1383,6 +1432,7 @@ mod scan_tests {
             offline: false,
             runner_owns_github: false,
             github_token_command: Vec::new(),
+            github_token_write_paths: Vec::new(),
             autonomy: Default::default(),
             worker_github: Default::default(),
             authority_now: None,
@@ -1419,8 +1469,17 @@ mod scan_tests {
         git_ok(dir.path(), &["commit", "-q", "--allow-empty", "-m", secret]);
         let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
         policy.content_scan = Some(std::sync::Arc::new(containing(secret)));
-        let marker = dir.path().join("helper-ran");
-        policy.github_token_command = vec!["/usr/bin/touch".into(), marker.display().to_string()];
+        let tools = crate::test_dir::PrivateDir::new("publish-scan-helper");
+        let marker = tools.path().join("helper-ran");
+        let helper = super::tests::script(
+            tools.path(),
+            "mint",
+            &format!(
+                "touch {} && echo SYNTH_MINTED",
+                oxa_proto::sh_quote(&marker.to_string_lossy())
+            ),
+        );
+        policy.github_token_command = vec![helper.display().to_string()];
         let error = scan_push(
             &policy,
             dir.path(),
@@ -1430,6 +1489,8 @@ mod scan_tests {
         .unwrap_err();
         assert!(error.contains("adds a test secret"), "{error}");
         assert!(!marker.exists());
+        assert!(super::super::policy_token(&policy, dir.path()).unwrap().is_some());
+        assert!(marker.exists());
     }
 
     #[test]

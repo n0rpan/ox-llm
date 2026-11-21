@@ -101,7 +101,7 @@ pub(crate) fn run(
             let sandbox: Arc<dyn Sandbox> = if adopted {
                 Arc::new(b)
             } else {
-                crate::netguard::with_net(Arc::new(b), &settings)
+                crate::netguard::with_net(b, &settings, &source, &root)
             };
             let git = if adopted {
                 "git --no-replace-objects -c core.hooksPath=/dev/null -c credential.helper="

@@ -13,9 +13,12 @@ code, tests, CI and docs; the owner validates on hardware.
 
 - Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
   use synthetic fixtures. Do not open real credential files during review.
-- Resolve owner token commands through vetted tool paths, with no fallback to another source;
-  run them outside the checkout with a fixed system PATH and only vetted home/config directory
-  variables; exclude checkout paths and symlinks into them, including `HOME`.
+- Resolve owner token commands through vetted tool paths, with no fallback to another source.
+  Every operand must be an absolute executable helper and pass the same permission, symlink and
+  location checks as the command. Refuse paths through the checkout, sandbox write mounts or
+  writable parts of a home workspace. Run the command outside the checkout with a fixed system
+  PATH and only vetted home/config directory variables; exclude checkout paths and symlinks into
+  them, including `HOME`.
   Run the local push scan before requesting a publication token; keep the exact destination scan.
   Configured publish tokens go only to github.com over HTTPS without checkout Git config.
   Refresh after confirmation and during lane reads; never replay a mutation. Active output

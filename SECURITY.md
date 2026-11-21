@@ -138,7 +138,10 @@ Each loopback listener that can start a model request or spend cloud budget need
 - **Re-adding an OS sandbox to interactive or yolo paths** is a regression, not a hardening.
 
 An owner-configured GitHub token command runs outside the sandbox. Its executable must resolve
-outside the project and worktrees through a trusted absolute path or the vetted tool search path.
+through a trusted absolute path or the vetted tool search path. Each operand must be a trusted
+absolute executable path, even when the program is not named like an interpreter. The same
+permission and symlink checks apply to every path: none may pass through the project, a worktree,
+a sandbox write mount, or the writable parts of a home workspace.
 An unresolvable configured command yields no token and an error; it never falls back to ambient
 executable lookup and never to another source. The helper runs from `/` with a fixed system PATH
 and only vetted home/config directory variables, excluding paths inside the checkout or

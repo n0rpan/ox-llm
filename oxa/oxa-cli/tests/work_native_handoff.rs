@@ -64,6 +64,7 @@ fn policy(root: &Path) -> oxa_work::RunPolicy {
         content_scan: None,
         runner_owns_github: false,
         github_token_command: Vec::new(),
+        github_token_write_paths: Vec::new(),
         autonomy: Default::default(),
         worker_github: Default::default(),
         authority_now: None,

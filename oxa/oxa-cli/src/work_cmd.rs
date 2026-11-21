@@ -173,6 +173,11 @@ pub(crate) fn run(
             offline: oxa_proto::offline(),
             runner_owns_github: false,
             github_token_command: crate::netguard::github_token_command(&user_settings),
+            github_token_write_paths: crate::sandbox_layout::configured_paths(
+                &user_settings,
+                oxa_sandbox::SETTING_WRITE_PATHS,
+                &dirs.home,
+            ),
             autonomy: runner_autonomy(&user_settings),
             worker_github: runner_worker_github(&user_settings),
             // Re-read for every launch, like the autonomy level: lowering

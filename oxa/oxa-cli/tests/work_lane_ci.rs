@@ -189,6 +189,7 @@ fn configured_github_auth_is_isolated_and_refreshed_at_publication_boundaries() 
             content_scan: None,
             runner_owns_github: false,
             github_token_command: vec![tools.join("mint").to_str().unwrap().into()],
+            github_token_write_paths: Vec::new(),
             autonomy: Default::default(),
             worker_github: Default::default(),
             authority_now: None,
