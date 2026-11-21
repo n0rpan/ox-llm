@@ -638,3 +638,89 @@ fn client_respond_ui_and_timeouts_against_a_child() {
     assert_eq!(ok["success"], true);
     assert_eq!(client.close().expect("close"), 0);
 }
+
+/// A publisher that records what it posts.
+#[derive(Default)]
+struct RecordingPublisher {
+    posted: Mutex<Vec<oxa_core::owner_confirm::Publication>>,
+}
+
+impl oxa_core::owner_confirm::Publisher for RecordingPublisher {
+    fn prepare(
+        &self,
+        p: oxa_core::owner_confirm::Publication,
+    ) -> Result<oxa_core::owner_confirm::Publication, String> {
+        Ok(p)
+    }
+    fn post(&self, p: &oxa_core::owner_confirm::Publication) -> Result<String, String> {
+        self.posted.lock().unwrap().push(p.clone());
+        Ok("https://example.test/issues/1".to_string())
+    }
+}
+
+/// A publication request in an RPC session reaches the client as a `confirm` dialog with the
+/// whole rendered text, and a yes posts exactly that text through the publisher.
+#[test]
+fn rpc_publication_is_a_confirm_dialog_and_yes_posts() {
+    use oxa_core::owner_confirm::{exchange, post_on, OwnerConfirm, Publication, Request};
+    use oxa_proto::{Autonomy, YoloSwitch};
+    use std::os::unix::net::UnixStream;
+
+    let env = TestEnv::new();
+    let broker = OwnerConfirm::start(env.root(), YoloSwitch::new(Autonomy::Standard)).expect("start");
+    let publisher = Arc::new(RecordingPublisher::default());
+    broker.set_publisher(publisher.clone());
+    broker.set_servable(true);
+    let wanted = Publication {
+        repository: "o/r".into(),
+        issue: None,
+        title: "T".into(),
+        body: "The body.".into(),
+        note: None,
+    };
+    let client = {
+        let sock = broker.sock_path().to_path_buf();
+        let wanted = wanted.clone();
+        thread::spawn(move || {
+            let stream = UnixStream::connect(sock).expect("connect");
+            let reply = exchange(&stream, &Request::Publish(wanted));
+            let posted = if reply.approved {
+                post_on(&stream)
+            } else {
+                Err("not approved".into())
+            };
+            (reply.approved, posted)
+        })
+    };
+    let h = harness();
+    let mut ui = RpcUi {
+        out: h.ui.out.clone(),
+        router: h.router.clone(),
+    };
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let serving = {
+        let broker = broker.clone();
+        let done = done.clone();
+        thread::spawn(move || {
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                broker.serve(&mut ui);
+                thread::sleep(Duration::from_millis(5));
+            }
+        })
+    };
+    let rec = h.request("confirm");
+    let text = format!("{}{}", rec["title"], rec["message"]);
+    assert!(
+        text.contains("The body."),
+        "the dialog shows the publication: {text}"
+    );
+    assert!(text.contains("Repository: o/r"), "{text}");
+    h.answer(&rec, json!({"confirmed": true}));
+    let (approved, posted) = client.join().unwrap();
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    serving.join().unwrap();
+    assert!(approved, "a yes in the confirm dialog approves");
+    assert_eq!(posted, Ok("https://example.test/issues/1".to_string()));
+    assert_eq!(*publisher.posted.lock().unwrap(), vec![wanted]);
+    broker.close();
+}
