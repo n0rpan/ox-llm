@@ -29,6 +29,9 @@ struct VerifiedAttempt {
     reports: VerifiedReports,
 }
 
+/// One report policy. A sample owns a clone, so one attempt's verified history is written back
+/// there and a second sample never sees it half-updated.
+#[derive(Clone)]
 pub(in crate::work_board) struct Settings {
     workflow_path: String,
     required_check_names: BTreeSet<String>,

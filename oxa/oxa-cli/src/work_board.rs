@@ -1072,13 +1072,15 @@ impl SampleSource<'_> {
             Board::read(&mut reader, &board_policy, &BTreeMap::new(), now)
                 .map(|board| (board, BTreeMap::new()))
         }?;
+        let mut queue_rejections =
+            if self.queue_evidence || self.landing_shadow || self.report_settings.is_some() {
+                oxa_work::board::queue::read(&board, |fields| reader.repository_read(fields))?
+            } else {
+                Vec::new()
+            };
+        // One sample owns its report history: it writes back the attempts it verified, which
+        // the next sample's command run starts from.
         let mut report_settings = self.report_settings.clone();
-        let mut queue_rejections = if self.queue_evidence || self.landing_shadow || report_settings.is_some()
-        {
-            oxa_work::board::queue::read(&board, |fields| reader.repository_read(fields))?
-        } else {
-            Vec::new()
-        };
         if let Some(settings) = &mut report_settings {
             match reader.optional("sample_test_reports", |r| {
                 r.sample_test_reports(&mut queue_rejections, settings)
