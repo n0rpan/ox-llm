@@ -112,6 +112,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
 | `oxa cache <session-id\|path> [--json]` | [report saved prompt-cache evidence](#prompt-cache-report) for a local or cloud session |
+| `oxa pr threads <n> [--json]` | [list a pull request's review threads](#pull-request-review-threads) with full bodies, GraphQL ids, resolution state and severity (read-only) |
 | `oxa models [--json] [search]` | list the local and cloud models this install can serve — where each runs, its limits and which one is the default; `--json` prints one `oxa_models` object, and a search word filters by place, provider or model name; reads no key and no ledger, runs no model |
 | `oxa send [--follow-up] <session-id> <text\|-> [--wait SECONDS]` | send one message to the session's TUI, RPC owner, headless goal run or a running `oxa work` worker (which takes it at its next turn boundary): a steer for its next tool boundary, or with `--follow-up` a follow-up for the end of its turn; `-` reads standard input. Prints one JSON line `{"id":<message-id>,"outcome":"queued"\|"delivered"\|"not_delivered"}`. With `--wait` the command waits up to that many seconds for the owner to take the file: `delivered` exits 0, `not_delivered` exits 3 |
 | `oxa send <session-id> --retry <message-id> [--wait SECONDS]` | check the same message again without publishing it a second time (same receipt line and exit codes) |
@@ -174,6 +175,14 @@ Run `oxa --wire-evidence` in an owner terminal, then exit normally to see a smal
 The report compares ordered messages **at oxa's transport handoff**, after hooks and image shaping, with separate system-text and tool-list equality flags. `common_leading_messages` counts consecutive matching items from the beginning. Request and attempt numbers start at one and are local to this run; an oxa retry within the same request is another attempt. A failed or cancelled attempt, an intervening non-chat handoff, or an incomplete snapshot leaves a gap. A missing match or usage field is `null`, not zero. A rebase marker reports an observed transcript rebase, not its cause or its effect on caching.
 
 The capture keeps one prior fingerprint snapshot, allows up to 4,096 messages and 4 MiB of fingerprint input per snapshot, and stops collecting after 64 rows. It never limits chat. The report contains no message text, tool data, token IDs, fingerprints or session, model or request identifiers. It is not added to saved sessions, hook events, or `oxa cache` output. Provider serialization, engine tokens, provider or engine retries, and cache ownership are outside this observation. Neither a matching wire prefix nor a cached-token count proves which request was reused or why a cache missed.
+
+### Pull request review threads
+
+Run `oxa pr threads <n>` to read the review threads of pull request `<n>` in the `origin` repository, or add `--json` for one versioned `oxa_pr_threads` object. It is read-only: it never resolves, replies to, or edits a thread, and it sends one fixed, bounded GraphQL query through the same trusted `gh` path the [wait probes](security.md) use. Your GitHub token stays outside the sandbox.
+
+Each thread carries its GraphQL id, file path and line anchor, whether it is resolved or outdated, and every comment's author, timestamp, database id, commit and full body. Thread and comment ids are kept in full after a shape check (never scrubbed), so a follow-up can reference the exact thread. Bodies are scrubbed of credentials and cut at 32,000 characters with an explicit marker; `body_chars` keeps the original length and `body_cut` says whether it was cut. A `severity` (the highest `P0`–`P3` word) and a `security` flag are heuristics over the review text, not GitHub fields. Remote review text is labelled as data, not instructions.
+
+The read is bounded: at most two pages of 100 threads, each with up to 100 comments. Evidence beyond the bound is reported as incomplete (`incomplete` with a reason, or `comments_incomplete` on a thread), never silently dropped. The command refuses with `--offline` and in a runner-owned `oxa work` worker session, where the runner owns every GitHub call.
 
 ### Local models
 
