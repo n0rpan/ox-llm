@@ -36,7 +36,8 @@ run; an always grant is the exact `<rule> <command>` key in the owner's user set
 the settings write lock. The approval views (dialog, lead page, `oxa approve`) show what runs: named
 assignments (`token=`), flag operands (`--password x`), URL credentials and literals inside parameter
 expansions are masked; executable text (commands, `$(...)`, `${NAME:-` heads) is never masked. A typed
-`yes` for a publication belongs to the session that asked and is withdrawn on a session switch.
+`yes` for a publication is bound to the session and the exact text that was shown (its digest, single
+use) and is not withdrawn when the session changes.
 
 A desk grant (once or session) of a pushing command in an unattended run is bound to resolved facts:
 the source ref object ids and a digest of origin's URLs (never the URLs), re-read at every decision

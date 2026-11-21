@@ -1650,10 +1650,11 @@ fn dangerous_command_asks_in_the_real_tui() {
 }
 
 /// #2165: a long dangerous command is paged in the real fullscreen TUI. The first page shows
-/// the command's head, an allow choice stays disabled until every page has been viewed, and
-/// Deny still answers immediately. Synthetic command: nothing dangerous is ever allowed to run.
+/// the command's head, pageup/pagedown move through the rest, paging is a view rather than a
+/// gate on the answer, and Deny answers immediately. Synthetic command: nothing dangerous is
+/// ever allowed to run.
 #[test]
-fn long_dangerous_command_pages_before_allow_in_the_real_tui() {
+fn long_dangerous_command_pages_in_the_real_tui() {
     // The dialog's own framed rows: the transcript's tool header also shows the command.
     fn dialog_rows(s: &Screen) -> Vec<String> {
         let rows = s.rows();
@@ -1686,15 +1687,14 @@ fn long_dangerous_command_pages_before_allow_in_the_real_tui() {
     let shown = dialog_rows(&s).join("\n");
     assert!(shown.contains("rm -rf /srv/data"), "{shown}");
     assert!(!shown.contains("tail-visible"), "{shown}");
-    assert!(shown.contains("pageup/pagedown review"), "{shown}");
+    assert!(shown.contains("pageup/pagedown"), "{shown}");
 
-    // One up from Deny is "Always allow". Enter before the review must not answer: the next
-    // up still moves the dialog focus, so the dialog stayed open and nothing ran.
+    // Two ups from Deny reach "Allow for this session"; the dialog stays open and the page
+    // view is unchanged, so focus moves without running anything.
     rig.pty.send_key("up");
-    rig.pty.send_key("enter");
     rig.pty.send_key("up");
     let s = rig.pty.wait_for_text("→ Allow for this session").unwrap();
-    assert!(s.contains("Dangerous command"), "the dialog stayed open\n{s:?}");
+    assert!(s.contains("Dangerous command"), "{s:?}");
     assert!(!s.contains("refused as expected"), "{s:?}");
     assert_eq!(
         rig.generating().len(),
@@ -1722,8 +1722,8 @@ fn long_dangerous_command_pages_before_allow_in_the_real_tui() {
 
 /// #2165: a short fullscreen terminal pages a long dangerous command by the rows it can show.
 /// A ten-row page would push the dialog's head off the screen, so the page shrinks: the title,
-/// the choices and one page of rows stay visible, an allow needs every page, and Deny answers
-/// at once. Synthetic command: nothing dangerous is ever allowed to run.
+/// the choices and one page of rows stay visible; paging is optional and Deny answers at once.
+/// Synthetic command: nothing dangerous is ever allowed to run.
 #[test]
 fn short_terminal_dangerous_command_pages_visible_rows_in_the_real_tui() {
     // The dialog's own framed rows: the transcript's tool header also shows the command.
@@ -1801,13 +1801,11 @@ fn short_terminal_dangerous_command_pages_visible_rows_in_the_real_tui() {
         "the next row is on the next page: {shown}"
     );
 
-    // One up from Deny is "Always allow". Enter before the review must not answer: the next
-    // up still moves the dialog focus, so the dialog stayed open and nothing ran.
+    // Two ups from Deny reach "Allow for this session"; the dialog stays open and nothing runs.
     rig.pty.send_key("up");
-    rig.pty.send_key("enter");
     rig.pty.send_key("up");
     let s = rig.pty.wait_for_text("→ Allow for this session").unwrap();
-    assert!(s.contains("Dangerous command"), "the dialog stayed open\n{s:?}");
+    assert!(s.contains("Dangerous command"), "{s:?}");
     assert!(!s.contains("refused as expected"), "{s:?}");
     assert_eq!(
         rig.generating().len(),

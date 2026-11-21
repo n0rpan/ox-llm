@@ -67,8 +67,7 @@ fn press(host: &mut DialogHost, keymap: &Keymap, id: &str) -> DialogKey {
 /// a screen, not the preview cap of a tall one.
 const SHORT_ROWS: usize = 12;
 
-/// A key press as the real TUI delivers it: the dialog is redrawn before the next key arrives,
-/// because a row only counts as reviewed once it was on screen.
+/// A key press as the real TUI delivers it: the dialog is redrawn before the next key arrives.
 fn press_shown(
     host: &mut DialogHost,
     keymap: &Keymap,
@@ -872,10 +871,10 @@ fn dangerous_dialog_deny_and_escape_answer_before_review() {
 }
 
 /// #2165: a long dangerous command is paged like a publication preview. The first page shows
-/// the command's head, not its tail, and an allow choice stays disabled until every row has
-/// been displayed; after the full review it answers.
+/// the command's head, not its tail, and pageup/pagedown move through the rest. An allow needs
+/// no separate review: Deny stays the default focus and an answer is the owner's own key.
 #[test]
-fn dangerous_dialog_pages_every_row_before_allow() {
+fn dangerous_dialog_pages_long_commands() {
     let keymap = Keymap::defaults();
     let mut host = DialogHost::new();
     let mut vm = ViewModel::default();
@@ -885,31 +884,30 @@ fn dangerous_dialog_pages_every_row_before_allow() {
     let first = host.render(100, &theme).join("\n");
     assert!(first.contains("rm -rf /srv/data"), "{first}");
     assert!(!first.contains("tail-visible"), "{first}");
-    assert!(first.contains("pageup/pagedown review"), "{first}");
+    assert!(first.contains("pageup/pagedown"), "{first}");
+    for label in DANGER_LABELS {
+        assert!(first.contains(label), "{label}\n{first}");
+    }
 
-    // "Always allow" is one up from Deny; before the review it does not answer.
-    press(&mut host, &keymap, "up");
-    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Consumed);
-    assert!(rx.try_recv().is_err(), "allow stayed disabled");
-
-    // Page through every row, as the TUI redraws after each key; the last page shows the tail.
+    // Page through every row; the last page shows the tail.
     for _ in 0..3 {
         press(&mut host, &keymap, "pagedown");
         host.render(100, &theme);
     }
     let last = host.render(100, &theme).join("\n");
     assert!(last.contains("echo tail-visible"), "{last}");
-    // Focus is still "Always allow"; two more ups reach "Allow once".
+    // Deny is still focused; three ups reach "Allow once", which answers.
+    press(&mut host, &keymap, "up");
     press(&mut host, &keymap, "up");
     press(&mut host, &keymap, "up");
     assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
     assert_eq!(rx.recv().unwrap(), DangerAnswer::Once);
 }
 
-/// #2165: jumping straight to the last page shows only the benign tail; the unseen rows keep
-/// allow disabled until the remaining pages have been displayed too.
+/// #2165: jumping to the last page still allows; paging is a view, not a gate. Deny is
+/// focused and answers at once.
 #[test]
-fn dangerous_dialog_skipping_to_the_end_keeps_allow_disabled() {
+fn dangerous_dialog_jumping_to_the_last_page_still_answers() {
     let keymap = Keymap::defaults();
     let mut host = DialogHost::new();
     let mut vm = ViewModel::default();
@@ -922,25 +920,18 @@ fn dangerous_dialog_skipping_to_the_end_keeps_allow_disabled() {
     let last = host.render(100, &theme).join("\n");
     assert!(last.contains("echo tail-visible"), "{last}");
     assert!(!last.contains("rm -rf /srv/data"), "{last}");
-    // Deny is focused; three ups reach "Allow once". It must not answer yet.
+    // Deny is focused; three ups reach "Allow once". It answers without paging back.
     press(&mut host, &keymap, "up");
     press(&mut host, &keymap, "up");
     press(&mut host, &keymap, "up");
-    assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Consumed);
-    assert!(rx.try_recv().is_err(), "the unseen rows keep allow disabled");
-    // Review the remaining pages back to the top; then allow answers.
-    for _ in 0..3 {
-        press(&mut host, &keymap, "pageup");
-        host.render(100, &theme);
-    }
     assert_eq!(press(&mut host, &keymap, "enter"), DialogKey::Closed);
     assert_eq!(rx.recv().unwrap(), DangerAnswer::Once);
 }
 
-/// #2165: a short terminal pages by the rows it can show. Every page holds only rows that are
-/// on screen, and an allow stays disabled until every row has been displayed.
+/// #2165: a short terminal pages by the rows it can show, so the dialog's head and its choices
+/// stay on screen. An allow that many hidden rows follow still answers.
 #[test]
-fn dangerous_dialog_short_terminal_reviews_every_displayed_row() {
+fn dangerous_dialog_short_terminal_pages_the_rows_it_can_show() {
     let keymap = Keymap::defaults();
     let mut host = DialogHost::new();
     let mut vm = ViewModel::default();
@@ -956,16 +947,29 @@ fn dangerous_dialog_short_terminal_reviews_every_displayed_row() {
     assert!(shown.contains("rows 1–2 of 24"), "{shown}");
     assert!(shown.contains("Deny"), "{shown}");
 
-    // "Always allow" is one up from Deny; before the review it does not answer.
+    // "Always allow" is one up from Deny; the dialog answers.
     press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "up");
     assert_eq!(
         press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "enter"),
-        DialogKey::Consumed
+        DialogKey::Closed
     );
-    assert!(rx.try_recv().is_err(), "allow stayed disabled");
+    // As in the TUI, "Always allow" waits for the driver to save its keys first.
+    let (keys, reply) = host.take_danger_always().expect("always is pending");
+    assert_eq!(keys, vec!["rm-recursive-outside rm -rf /srv/data".to_string()]);
+    reply.send(DangerAnswer::Always).unwrap();
+    assert_eq!(rx.recv().unwrap(), DangerAnswer::Always);
+}
 
-    // Page down to the last page; each page is drawn before the next key, and only the rows it
-    // shows count. The next page starts where the previous one ended: no rows are skipped.
+/// #2165: each page shows only the rows that fit and continues where the previous page
+/// ended, so paging down and up walks the whole command without skipping rows.
+#[test]
+fn dangerous_dialog_short_terminal_pages_do_not_skip_rows() {
+    let keymap = Keymap::defaults();
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let (tx, _rx) = channel();
+    host.handle(numbered_danger_request(tx), &mut vm, 0);
+    dialog_box(&mut host, 100, Some(SHORT_ROWS));
     let mut pages = 1;
     loop {
         press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "pagedown");
@@ -978,87 +982,16 @@ fn dangerous_dialog_short_terminal_reviews_every_displayed_row() {
             assert!(shown.contains("rows 23–24 of 24"), "{shown}");
             break;
         }
-        assert!(
-            rx.try_recv().is_err(),
-            "page {pages} of {pages} is not the review"
-        );
     }
     assert_eq!(pages, 12, "24 rows in pages of two");
-    // Focus is still "Always allow"; the last page was on screen, so it answers. As in the TUI,
-    // "Always allow" waits for the driver to save its keys before the worker gets the answer.
-    assert_eq!(
-        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "enter"),
-        DialogKey::Closed
-    );
-    let (keys, reply) = host.take_danger_always().expect("always is pending");
-    assert_eq!(keys, vec!["rm-recursive-outside rm -rf /srv/data".to_string()]);
-    reply.send(DangerAnswer::Always).unwrap();
-    assert_eq!(rx.recv().unwrap(), DangerAnswer::Always);
-}
-
-/// #2165: a tall screen's review does not cover rows it never showed. When the terminal
-/// shrinks, the page follows the rows it can show and an allow still waits for the tail.
-#[test]
-fn dangerous_dialog_short_terminal_keeps_unseen_rows_unreviewed() {
-    let keymap = Keymap::defaults();
-    let mut host = DialogHost::new();
-    let mut vm = ViewModel::default();
-    let (tx, rx) = channel();
-    host.handle(numbered_danger_request(tx), &mut vm, 0);
-    // A tall screen reviews rows 1-20 in two pages of ten.
-    host.render_in(100, Some(30), &Theme::plain());
-    press_shown(&mut host, &keymap, 100, Some(30), "pagedown");
-    press_shown(&mut host, &keymap, 100, Some(30), "up");
-    // The terminal shrinks: rows 21-24 were never on any screen.
-    let short = dialog_box(&mut host, 100, Some(SHORT_ROWS)).join("\n");
-    assert!(short.contains("rows 11–12 of 24"), "{short}");
-    assert_eq!(
-        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "enter"),
-        DialogKey::Consumed
-    );
-    assert!(rx.try_recv().is_err(), "rows 21-24 are still unseen");
-    // Page down the rest of the rows; only after the last one was drawn does allow answer.
-    for _ in 0..6 {
-        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "pagedown");
+    // Page up to the top: the first page is back.
+    for _ in 0..pages {
+        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "pageup");
     }
-    let last = dialog_box(&mut host, 100, Some(SHORT_ROWS)).join("\n");
-    assert!(last.contains("rows 23–24 of 24"), "{last}");
-    assert_eq!(
-        press_shown(&mut host, &keymap, 100, Some(SHORT_ROWS), "enter"),
-        DialogKey::Closed
-    );
-    let (keys, reply) = host.take_danger_always().expect("always is pending");
-    assert_eq!(keys, vec!["rm-recursive-outside rm -rf /srv/data".to_string()]);
-    reply.send(DangerAnswer::Always).unwrap();
-    assert_eq!(rx.recv().unwrap(), DangerAnswer::Always);
-}
-
-/// #2165: a terminal too short for the dialog's own rows keeps commands cut off above the
-/// screen unseen: an allow stays disabled there too, and Deny is still immediate. Nothing is
-/// granted.
-#[test]
-fn dangerous_dialog_terminal_shorter_than_the_dialog_never_allows() {
-    let keymap = Keymap::defaults();
-    let mut host = DialogHost::new();
-    let mut vm = ViewModel::default();
-    let (tx, rx) = channel();
-    host.handle(numbered_danger_request(tx), &mut vm, 0);
-    // Eight rows for a dialog that needs ten around its first preview row.
-    for _ in 0..40 {
-        press_shown(&mut host, &keymap, 100, Some(8), "pagedown");
-    }
-    press_shown(&mut host, &keymap, 100, Some(8), "up");
-    assert_eq!(
-        press_shown(&mut host, &keymap, 100, Some(8), "enter"),
-        DialogKey::Consumed
-    );
-    assert!(rx.try_recv().is_err(), "a row cut off the screen is not reviewed");
-    // Deny answers at once, before any review.
-    assert_eq!(
-        press_shown(&mut host, &keymap, 100, Some(8), "escape"),
-        DialogKey::Closed
-    );
-    assert_eq!(rx.recv().unwrap(), DangerAnswer::Deny);
+    let top = dialog_box(&mut host, 100, Some(SHORT_ROWS)).join("\n");
+    assert!(top.contains("step-01") && top.contains("step-02"), "{top}");
+    // The dialog is still open behind the cancelled host.
+    host.close_all();
 }
 
 /// #1772: two sessions that loaded their settings before either saved each add a different
@@ -1078,13 +1011,51 @@ fn concurrent_always_saves_keep_both_keys() {
     assert_eq!(user.matches("rule-b command b").count(), 1, "{user}");
 }
 
-/// #1942: a typed `yes` after a session switch does not approve the digest that waited in the
-/// previous session. The driver's `rebind` withdraws it with this call.
+/// #1552 / #1942: a typed `yes` after a session switch stays bound to the exact text that was
+/// shown, and a `yes` typed in another session never approves it.
 #[test]
-fn a_session_switch_withdraws_a_pending_typed_consent() {
-    let digest = "d10-1942-digest";
-    oxa_proto::owner_reply::await_reply(digest);
+fn a_typed_consent_stays_bound_to_its_request_across_a_session_switch() {
     oxa_proto::owner_reply::clear();
-    oxa_proto::owner_reply::typed("yes");
-    assert!(!oxa_proto::owner_reply::take_approved(digest));
+    let (session_a, session_b) = ("d10-session-a", "d10-session-b");
+    let awaited = "d10-typed-awaited";
+    let other = "d10-typed-other";
+    oxa_proto::owner_reply::await_reply(session_a, awaited);
+    // A `yes` typed in another session answers that session's request, not this one.
+    oxa_proto::owner_reply::typed(session_b, "yes");
+    assert!(
+        !oxa_proto::owner_reply::take_approved(session_a, awaited),
+        "another session's yes never approves it"
+    );
+    // The switch kept the request: the owner's own `yes` in the asking session approves it.
+    oxa_proto::owner_reply::typed(session_a, "yes");
+    assert!(
+        !oxa_proto::owner_reply::take_approved(session_b, awaited),
+        "the token comes back with the asking session"
+    );
+    assert!(
+        oxa_proto::owner_reply::take_approved(session_a, awaited),
+        "the text that was shown"
+    );
+    assert!(
+        !oxa_proto::owner_reply::take_approved(session_a, awaited),
+        "once only"
+    );
+    // A different request never consumes it, and any other line from the owner withdraws it.
+    oxa_proto::owner_reply::await_reply(session_a, awaited);
+    oxa_proto::owner_reply::typed(session_a, "yes");
+    assert!(
+        !oxa_proto::owner_reply::take_approved(session_a, other),
+        "never another request"
+    );
+    assert!(
+        oxa_proto::owner_reply::take_approved(session_a, awaited),
+        "bound to its own text"
+    );
+    oxa_proto::owner_reply::await_reply(session_a, awaited);
+    oxa_proto::owner_reply::typed(session_a, "yes, but change the title first");
+    assert!(
+        !oxa_proto::owner_reply::take_approved(session_a, awaited),
+        "any other line withdraws it"
+    );
+    oxa_proto::owner_reply::clear();
 }

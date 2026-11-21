@@ -980,9 +980,8 @@ impl<'a> Loop<'a> {
     /// the new session from here on.
     fn rebind(&mut self, handle: Handle) {
         self.abort_requested = false;
-        // A typed consent belongs to the session that asked: a pending or approved digest of
-        // the previous session is withdrawn (#1942).
-        oxa_proto::owner_reply::clear();
+        // A typed publication `yes` stays bound to the request it answered: `rebind` does not
+        // withdraw it, and only that exact request id can consume it (never another request).
         // Join the old callback before draining its queue back into the editor.
         self.inbox = None;
         let old = std::mem::replace(&mut self.handle, handle);
@@ -1868,8 +1867,9 @@ impl<'a> Loop<'a> {
         if trimmed.is_empty() {
             return;
         }
-        // #1552: the line the owner typed is the one origin that can approve a publication.
-        oxa_proto::owner_reply::typed(&trimmed);
+        // #1552: the line the owner typed is the one origin that can approve a publication,
+        // and it acts only on its own session's request.
+        oxa_proto::owner_reply::typed(self.session.id.as_str(), &trimmed);
         if let Some(rest) = trimmed.strip_prefix('!') {
             let (excluded, cmd) = match rest.strip_prefix('!') {
                 Some(r) => (true, r),
