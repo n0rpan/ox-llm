@@ -1993,7 +1993,7 @@ fn run_locked(
     let pending = step.and_then(|step| {
         matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo)
             .then(|| {
-                crate::PublicationStatus::summary(&state.record, state::now_ms())
+                crate::PublicationStatus::owed(&state.record, state::now_ms())
                     .map(|pending| format!("{step}: {pending}"))
             })
             .flatten()

@@ -43,9 +43,13 @@ impl PublicationStatus {
         })
     }
 
-    /// The record's publication state in one line, derived from the same local evidence as
-    /// `oxa work status`. `None` when the saved head needs no publication.
-    pub fn summary(record: &Record, now_ms: u64) -> Option<String> {
+    /// What a run that owes its publication reports: `None` unless the accepted head has no
+    /// published receipt and no recorded PR. The runner's outcome and `oxa work status` take
+    /// this one decision, so they cannot disagree about owed publication.
+    pub fn owed(record: &Record, now_ms: u64) -> Option<String> {
+        if !publication_pending(record) {
+            return None;
+        }
         let status = Self::read(record, now_ms)?;
         Some(format!(
             "publication pending: {} ({})",
@@ -129,8 +133,9 @@ fn awaiting_publication(record: &Record) -> bool {
 /// True for a finished, accepted record whose explicit publication action left no useful
 /// exact-head receipt. The record is not "done" for anyone reading the result (#2304).
 pub fn publication_pending(record: &Record) -> bool {
-    let recorded_pr = record.pull_request.as_deref().is_some_and(|url| !url.is_empty());
-    awaiting_publication(record) && !recorded_pr && PublicationStatus::read(record, 0).is_some()
+    awaiting_publication(record)
+        && !record.pull_request.as_deref().is_some_and(|url| !url.is_empty())
+        && PublicationStatus::read(record, 0).is_some()
 }
 
 /// A bounded projection of one saved task, with no worker receipt or private paths.
@@ -206,7 +211,13 @@ pub fn status(storage: &Path, binary: &Path) -> Result<Vec<Status>> {
                 None => Liveness::Unknown,
             }
         };
-        let publication = PublicationStatus::read(&record, now_ms);
+        // The row is only what the record is owed: the runner marks a record
+        // publication_pending exactly when this decision says so, and nothing else is flagged.
+        let publication = if record.outcome == Outcome::PublicationPending {
+            PublicationStatus::read(&record, now_ms)
+        } else {
+            PublicationStatus::read(&record, now_ms).filter(|_| publication_pending(&record))
+        };
         records.push(Status {
             record,
             liveness,
@@ -395,15 +406,39 @@ mod tests {
     }
 
     #[test]
+    fn a_recorded_pr_is_published_even_when_the_push_readback_is_unknown() {
+        let head = "b".repeat(40);
+        let mut record = accepted(&head);
+        record.publish_receipt = Some(crate::PublishReceipt {
+            requested: head.clone(),
+            remote: None,
+            class: crate::Divergence::RemoteUnknown,
+        });
+        record.pull_request = Some("https://github.com/example/project/pull/1".into());
+        record.lane = Some(crate::lane::LaneVerdict {
+            head: head.clone(),
+            run_id: 1,
+            conclusion: "success".into(),
+            failed: Vec::new(),
+        });
+        // The publication finished and recorded the PR: the run owes nothing more.
+        assert!(!publication_pending(&record));
+        assert!(PublicationStatus::owed(&record, 0).is_none());
+        let status = PublicationStatus::read(&record, 0).expect("reported, not hidden");
+        assert_eq!(status.phase, "published_readback_unknown");
+        assert!(status.disposition.contains("could not be read back"));
+    }
+
+    #[test]
     fn an_accepted_head_with_no_push_receipt_is_pending_not_done() {
         let record = accepted(&"b".repeat(40));
         assert!(publication_pending(&record));
         assert_eq!(
-            PublicationStatus::summary(&record, 0).unwrap(),
+            PublicationStatus::owed(&record, 0).unwrap(),
             "publication pending: committed_no_push_recorded (age unknown)"
         );
         assert_eq!(
-            PublicationStatus::summary(&rejected(&record.head_sha.clone().unwrap()), 0).unwrap(),
+            PublicationStatus::owed(&rejected(&record.head_sha.clone().unwrap()), 0).unwrap(),
             "publication pending: committed_no_push_recorded (age unknown)"
         );
         let mut published = record.clone();
@@ -415,6 +450,11 @@ mod tests {
         });
         published.pull_request = Some("https://github.com/example/project/pull/1".into());
         assert!(!publication_pending(&published));
+        // A run still waiting on its lane run owes nothing yet: it has no accepted verdict.
+        let mut awaiting_lane = accepted(&head);
+        awaiting_lane.outcome = Outcome::Unverified;
+        awaiting_lane.acceptance_outcome = None;
+        assert!(!publication_pending(&awaiting_lane));
     }
 
     #[test]
