@@ -82,9 +82,20 @@ struct Shared {
     last_request: Option<Instant>,
 }
 
+/// The serving process's sampler. The page holds an `Arc` of it too, so a Retry and the
+/// request path reach the one thread that owns every attempt.
 pub(crate) struct Sampler {
     shared: Arc<Mutex<Shared>>,
     stop: Arc<AtomicBool>,
+}
+
+impl Clone for Sampler {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+            stop: self.stop.clone(),
+        }
+    }
 }
 
 impl Sampler {

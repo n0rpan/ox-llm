@@ -972,7 +972,7 @@ pub(crate) fn run(
     let review_settings = review_file
         .map(|path| review::Settings::read(Path::new(path)))
         .transpose()?;
-    let mut report_settings = report_file
+    let report_settings = report_file
         .map(|path| landing::report::Settings::read(Path::new(path)))
         .transpose()?;
     let inherited = (!streamed)
@@ -1035,8 +1035,8 @@ pub(crate) fn run(
 
 /// One `oxa work board --shadow` sample, shared with the lead web's in-process sampler
 /// (`crate::lead_sampler`, #2262) instead of a second copy. One call is one protected record
-/// with its own GraphQL `Reader`, bounds and lead alarms; the sample's opening and writing
-/// stay with the caller of the closure (`prepare` and [`write`]).
+/// with its own GraphQL `Reader`, bounds and lead alarms. The log is opened and written by
+/// `shadow::run_with_landing` through the caller's closure, as before.
 struct SampleSource<'a> {
     gh: std::path::PathBuf,
     repo: String,
