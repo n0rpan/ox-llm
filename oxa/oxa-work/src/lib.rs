@@ -41,8 +41,7 @@ pub mod shadow;
 mod state;
 mod status;
 pub use status::{
-    publication_pending, status, task_usage, task_usage_for_binding, Liveness, PublicationStatus, Status,
-    TaskUsage,
+    status, task_usage, task_usage_for_binding, Liveness, PublicationStatus, Status, TaskUsage,
 };
 mod tree;
 pub use state::{CheckpointKind, CheckpointObserver, Step};
