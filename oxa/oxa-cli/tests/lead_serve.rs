@@ -1423,8 +1423,9 @@ fn chat_page_renders_the_session_as_messages_with_one_composer() {
         !page.contains("demo-secret-value") && !page.contains("sk-abcdefghij"),
         "{page}"
     );
-    // The one message form is the composer's, with its CSRF field and textarea.
-    assert_eq!(page.matches("method=post action=/chat").count(), 2, "{page}");
+    // The one message form is the composer's. The snapshot question form and the
+    // dedicated chat's reply card are the page's other two /chat forms.
+    assert_eq!(page.matches("method=post action=/chat").count(), 3, "{page}");
     // The header's session popover lists the owner's running sessions; a dedicated Lead
     // chat is reached through its own setting, not from that list.
     assert!(
