@@ -228,13 +228,7 @@ pub fn status(storage: &Path, binary: &Path) -> Result<Vec<Status>> {
                 None => Liveness::Unknown,
             }
         };
-        // The row is only what the record is owed: the runner marks a record
-        // publication_pending exactly when this decision says so, and nothing else is flagged.
-        let publication = if record.outcome == Outcome::PublicationPending {
-            PublicationStatus::read(&record, now_ms)
-        } else {
-            PublicationStatus::read(&record, now_ms).filter(|_| publication_pending(&record))
-        };
+        let publication = PublicationStatus::read(&record, now_ms);
         records.push(Status {
             record,
             liveness,
