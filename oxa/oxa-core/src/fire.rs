@@ -204,6 +204,26 @@ pub(crate) fn opening_messages(st: &SessionState) -> Vec<EventMessage> {
         .collect()
 }
 
+/// Whether the run was asked to pursue a goal: its task comes from the goal, not the conversation.
+pub(crate) fn goal_engaged(st: &SessionState) -> bool {
+    st.goal.as_ref().is_some_and(|g| g.engaged())
+}
+
+/// The text of the user messages the run opens with (what the run was asked to do), for the
+/// task's own wording (`done::begin_toolchain`).
+pub(crate) fn opening_text(st: &SessionState) -> String {
+    let wire = st.transcript.wire();
+    let first = wire
+        .iter()
+        .rposition(|m| m.role != oxa_proto::Role::User)
+        .map_or(0, |i| i + 1);
+    wire[first..]
+        .iter()
+        .filter_map(|m| m.content.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// `turn_start` (pi `TurnStartEvent`): `{turnIndex, timestamp}`.
 pub(crate) fn turn_start(st: &mut SessionState, index: u32, sink: &mut dyn EventSink, ui: &mut dyn Ui) {
     observe(
@@ -591,9 +611,19 @@ impl Ui for PromptTap<'_> {
     fn approve_publication(&mut self, title: &str, body: &str) -> Option<bool> {
         self.span("confirm", Some(title), |u| u.approve_publication(title, body))
     }
+    fn secret(&mut self, title: &str, body: &str) -> Option<String> {
+        self.inner.secret(title, body)
+    }
 
-    fn dialog_canceller(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
-        self.inner.dialog_canceller()
+    fn confirm_cancellable(
+        &mut self,
+        title: &str,
+        body: &str,
+        cancel: &oxa_proto::DialogCancel,
+    ) -> Option<bool> {
+        self.span("confirm", Some(title), |u| {
+            u.confirm_cancellable(title, body, cancel)
+        })
     }
     fn input(&mut self, title: &str, placeholder: &str) -> Option<String> {
         self.span("input", Some(title), |u| u.input(title, placeholder))
@@ -991,7 +1021,7 @@ pub(crate) fn agent_settled(st: &mut SessionState, aborted: bool, sink: &mut dyn
         HookPoint::AgentSettled,
         sink,
         ui,
-        |_| json!({ "aborted": aborted }),
+        |st| json!({ "aborted": aborted, "outcome": st.stats.outcome.record(), "model": st.model }),
     );
     crate::progress::notify(st, crate::Progress::Settled(st.stats.outcome));
 }

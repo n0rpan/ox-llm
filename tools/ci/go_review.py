@@ -22,8 +22,9 @@ MODEL_ID = re.compile(r'[a-z0-9][a-z0-9.\-]{0,63}')
 MAX_DIFF = 200_000
 MAX_LINES = 6000
 MAX_RESPONSE = 128_000
-MAX_PROMPT = 20_000
-MAX_INPUT_BYTES = MAX_DIFF + MAX_PROMPT
+MAX_BASE_PROMPT = 20_000
+MAX_OWNER_DECISIONS = 20_000
+MAX_INPUT_BYTES = MAX_DIFF + MAX_BASE_PROMPT
 MAX_COMMENT_PAGES = 200  # 20,000 comments at GitHub's 100-comment page size.
 
 
@@ -57,12 +58,15 @@ def review_prompt():
     root = Path(__file__).resolve().parents[2]
     agents = (root / 'AGENTS.md').read_text()
     guidelines = agents.split('## Review guidelines\n', 1)[1].split('\n## ', 1)[0]
+    security = (root / 'SECURITY.md').read_text()
+    owner_decisions = security.split('## Owner decisions (not findings)\n', 1)[1].split('\n## ', 1)[0]
     skill = root / 'oxa/oxa-resources/builtin-skills/review'
     text = PROMPT + '\nProject guidelines:\n' + guidelines + '\n' + (skill / 'SKILL.md').read_text()
-    text += '\nOutput schema:\n' + (skill / 'findings.schema.json').read_text()
-    if len(text.encode()) > MAX_PROMPT:
+    schema = '\nOutput schema:\n' + (skill / 'findings.schema.json').read_text()
+    decisions = '\nOwner decisions (not findings):\n' + owner_decisions
+    if len((text + schema).encode()) > MAX_BASE_PROMPT or len(decisions.encode()) > MAX_OWNER_DECISIONS:
         raise Refused('Trusted review instructions exceed the bound')
-    return text
+    return text + decisions + schema
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -252,11 +256,14 @@ def review_models(pr, files):
     return models if two else models[:1]
 
 
-def model_response(model, token, prompt, diff, session):
-    # Bound the input by UTF-8 bytes, an upper bound on byte-tokenized input
-    # text, without a provider call or dependency on a model tokenizer.
+def check_review_input(prompt, diff):
+    # Both trusted instructions and untrusted diff text share the same byte budget.
     if len(prompt.encode()) + len(diff.encode()) > MAX_INPUT_BYTES:
         raise Skipped('Go review input exceeds the request bound')
+
+
+def model_response(model, token, prompt, diff, session):
+    check_review_input(prompt, diff)
     headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
                'User-Agent': 'ox-llm-go-review/1', 'x-opencode-session': session}
     if not model.startswith('gemini-'):
@@ -431,6 +438,7 @@ def main():
     if not eligible(request(pull, headers), sha):
         return
     prompt = review_prompt()
+    check_review_input(prompt, diff)
 
     # The protected workflow serializes this check and reservation across PRs.
     # Keep the reservation on any uncertain or failed outcome, including cancellation.

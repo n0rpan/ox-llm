@@ -95,6 +95,21 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
             let _ = write!(html, "<dd>Unknown. {reason}</dd>");
         }
     }
+    for deferral in view.quota_deferred {
+        let why = match deferral.until {
+            Some(reset) => format!(
+                "held back until the window resets {}",
+                super::human_time(reset, now)
+            ),
+            None => "held back: no quota window observed".to_owned(),
+        };
+        let _ = write!(
+            html,
+            "<dt>Deferred by the GitHub reserve</dt><dd>{} ({}): {why}</dd>",
+            super::escape(&deferral.work),
+            super::escape(&deferral.resource)
+        );
+    }
     html.push_str("</dl></section>");
 }
 

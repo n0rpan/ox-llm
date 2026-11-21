@@ -685,7 +685,12 @@ fn worker_loop_inner(
                                 break;
                             }
                             if let Some(s) = session.as_mut() {
-                                idle_tick(s, &out, &mut ui_proxy, &mut last, &stop, &cmds, &mut backlog);
+                                if let Some(code) =
+                                    idle_tick(s, &out, &mut ui_proxy, &mut last, &stop, &cmds, &mut backlog)
+                                {
+                                    let _ = out.send(WorkerMsg::LimitExit(code));
+                                    break;
+                                }
                             }
                             continue;
                         }
@@ -875,18 +880,10 @@ fn worker_loop_inner(
                 if swapped || reload {
                     let _ = out.send(WorkerMsg::Session(session_info(s)));
                 }
-                let limit_exit = s.handle().wrap_up_requested().then(|| {
-                    let outcome = result
-                        .as_ref()
-                        .err()
-                        .map_or(*s.outcome(), oxa_core::RunOutcome::from_error);
-                    match outcome {
-                        oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo => {
-                            oxa_core::RunOutcome::Interrupted.exit_code()
-                        }
-                        other => other.exit_code(),
-                    }
-                });
+                let limit_exit = s
+                    .handle()
+                    .wrap_up_requested()
+                    .then(|| limit_exit_code(result.as_ref().err(), *s.outcome()));
                 let _ = out.send(WorkerMsg::Done(result));
                 let fresh = fresh_status(s, &mut last);
                 let _ = out.send(WorkerMsg::Status(fresh));
@@ -904,8 +901,21 @@ fn worker_loop_inner(
     ended
 }
 
-// A limit on the current Session does not follow a session swap. When no command is
-// active, acknowledge it without starting a prompt or another background request.
+/// The exit code of a run that ended under a requested wrap-up: the turn's own failure or
+/// outcome, and the interrupted code only when the turn finished cleanly.
+fn limit_exit_code(failure: Option<&OxaError>, outcome: oxa_core::RunOutcome) -> i32 {
+    let outcome = failure.map_or(outcome, oxa_core::RunOutcome::from_error);
+    match outcome {
+        oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo => {
+            oxa_core::RunOutcome::Interrupted.exit_code()
+        }
+        other => other.exit_code(),
+    }
+}
+
+// The run's limits follow every session swap, so a requested wrap-up is honoured by whichever
+// session is current. When no command is active (and nothing ran), acknowledge it without
+// starting a prompt or another background request.
 fn limit_exit_if_requested(session: Option<&Session>, out: &Sender<WorkerMsg>) -> bool {
     let requested = session.is_some_and(|s| s.handle().wrap_up_requested());
     if requested {
@@ -955,27 +965,35 @@ fn idle_tick(
     stop: &WorkerStop,
     cmds: &Receiver<SessionCmd>,
     backlog: &mut VecDeque<SessionCmd>,
-) {
+) -> Option<i32> {
     // O-386: the preload is due before the worker's first wait (see `worker_loop_with`); this
     // call is the retry for a session whose hook set had requests pending then.
     run_boot_preload(s, out, ui, stop, cmds, backlog);
     if !backlog.is_empty() || stop.is_stopped() || s.handle().wrap_up_requested() {
-        return;
+        return None;
     }
     let mut sink = CountingSink {
         inner: ChanSink(out.clone()),
         count: 0,
     };
     let result = s.serve_host(&mut sink, ui);
+    let mut exit = None;
     if let Err(e) = result {
         if e.code != codes::BUSY {
+            // A wrap-up requested during this turn ends the run with the turn's own outcome.
+            if s.handle().wrap_up_requested() {
+                exit = Some(limit_exit_code(Some(&e), *s.outcome()));
+            }
             let _ = out.send(WorkerMsg::Done(Err(e)));
         }
+    } else if sink.count > 0 && s.handle().wrap_up_requested() {
+        exit = Some(limit_exit_code(None, *s.outcome()));
     }
     if sink.count > 0 {
         let fresh = fresh_status(s, last);
         let _ = out.send(WorkerMsg::Status(fresh));
     }
+    exit
 }
 
 /// The sink of the boot preload: drops the progress of the background request (`Prefill`,
@@ -1823,9 +1841,12 @@ fn execute(
         SessionCmd::QueuedInput(handle) => {
             handle.clear_queued_wake();
             let (steering, follow_up) = handle.queued();
-            // A failed/blocked/interrupted run retains queued input for explicit recovery.
-            // A wake may bridge successful completion, never override that stop boundary.
-            let can_continue = may_continue(s.outcome());
+            // #2183: the owner's own queued message is sent once the session is idle, also after
+            // a failed request: left queued behind the error it looked sent and never was. One
+            // wake runs it once, so a request that fails again is not repeated. A blocked run
+            // (budget, offline, quota) and an interrupted one keep it for explicit recovery.
+            let can_continue =
+                may_continue(s.outcome()) || matches!(s.outcome(), oxa_core::RunOutcome::Failed(_));
             let result = if handle.same_instance(&s.handle())
                 && can_continue
                 && (!steering.is_empty() || !follow_up.is_empty())
@@ -2113,6 +2134,11 @@ pub(crate) fn refresh_status(dst: &mut StatusModel, fresh: StatusModel) {
         dst.last_prompt = None;
     }
     dst.model = fresh.model;
+    // R1 (#2256): where the model runs follows the session's active model, as the startup
+    // header's does. Only the model-switch event used to update these, so a footer (or a header
+    // printed again) kept `cloud · <provider>` after a switch to a local model.
+    dst.model_remote = fresh.model_remote;
+    dst.model_provider = fresh.model_provider;
     dst.thinking = fresh.thinking;
     dst.mode = fresh.mode;
     dst.session_name = fresh.session_name;
@@ -2633,7 +2659,31 @@ mod status_reset_tests {
         );
     }
 
-    /// The TUI path of `/new` (`WorkerMsg::Reopened` / `Status` -> `refresh_status`).
+    /// The TUI path of `/model` (`Status` -> `refresh_status`): the footer's location segment
+    /// must follow the session's active model.
+    #[test]
+    fn refresh_status_follows_the_active_model_location() {
+        // #2256: the session runs the local model now, while the footer still carries the
+        // cloud label of the model it started on.
+        let mut dst = StatusModel {
+            model: "openai/cloud-model".into(),
+            model_remote: true,
+            model_provider: Some("openai"),
+            ..StatusModel::default()
+        };
+        let fresh = StatusModel {
+            model: "local-model".into(),
+            model_remote: false,
+            model_provider: None,
+            context_tokens: 120,
+            ..StatusModel::default()
+        };
+        refresh_status(&mut dst, fresh);
+        assert_eq!(dst.model, "local-model");
+        assert!(!dst.model_remote, "a local model is shown as local");
+        assert_eq!(dst.model_provider, None);
+    }
+
     #[test]
     fn refresh_status_clears_cache_on_empty_session_and_keeps_it_otherwise() {
         let mut dst = stale();
@@ -2833,5 +2883,28 @@ mod job_wake_gate_tests {
         stopped.recover_for_prompt("session", false);
 
         assert!(!stopped.permits("session"));
+    }
+}
+
+#[cfg(test)]
+mod limit_exit_tests {
+    use super::*;
+
+    #[test]
+    fn a_clean_wrap_up_exits_interrupted_and_a_failed_turn_keeps_its_own_code() {
+        let interrupted = oxa_core::RunOutcome::Interrupted.exit_code();
+        assert_eq!(limit_exit_code(None, oxa_core::RunOutcome::Done), interrupted);
+        assert_eq!(
+            limit_exit_code(None, oxa_core::RunOutcome::NothingToDo),
+            interrupted
+        );
+        let error = OxaError::new(codes::INTERNAL, "synthetic failure");
+        let failed = oxa_core::RunOutcome::from_error(&error).exit_code();
+        assert_ne!(failed, interrupted);
+        assert_eq!(limit_exit_code(Some(&error), oxa_core::RunOutcome::Done), failed);
+        assert_eq!(
+            limit_exit_code(None, oxa_core::RunOutcome::from_error(&error)),
+            failed
+        );
     }
 }

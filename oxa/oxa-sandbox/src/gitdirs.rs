@@ -616,16 +616,29 @@ fn is_space(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\n' | b'\r')
 }
 
-/// Parse `bytes` as a git config file. Anything git would reject (a bad header, a bad key
-/// line, an unterminated quote, an unknown escape, an include without a value) or that
+/// One thing [`walk_config`] found: a section header (its name as `get_base_var` builds it) or
+/// a key line.
+enum ConfigEvent<'a> {
+    Header(&'a [u8]),
+    Entry {
+        section: &'a [u8],
+        key: &'a [u8],
+        value: Option<Vec<u8>>,
+    },
+}
+
+/// Walk `bytes` as git reads a config file and report every header and key line. Anything git
+/// would reject (a bad header, a bad key line, an unterminated quote, an unknown escape) or that
 /// cannot be compared byte for byte (a NUL) is an error: the caller refuses, it never guesses.
-pub(crate) fn parse_includes(bytes: &[u8]) -> Result<Includes, String> {
+fn walk_config(
+    bytes: &[u8],
+    on: &mut dyn FnMut(ConfigEvent<'_>) -> Result<(), String>,
+) -> Result<(), String> {
     let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
     if bytes.contains(&0) {
         return Err("a NUL byte in the config".into());
     }
     let mut s = Stream { b: bytes, i: 0 };
-    let mut out = Includes::default();
     let mut section: Vec<u8> = Vec::new();
     let mut comment = false;
     while let Some(c) = s.next() {
@@ -642,8 +655,7 @@ pub(crate) fn parse_includes(bytes: &[u8]) -> Result<Includes, String> {
         }
         if c == b'[' {
             section = section_header(&mut s)?;
-            let base = section.split(|b| *b == b'.').next().unwrap_or(&[]);
-            out.header |= base == b"include" || base == b"includeif";
+            on(ConfigEvent::Header(&section))?;
             continue;
         }
         if !c.is_ascii_alphabetic() {
@@ -663,21 +675,63 @@ pub(crate) fn parse_includes(bytes: &[u8]) -> Result<Includes, String> {
             b'=' => Some(parse_value(&mut s)?),
             _ => return Err("a config line git rejects".into()),
         };
-        let include = section == b"include"
-            || (section.starts_with(b"includeif.") && section.len() > b"includeif.".len());
-        if include && key == b"path" {
-            match value {
-                Some(v) if !v.is_empty() => out.paths.push(v),
-                _ => return Err("an include path without a value".into()),
+        on(ConfigEvent::Entry {
+            section: &section,
+            key: &key,
+            value,
+        })?;
+    }
+    Ok(())
+}
+
+/// Every `section[.subsection].name` key of a config file with its value, in file order (the
+/// section and name lowercased, the subsection as written; a key without `=` has the value
+/// `true`). Errors as [`walk_config`].
+pub(crate) fn parse_entries(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut out = Vec::new();
+    walk_config(bytes, &mut |ev| {
+        if let ConfigEvent::Entry { section, key, value } = ev {
+            let name = format!(
+                "{}.{}",
+                String::from_utf8_lossy(section),
+                String::from_utf8_lossy(key)
+            );
+            out.push((name, value.unwrap_or_else(|| b"true".to_vec())));
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Parse `bytes` as a git config file for what it says about includes and hooks (see
+/// [`Includes`]); errors as [`walk_config`] (an include without a value too).
+pub(crate) fn parse_includes(bytes: &[u8]) -> Result<Includes, String> {
+    let mut out = Includes::default();
+    walk_config(bytes, &mut |ev| {
+        match ev {
+            ConfigEvent::Header(section) => {
+                let base = section.split(|b| *b == b'.').next().unwrap_or(&[]);
+                out.header |= base == b"include" || base == b"includeif";
             }
-        } else if section == b"core" && key == b"hookspath" {
-            if let Some(v) = value {
-                if !v.is_empty() {
-                    out.hooks_paths.push(v);
+            ConfigEvent::Entry { section, key, value } => {
+                let include = section == b"include"
+                    || (section.starts_with(b"includeif.") && section.len() > b"includeif.".len());
+                if include && key == b"path" {
+                    match value {
+                        Some(v) if !v.is_empty() => out.paths.push(v),
+                        _ => return Err("an include path without a value".into()),
+                    }
+                } else if section == b"core" && key == b"hookspath" {
+                    if let Some(v) = value {
+                        if !v.is_empty() {
+                            out.hooks_paths.push(v);
+                        }
+                    }
                 }
             }
         }
-    }
+        Ok(())
+    })?;
     Ok(out)
 }
 
@@ -1058,14 +1112,38 @@ fn run_git_config(p: &Path) -> Option<GitAnswer> {
 }
 
 /// sbx-gitsym: the mounts a command sees, for "could the command change this path".
+#[derive(Default)]
 pub(crate) struct Mounts {
     /// Read-write binds (the writable cwd, writable caches), canonical.
     pub rw: Vec<PathBuf>,
     /// Read-only binds inside them (the repository's git directories), canonical.
     pub ro: Vec<PathBuf>,
+    /// Directories the command cannot see: the home tmpfs and the masked deny-list
+    /// directories, canonical.
+    pub hidden: Vec<PathBuf>,
 }
 
 impl Mounts {
+    /// #955: what bash sees at `p` (canonical): the deepest matching root decides; on a tie a
+    /// hidden or read-only mount wins over a read-write one. No match is the plain read-only
+    /// root bind.
+    pub(crate) fn view_of(&self, p: &Path) -> oxa_proto::BashView {
+        use oxa_proto::BashView;
+        let depth = |xs: &[PathBuf]| {
+            xs.iter()
+                .filter(|m| p.starts_with(m))
+                .map(|m| m.components().count())
+                .max()
+        };
+        let (rw, ro, hid) = (depth(&self.rw), depth(&self.ro), depth(&self.hidden));
+        match [rw, ro, hid].into_iter().flatten().max() {
+            None => BashView::ReadOnly,
+            Some(d) if hid == Some(d) => BashView::Hidden,
+            Some(d) if ro == Some(d) => BashView::ReadOnly,
+            Some(_) => BashView::Same,
+        }
+    }
+
     /// The command can change `q` (a physical path): its deepest mount is read-write and `q`
     /// lies below it, or is that mount and is the final target (its content is writable; a
     /// mount point itself cannot be renamed). A read-only mount wins a tie.

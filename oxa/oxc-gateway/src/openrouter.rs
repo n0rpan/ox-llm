@@ -150,10 +150,23 @@ impl Client {
             .collect()
     }
 
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) async fn compatible_models(&self, key: &Key) -> Result<Vec<serde_json::Value>, Failure> {
+        let response = tokio::time::timeout(self.timeout, self.get_inner("models", Some(key), true))
+            .await
+            .map_err(|_| Error::Transport)??;
+        Ok(response["data"]
+            .as_array()
+            .ok_or(Error::Protocol)?
+            .iter()
+            .filter_map(|model| Some(serde_json::json!({"id": model["id"].as_str()?})))
+            .collect())
+    }
+
     /// The public catalog: no key, no account, nothing about the caller is sent. A row that does
     /// not parse is skipped, so one odd entry never discards the rest of the metadata.
     pub async fn public_models(&self) -> Result<Vec<Model>, Failure> {
-        let response = tokio::time::timeout(self.timeout, self.get_inner("models", None))
+        let response = tokio::time::timeout(self.timeout, self.get_inner("models", None, false))
             .await
             .map_err(|_| Error::Transport)??;
         Ok(response["data"]
@@ -165,12 +178,17 @@ impl Client {
     }
 
     async fn get(&self, path: &str, key: &Key) -> Result<serde_json::Value, Failure> {
-        tokio::time::timeout(self.timeout, self.get_inner(path, Some(key)))
+        tokio::time::timeout(self.timeout, self.get_inner(path, Some(key), false))
             .await
             .map_err(|_| Error::Transport)?
     }
 
-    async fn get_inner(&self, path: &str, key: Option<&Key>) -> Result<serde_json::Value, Failure> {
+    async fn get_inner(
+        &self,
+        path: &str,
+        key: Option<&Key>,
+        reject_echo: bool,
+    ) -> Result<serde_json::Value, Failure> {
         use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION};
         const MAX_BODY: usize = 8 * 1024 * 1024;
         let endpoint = self.base.join(path).map_err(|_| Error::Endpoint)?;
@@ -199,6 +217,9 @@ impl Client {
         let mut value = serde_json::from_slice(&body).map_err(|_| Error::Protocol)?;
         // Even successful provider replies must not echo a credential in Debug.
         if let Some(key) = key {
+            if reject_echo && crate::redaction::contains_secret(&value, key.expose()) {
+                return Err(Error::Protocol.into());
+            }
             crate::redaction::value(&mut value, key);
         }
         Ok(value)

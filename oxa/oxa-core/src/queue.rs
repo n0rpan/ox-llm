@@ -25,6 +25,8 @@ pub struct Queue {
 struct BoundFollowUp {
     text: String,
     job_wake: bool,
+    /// #2183: delivered at the next tool boundary (an inbox steer), not when the run stops.
+    steer: bool,
 }
 
 impl Queue {
@@ -43,27 +45,56 @@ impl Queue {
             && len <= (1024 * 1024usize).saturating_sub(bytes)
     }
 
+    fn bound(&self, steer: bool) -> impl Iterator<Item = &String> {
+        self.session_follow_up
+            .get(&self.session_id)
+            .into_iter()
+            .flatten()
+            .filter(move |message| message.steer == steer)
+            .map(|message| &message.text)
+    }
+
     fn follow_ups(&self) -> impl Iterator<Item = &String> {
-        self.follow_up.iter().chain(
-            self.session_follow_up
-                .get(&self.session_id)
-                .into_iter()
-                .flatten()
-                .map(|message| &message.text),
-        )
+        self.follow_up.iter().chain(self.bound(false))
+    }
+
+    /// Editor steering, then the active session's inbox steers.
+    fn steers(&self) -> impl Iterator<Item = &String> {
+        self.steering.iter().chain(self.bound(true))
+    }
+
+    /// Take the active session's bound messages of one kind: all of them, or the oldest.
+    fn take_bound(&mut self, steer: bool, mode: QueueMode) -> Vec<String> {
+        let Some(messages) = self.session_follow_up.get_mut(&self.session_id) else {
+            return Vec::new();
+        };
+        let mut taken = Vec::new();
+        let mut index = 0;
+        while index < messages.len() {
+            if messages[index].steer == steer {
+                taken.push(messages.remove(index).text);
+                if mode == QueueMode::OneAtATime {
+                    break;
+                }
+            } else {
+                index += 1;
+            }
+        }
+        taken
+    }
+
+    fn take_steering(&mut self, mode: QueueMode) -> Vec<String> {
+        let mut taken = take_by_mode(&mut self.steering, mode);
+        if mode == QueueMode::All || taken.is_empty() {
+            taken.extend(self.take_bound(true, mode));
+        }
+        taken
     }
 
     fn take_follow_up(&mut self, mode: QueueMode) -> Vec<String> {
         let mut taken = take_by_mode(&mut self.follow_up, mode);
         if mode == QueueMode::All || taken.is_empty() {
-            if let Some(messages) = self.session_follow_up.get_mut(&self.session_id) {
-                let bound = match mode {
-                    QueueMode::All => std::mem::take(messages),
-                    QueueMode::OneAtATime if messages.is_empty() => Vec::new(),
-                    QueueMode::OneAtATime => vec![messages.remove(0)],
-                };
-                taken.extend(bound.into_iter().map(|message| message.text));
-            }
+            taken.extend(self.take_bound(false, mode));
         }
         taken
     }
@@ -117,6 +148,15 @@ pub enum WrapUpReason {
 }
 
 impl WrapUpReason {
+    /// What `oxa_result.limit` names: the limit or signal that ended the run.
+    pub fn limit(self) -> &'static str {
+        match self {
+            Self::TimeLimit => "time",
+            Self::Signal => "signal",
+            Self::TokenLimit => "tokens",
+        }
+    }
+
     pub(crate) fn notice(self) -> &'static str {
         match self {
             Self::TimeLimit => "time limit reached; one final turn to commit or summarize",
@@ -149,6 +189,8 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// `Some` only while a pursuing goal is waiting between failed requests.
+    pub(crate) backoff_model: Mutex<Option<Option<String>>>,
     /// Set when an in-request retry wait consumed `cancel_retry`, so an outer goal recovery
     /// does not restart the request the owner just stopped.
     pub(crate) retry_stopped: std::sync::atomic::AtomicBool,
@@ -176,6 +218,8 @@ pub struct Gate {
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
+    /// Unset unless the owner terminal armed this session. Never an event-bus observer.
+    pub(crate) wire_evidence: std::sync::OnceLock<crate::wire_evidence::WireEvidence>,
     /// The owner confirm broker of this session (`Session::enable_owner_confirm`).
     pub(crate) owner_confirm: Mutex<Option<Arc<crate::owner_confirm::OwnerConfirm>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
@@ -190,6 +234,11 @@ pub struct Gate {
     pub run_tokens_used: Mutex<u64>,
     /// A request under an explicit token budget finished without usage: the tally is a lower bound.
     pub usage_unreported: std::sync::atomic::AtomicBool,
+    /// The one warning that the session stores more image bytes than `oxa.read.maxImageBytes`
+    /// has been shown.
+    pub image_budget_warned: std::sync::atomic::AtomicBool,
+    /// The run's `--max-time` window and which time notes were already shown.
+    pub(crate) time_limit: Mutex<Option<TimeLimit>>,
     pub bg_cancel: CancelToken,
     pub reread_info: std::sync::atomic::AtomicBool,
     pub info_rechecked: std::sync::atomic::AtomicBool,
@@ -205,6 +254,22 @@ pub struct Gate {
     /// The wake a front end registered for state it cannot poll (see
     /// [`Handle::set_attention_waker`]).
     pub attention: Attention,
+}
+
+/// The run's time window (`--max-time`) and the notes already pushed into the conversation
+/// (bit 0: 70%, bit 1: 90%).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TimeLimit {
+    start: std::time::Instant,
+    deadline: std::time::Instant,
+    noted: u8,
+}
+
+/// A time note due at the top of a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TimeNote {
+    pub percent: u8,
+    pub minutes_left: u64,
 }
 
 /// The wake a front end registered for state it cannot see through its own channels: a host
@@ -465,7 +530,12 @@ impl Shared {
     /// Steering or follow-up messages for the active session are queued.
     pub fn has_input(&self) -> bool {
         let q = lock(&self.queue);
-        !q.steering.is_empty() || q.follow_ups().next().is_some()
+        q.steers().next().is_some() || q.follow_ups().next().is_some()
+    }
+
+    /// Steering (typed, or an inbox steer for the active session) is queued.
+    pub(crate) fn has_steering(&self) -> bool {
+        lock(&self.queue).steers().next().is_some()
     }
 
     pub(crate) fn has_follow_up(&self) -> bool {
@@ -495,7 +565,7 @@ impl Shared {
     /// oldest one (`OneAtATime`).
     pub fn take_steering(&self) -> Vec<String> {
         let mode = lock(&self.modes).0;
-        let taken = take_by_mode(&mut lock(&self.queue).steering, mode);
+        let taken = lock(&self.queue).take_steering(mode);
         if !taken.is_empty() {
             self.dirty.store(true, Ordering::SeqCst);
         }
@@ -530,7 +600,7 @@ impl Shared {
     /// Both queues, cloned (steering, follow-up).
     pub(crate) fn snapshot(&self) -> (Vec<String>, Vec<String>) {
         let q = lock(&self.queue);
-        (q.steering.clone(), q.follow_ups().cloned().collect())
+        (q.steers().cloned().collect(), q.follow_ups().cloned().collect())
     }
 }
 
@@ -571,6 +641,17 @@ impl Handle {
         }
         queue.goal_steering = Some(request);
         Ok(())
+    }
+
+    /// Offer an explicit model choice to the currently waiting goal, never a later run.
+    pub fn select_model_during_backoff(&self, model: &str) -> bool {
+        let mut waiting = lock(&self.shared.gate.backoff_model);
+        let Some(choice) = waiting.as_mut() else {
+            return false;
+        };
+        *choice = Some(model.to_owned());
+        self.shared.wait_wake.cancel();
+        true
     }
 
     /// Queue a steering message (delivered after the current tool batch; when idle the caller
@@ -619,7 +700,7 @@ impl Handle {
         // and a finished job has nothing to retry from. The text is bounded by the wake tail.
         {
             let mut q = lock(&self.shared.queue);
-            self.admit(&mut q, &session_id, job.wake_text(), true);
+            self.admit(&mut q, &session_id, job.wake_text(), true, false);
         }
         let notify = lock(&self.shared.wake).as_ref().map(|w| w.0.clone());
         if let Some(notify) = notify {
@@ -706,17 +787,33 @@ impl Handle {
         if !q.has_inbox_capacity(text.len()) {
             return false;
         }
-        self.admit(&mut q, session_id, text, false);
+        self.admit(&mut q, session_id, text, false, false);
+        true
+    }
+
+    /// [`Handle::follow_up_for`] as a steer (#2183): the destination takes the message at its
+    /// next tool boundary, like typed steering, or as its next prompt when it is idle. Same
+    /// capacity rule and return value.
+    pub fn steer_for(&self, session_id: &str, text: String) -> bool {
+        let mut q = lock(&self.shared.queue);
+        if !q.has_inbox_capacity(text.len()) {
+            return false;
+        }
+        self.admit(&mut q, session_id, text, false, true);
         true
     }
 
     /// Append `text` to `session_id`'s destination-bound queue and wake a run of the active
     /// session. The caller decides on capacity.
-    fn admit(&self, q: &mut Queue, session_id: &str, text: String, job_wake: bool) {
+    fn admit(&self, q: &mut Queue, session_id: &str, text: String, job_wake: bool, steer: bool) {
         q.session_follow_up
             .entry(session_id.to_string())
             .or_default()
-            .push(BoundFollowUp { text, job_wake });
+            .push(BoundFollowUp {
+                text,
+                job_wake,
+                steer,
+            });
         if q.session_id == session_id {
             self.shared.dirty.store(true, Ordering::SeqCst);
             self.shared.gate.bg_cancel.cancel();
@@ -749,7 +846,7 @@ impl Handle {
     pub fn dequeue(&self) -> Vec<String> {
         let (mut steering, follow_up) = {
             let mut q = lock(&self.shared.queue);
-            (std::mem::take(&mut q.steering), q.take_follow_up(QueueMode::All))
+            (q.take_steering(QueueMode::All), q.take_follow_up(QueueMode::All))
         };
         let changed = !steering.is_empty() || !follow_up.is_empty();
         steering.extend(follow_up);
@@ -785,18 +882,74 @@ impl Handle {
         *lock(&self.shared.gate.token_budget) = tokens;
     }
 
-    /// Remove startup-only limits after their watcher has stopped, preserving
-    /// any wrap-up already requested by a process signal.
-    pub fn clear_startup_limits(&self) {
-        self.set_token_budget(None);
-        for reason in [WrapUpReason::TimeLimit, WrapUpReason::TokenLimit] {
-            let _ = self.shared.gate.wrap_up.compare_exchange(
-                reason as u8,
-                0,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
+    /// Carry the invocation-wide limits of the previous session into this one (a resume,
+    /// fork, clone, `/new` or an extension swap). The previous session is idle at the swap,
+    /// so copying is race-free; a handle that shares the same state is left alone.
+    pub fn inherit_run(&self, from: &Handle) {
+        if Arc::ptr_eq(&self.shared, &from.shared) {
+            return;
         }
+        let (src, dst) = (&from.shared.gate, &self.shared.gate);
+        *lock(&dst.token_budget) = *lock(&src.token_budget);
+        *lock(&dst.run_tokens_used) = *lock(&src.run_tokens_used);
+        dst.usage_unreported
+            .store(src.usage_unreported.load(Ordering::SeqCst), Ordering::SeqCst);
+        // The time notes follow the run's `--max-time` window into the new session.
+        let window = *lock(&src.time_limit);
+        if let Some(window) = window {
+            *lock(&dst.time_limit) = Some(TimeLimit {
+                start: window.start,
+                deadline: window.deadline,
+                noted: 0,
+            });
+        }
+        let reason = src.wrap_up.load(Ordering::SeqCst);
+        if reason != 0 {
+            let _ = dst
+                .wrap_up
+                .compare_exchange(0, reason, Ordering::SeqCst, Ordering::SeqCst);
+        }
+    }
+
+    /// Record the run's time window (`None` = no `--max-time`), for the time notes.
+    pub fn set_time_limit(&self, window: Option<(std::time::Instant, std::time::Instant)>) {
+        *lock(&self.shared.gate.time_limit) = window.map(|(start, deadline)| TimeLimit {
+            start,
+            deadline,
+            noted: 0,
+        });
+    }
+
+    /// The next time note that is due (70% then 90% of the window), marked as shown. A late
+    /// first look, already past 90%, gives the later note only.
+    pub(crate) fn take_time_note(&self) -> Option<TimeNote> {
+        self.time_note_at(std::time::Instant::now())
+    }
+
+    fn time_note_at(&self, now: std::time::Instant) -> Option<TimeNote> {
+        let mut guard = lock(&self.shared.gate.time_limit);
+        let limit = guard.as_mut()?;
+        let total = limit.deadline.saturating_duration_since(limit.start);
+        if total.is_zero() {
+            return None;
+        }
+        let used = now.saturating_duration_since(limit.start).as_secs_f64() / total.as_secs_f64();
+        let (percent, bits) = if used >= 0.9 && limit.noted & 2 == 0 {
+            (90, 3)
+        } else if used >= 0.7 && limit.noted & 1 == 0 {
+            (70, 1)
+        } else {
+            return None;
+        };
+        limit.noted |= bits;
+        Some(TimeNote {
+            percent,
+            minutes_left: limit
+                .deadline
+                .saturating_duration_since(now)
+                .as_secs()
+                .div_ceil(60),
+        })
     }
 
     pub(crate) fn remaining_tokens(&self) -> Option<u64> {
@@ -988,6 +1141,26 @@ impl Handle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn time_notes_come_at_70_and_90_percent_once_each() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        let start = std::time::Instant::now();
+        let at = |secs: u64| start + std::time::Duration::from_secs(secs);
+        assert_eq!(h.time_note_at(at(500)), None, "no window yet");
+        h.set_time_limit(Some((start, at(1000))));
+        assert_eq!(h.time_note_at(at(500)), None);
+        let first = h.time_note_at(at(700)).unwrap();
+        assert_eq!((first.percent, first.minutes_left), (70, 5));
+        assert_eq!(h.time_note_at(at(750)), None, "the 70% note is shown once");
+        let second = h.time_note_at(at(950)).unwrap();
+        assert_eq!(second.percent, 90);
+        assert_eq!(h.time_note_at(at(990)), None);
+        // A late first look covers both notes with the later one.
+        h.set_time_limit(Some((start, at(1000))));
+        assert_eq!(h.time_note_at(at(960)).unwrap().percent, 90);
+        assert_eq!(h.time_note_at(at(970)), None);
+    }
+
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
@@ -1067,18 +1240,19 @@ mod tests {
     }
 
     #[test]
-    fn clearing_startup_limits_releases_the_token_budget_but_preserves_signal_wrap_up() {
-        let handle = handle(QueueMode::All, QueueMode::All);
-        handle.set_token_budget(Some(10));
-        handle.account_tokens(10);
-        assert_eq!(handle.wrap_up_reason(), Some(WrapUpReason::TokenLimit));
-        handle.clear_startup_limits();
-        assert_eq!(handle.remaining_tokens(), None);
-        assert_eq!(handle.wrap_up_reason(), None);
-
-        handle.request_wrap_up(WrapUpReason::Signal);
-        handle.clear_startup_limits();
-        assert_eq!(handle.wrap_up_reason(), Some(WrapUpReason::Signal));
+    fn inherit_run_carries_budget_tally_and_wrap_up() {
+        let from = handle(QueueMode::All, QueueMode::All);
+        from.set_token_budget(Some(100));
+        from.account_tokens(30);
+        from.request_wrap_up(WrapUpReason::Signal);
+        let to = handle(QueueMode::All, QueueMode::All);
+        to.inherit_run(&from);
+        assert_eq!(to.remaining_tokens(), Some(70));
+        assert_eq!(to.run_tokens_used(), 30);
+        assert_eq!(to.wrap_up_reason(), Some(WrapUpReason::Signal));
+        // The same state (an in-place fork keeps its Handle) is left alone.
+        to.inherit_run(&to.clone());
+        assert_eq!(to.remaining_tokens(), Some(70));
     }
 
     #[test]

@@ -190,7 +190,7 @@ fn expansion_start(next: char) -> bool {
 /// as written, including the command text inside `$(...)`: the owner must see what runs.
 /// A run that holds only quote or escape characters stays as it is, so a fully expanded
 /// value still reads exactly as written.
-fn mask_literal_runs(value: &str) -> String {
+pub(super) fn mask_literal_runs(value: &str) -> String {
     let mut out = String::new();
     let mut literal = String::new();
     let (mut single, mut double, mut escaped) = (false, false, false);
@@ -288,7 +288,7 @@ fn mask_literal_runs(value: &str) -> String {
 }
 
 /// Whole seconds, minutes or hours since the request was filed. A timestamp ahead of this clock reads as new.
-fn age(now: u64, created_ms: u64) -> String {
+pub(super) fn age(now: u64, created_ms: u64) -> String {
     let seconds = now.saturating_sub(created_ms / 1000);
     match seconds {
         0..=59 => format!("{seconds} s"),

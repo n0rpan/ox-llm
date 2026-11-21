@@ -1,10 +1,11 @@
 //! The chat page: one header strip, one bubble thread, one sticky composer (#2341).
 //!
-//! Reading order is the page's job; the truth is not. Every piece of session text goes
-//! through [`super::session`], which masks before it becomes markup. The fixed questions
-//! keep their existing no-JS form and CSRF field, the owner message keeps the same POST,
-//! and the action card keeps the same confirmation POST. The composer placeholder is the
-//! only place that says whether messaging is on, so no state is invented as a positive.
+//! The thread is the session the page talks to: the dedicated Lead chat, or the running
+//! session it is attached to (#2075). Either way every text goes through [`super::session`],
+//! which masks before it becomes markup. The fixed questions keep their no-JS form and CSRF
+//! field, the owner message keeps the same same-origin POST (and, while attached, the
+//! session id it was rendered for), and the action card keeps the same confirmation POST.
+//! The composer states are said in words, so no state is invented as a positive.
 use super::session::{self, Item};
 use super::{escape, md, Prompt, View};
 use crate::report_cmd::ScrubCtx;
@@ -25,49 +26,51 @@ fn context_tokens(entries: &[Entry]) -> Option<u32> {
     })
 }
 
-/// The header strip's session switcher: the bound session as one popover line, never a
-/// section above the transcript. Switching sessions is a user setting, not a request.
-fn popover(html: &mut String, owner: Option<&super::OwnerChatView<'_>>, now: u64) {
-    html.push_str("<details class=sessions><summary>Lead");
-    if let Some(entries) = owner.and_then(|owner| owner.entries) {
-        let working = entries
-            .last()
-            .is_some_and(|entry| entry.ts_ms / 1000 + session::RUNNING > now);
-        let _ = write!(
-            html,
-            "<span class=chip>{}</span>",
-            if working { "running" } else { "idle" }
-        );
-        if let Some(tokens) = context_tokens(entries) {
-            let _ = write!(html, "<span class=\"num muted\">{tokens} tokens</span>");
-        }
-    }
-    html.push_str("</summary><div class=sheet>");
-    match owner {
-        Some(owner) if owner.entries.is_some() => html
-            .push_str("<p>The selected Lead Session. Choose another in <code>oxa.lead.sessionId</code>.</p>"),
-        Some(_) => html.push_str("<p>The selected Lead Session's entries could not be read.</p>"),
-        None => html.push_str(
-            "<p>Owner chat is off: enable <code>oxa.lead.serve.owner_chat</code> to message lead.</p>",
-        ),
-    }
-    html.push_str("</div></details>");
-}
-
-/// The owner goal's recorded state as a header chip. The goal's detail page belongs to a
-/// later slice, so the chip states the state rather than linking to a page that is not
-/// there yet.
-fn goal_chip(html: &mut String, view: &View<'_>) {
-    match view.owner_goal {
-        Some((goal, _)) => {
+/// The header strip: which session the page talks to, its state and tokens, and the owner's
+/// running sessions as one popover. The popover is the switcher; a dedicated Lead chat has
+/// nothing to switch to there, so it says where the choice lives instead.
+fn header(html: &mut String, view: &View<'_>, now: u64) {
+    html.push_str("<div class=chat-head>");
+    if let Some(list) = &view.sessions {
+        session::render_list(html, list, now);
+    } else if let Some(attached) = &view.attached {
+        session::render_attached_status(html, attached);
+    } else {
+        html.push_str("<details class=sessions><summary>Lead");
+        if let Some(entries) = view.owner_chat.as_ref().and_then(|owner| owner.entries) {
+            let working = entries
+                .last()
+                .is_some_and(|entry| entry.ts_ms / 1000 + session::RUNNING > now);
             let _ = write!(
                 html,
-                "<span class=\"chip quiet\">Goal {}</span>",
-                escape(goal.status.as_str())
+                "<span class=chip>{}</span>",
+                if working { "running" } else { "idle" }
             );
+            if let Some(tokens) = context_tokens(entries) {
+                let _ = write!(html, "<span class=\"num muted\">{tokens} tokens</span>");
+            }
         }
-        None => {}
+        html.push_str("</summary><div class=sheet>");
+        match view.owner_chat.as_ref() {
+            Some(owner) if owner.entries.is_some() => html.push_str(
+                "<p>The selected Lead Session. Choose another in <code>oxa.lead.sessionId</code>.</p>",
+            ),
+            Some(_) => html.push_str("<p>The selected Lead Session's entries could not be read.</p>"),
+            None => html.push_str(
+                "<p>Owner chat is off: enable <code>oxa.lead.serve.owner_chat</code> to message lead.</p>",
+            ),
+        }
+        html.push_str("</div></details>");
     }
+    // The goal's detail page belongs to a later slice, so the chip states its state.
+    if let Some((goal, _)) = view.owner_goal {
+        let _ = write!(
+            html,
+            "<span class=\"chip quiet\">Goal {}</span>",
+            escape(goal.status.as_str())
+        );
+    }
+    html.push_str("</div>");
 }
 
 /// The three fixed questions as chips, each a link to its answer at zero tokens.
@@ -153,22 +156,32 @@ fn digest(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("</div><div class=by>0 tokens</div></div>");
 }
 
-/// The composer: the one owner message form, held above the nav over the thread. Its
-/// states are said in words, and a message still posts the same form it always did.
+/// The composer: the one owner message form, held above the nav over the thread. An attached
+/// page names the session it was rendered for, exactly as that form always has; the dedicated
+/// Lead chat posts its message alone.
 fn composer(html: &mut String, view: &View<'_>) {
     html.push_str("<div class=composer2>");
     prompt_chips(html);
-    match view.owner_chat.as_ref() {
-        Some(owner) => {
-            let _ = write!(
-                html,
-                "<form class=send method=post action=/chat><input type=hidden name=csrf value=\"{}\"><label class=sr for=lead-message>Message to lead</label><textarea id=lead-message name=message required rows=1 enterkeyhint=send autocomplete=off placeholder=\"Message lead…\"></textarea><button class=\"btn primary\" aria-label=Send><svg viewBox=\"0 0 24 24\" aria-hidden=true><path d=\"M5 12h13M13 6l6 6-6 6\"/></svg></button></form>",
-                escape(owner.csrf)
+    let (csrf, session_id) = match (&view.owner_chat, &view.attached) {
+        (Some(owner), _) => (owner.csrf, None),
+        (None, Some(attached)) => (attached.csrf, Some(attached.id.as_str())),
+        (None, None) => {
+            html.push_str(
+                "<p class=muted>Chat is off: enable <code>oxa.lead.serve.owner_chat</code> to message lead.</p></div>",
             );
+            return;
         }
-        None => html.push_str(
-            "<p class=muted>Chat is off: enable <code>oxa.lead.serve.owner_chat</code> to message lead.</p>",
-        ),
+    };
+    let session = session_id.map_or_else(String::new, |id| {
+        format!("<input type=hidden name=session value=\"{}\">", escape(id))
+    });
+    let _ = write!(
+        html,
+        "<form class=send method=post action=/chat><input type=hidden name=csrf value=\"{}\">{session}<label class=sr for=lead-message>Message to lead</label><textarea id=lead-message name=message required rows=1 enterkeyhint=send autocomplete=off placeholder=\"Message lead…\"></textarea><button class=\"btn primary\" aria-label=Send><svg viewBox=\"0 0 24 24\" aria-hidden=true><path d=\"M5 12h13M13 6l6 6-6 6\"/></svg></button></form>",
+        escape(csrf)
+    );
+    if view.attached.as_ref().is_some_and(|attached| attached.sent) {
+        html.push_str("<p class=sent role=status>Sent. The session reads it at its next turn.</p>");
     }
     html.push_str("</div>");
 }
@@ -176,13 +189,19 @@ fn composer(html: &mut String, view: &View<'_>) {
 fn thread(html: &mut String, view: &View<'_>, prompt: Prompt, before: Option<[u8; 8]>, now: u64) {
     let ctx = ScrubCtx::default();
     html.push_str("<div class=thread role=log aria-label=\"Conversation with lead\">");
-    let owner = view.owner_chat.as_ref();
-    let rows: Vec<Item> = owner
-        .and_then(|owner| owner.entries)
-        .map(|entries| session::items(entries, &ctx))
-        .unwrap_or_default();
+    let rows: Vec<Item> = match (&view.owner_chat, &view.attached) {
+        (Some(owner), _) => owner
+            .entries
+            .map(|entries| session::thread_items(entries, &ctx))
+            .unwrap_or_default(),
+        (None, Some(attached)) => {
+            let skip = attached.entries.len().saturating_sub(session::SHOWN_ENTRIES);
+            session::thread_items(&attached.entries[skip..], &ctx)
+        }
+        (None, None) => Vec::new(),
+    };
     let bound = before.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-    let (page, older) = session::page(rows, bound.as_deref());
+    let (page, older) = session::thread_page(rows, bound.as_deref());
     if older {
         if let Some(first) = page.first() {
             let _ = write!(
@@ -195,24 +214,27 @@ fn thread(html: &mut String, view: &View<'_>, prompt: Prompt, before: Option<[u8
     if page.is_empty() {
         digest(html, view, now);
     } else {
+        let owner = view.owner_chat.as_ref();
         let action: Option<(&str, &super::OwnerChatView<'_>)> =
             owner.and_then(|owner| owner.proposal.map(|proposal| (proposal.0.as_str(), owner)));
-        session::render(html, &page, owner.and_then(|owner| owner.reply), action, now);
+        session::render_thread(html, &page, owner.and_then(|owner| owner.reply), action, now);
     }
     snapshot_bubble(html, view, prompt, now);
     html.push_str("</div>");
 }
 
-/// The whole page: header strip, thread, sticky composer. `before` opens an older page
-/// of the same session; anything else about the request is ignored, as before.
+/// The whole page: header strip, thread, sticky composer. `before` opens an older page of
+/// the same session; anything else about the request is ignored, as before.
 pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt, before: Option<[u8; 8]>, now: u64) {
     html.push_str("<div class=chat>");
-    html.push_str("<div class=chat-head>");
-    popover(html, view.owner_chat.as_ref(), now);
-    goal_chip(html, view);
-    html.push_str("</div>");
+    header(html, view, now);
     fixed_form(html, view);
     thread(html, view, prompt, before, now);
     composer(html, view);
+    if view.sessions.is_some() && view.attached.is_none() && view.owner_chat.is_none() {
+        html.push_str(
+            "<p class=muted>No session is attached. Choose a running session above to view it and send messages.</p>",
+        );
+    }
     html.push_str("</div>");
 }

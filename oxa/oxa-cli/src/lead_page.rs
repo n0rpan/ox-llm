@@ -34,6 +34,16 @@ pub struct Alarms {
     pub overdue_queue: Option<Vec<PullRequest>>,
 }
 
+impl Alarms {
+    /// The single rule for a queue-age alarm: the alarm intersected with queue
+    /// membership at the exact (number, head). `None` when either source is
+    /// unobserved, so neither the page nor the loop can act on half a record.
+    pub fn overdue_in_queue(&self) -> Option<Vec<&PullRequest>> {
+        let (queue, overdue) = (self.queue.as_deref()?, self.overdue_queue.as_deref()?);
+        Some(queue.iter().filter(|pr| overdue.contains(pr)).collect())
+    }
+}
+
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
 #[derive(Default)]
 pub struct View<'a> {
@@ -45,6 +55,11 @@ pub struct View<'a> {
     pub owner_goal: Option<(&'a oxa_session::Goal, oxa_core::goal::GoalObservation<'a>)>,
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
+    /// The Lead session's workers from its registry and their status files. An error is
+    /// an explicit state: no workers recorded, or a registry that was refused.
+    pub workers: Option<&'a Result<Vec<crate::workers::tool::Binding>, crate::workers::tool::BindingsError>>,
+    /// Optional GitHub work the owner's App reserve deferred in the latest sample.
+    pub quota_deferred: &'a [oxa_work::shadow::Deferral],
     /// Open owner asks read live from the authorized durable Lead Session, with
     /// their original revisions. Distinct from the runner situation: an absent
     /// runner source never hides these, and vice versa.
@@ -66,6 +81,45 @@ pub struct View<'a> {
     pub approvals: Option<&'a [oxa_perm::ApprovalRecord]>,
     /// The owner form credential for answering approvals; present only with owner chat.
     pub approval_csrf: Option<&'a str>,
+    /// The running owner session this chat page is attached to (#2075); replaces the Lead chat.
+    pub attached: Option<AttachedView<'a>>,
+    /// The owner's running sessions to choose from, on the chat page only (#1469).
+    pub sessions: Option<SessionListView<'a>>,
+}
+
+/// The sessions of this user that are running now, as the owner's chat page lists them.
+pub struct SessionListView<'a> {
+    pub csrf: &'a str,
+    pub rows: &'a [SessionRow],
+    /// Label of the button that returns to the start-up target, when the page is not on it.
+    pub back: Option<&'static str>,
+}
+
+pub struct SessionRow {
+    pub id: String,
+    /// The project directory's basename only.
+    pub cwd_name: String,
+    pub modified_ms: u64,
+    pub attached: bool,
+}
+
+/// The attached session as the page shows it: the newest part of its transcript, whether it is
+/// running, and the owner form credential for sending through its inbox.
+pub struct AttachedView<'a> {
+    pub csrf: &'a str,
+    pub entries: &'a [oxa_proto::Entry],
+    /// Older history exists in the session file but is not shown.
+    pub truncated: bool,
+    pub live: bool,
+    pub short_id: String,
+    /// The full id the message form names, so a stale page cannot send to another session.
+    pub id: String,
+    /// A message was accepted since the last render.
+    pub sent: bool,
+    /// `working` or `idle`, from the newest message; only meaningful while running.
+    pub activity: Option<&'static str>,
+    /// Prompt tokens of the newest request with recorded usage.
+    pub context_tokens: Option<u32>,
 }
 
 pub struct OwnerChatView<'a> {
@@ -73,9 +127,9 @@ pub struct OwnerChatView<'a> {
     pub(crate) reply: Option<&'a crate::lead_chat::conversation::ConversationReply>,
     pub proposal: Option<&'a (String, serde_json::Value)>,
     pub confirmed: bool,
-    /// The bound Lead Session's recent entries, read without its writer lock. The
-    /// thread is rendered from this one source, deduplicated by entry id. No entry
-    /// means none reached this page, which is said rather than shown as an empty chat.
+    /// The bound Lead Session's entries, read without its writer lock (#2349). The thread is
+    /// rendered from this source. `None` means the reading was refused or absent, which the
+    /// page says; an empty slice is an empty session.
     pub entries: Option<&'a [oxa_proto::Entry]>,
 }
 
@@ -249,14 +303,7 @@ fn attention(html: &mut String, view: &View<'_>) {
     let alarms = view.alarms;
     // The queue-age alarm binds each PR to its exact observed head: membership
     // and landing age must come from the same protected record.
-    let overdue: Vec<&PullRequest> = alarms
-        .and_then(|a| match (a.queue.as_deref(), a.overdue_queue.as_deref()) {
-            (Some(queue), Some(overdue)) => {
-                Some(queue.iter().filter(|pr| overdue.contains(pr)).collect::<Vec<_>>())
-            }
-            _ => None,
-        })
-        .unwrap_or_default();
+    let overdue: Vec<&PullRequest> = alarms.and_then(Alarms::overdue_in_queue).unwrap_or_default();
     let main_red = alarms.and_then(|a| a.main_red);
     let merge_stalled = alarms.and_then(|a| a.main_merge_stalled);
     let stalled_runs = alarms.and_then(|a| a.stalled_runs.as_deref());
@@ -481,8 +528,51 @@ fn usage(html: &mut String, view: &View<'_>) {
     html.push_str("</section>");
 }
 
+/// One live worker row: name, lane, model, state and how old its status is.
+fn binding_row(html: &mut String, binding: &crate::workers::tool::Binding) {
+    use crate::workers::registry::WorkerState;
+    let state = match &binding.state {
+        WorkerState::Starting => "Starting".to_owned(),
+        WorkerState::Working => "Working".to_owned(),
+        WorkerState::Idle => "Idle".to_owned(),
+        WorkerState::Finished(outcome) => format!("Finished ({outcome})"),
+        WorkerState::Dead => "Dead: its process is gone".to_owned(),
+        WorkerState::Stopped => "Stopped".to_owned(),
+    };
+    let active = matches!(
+        binding.state,
+        WorkerState::Starting | WorkerState::Working | WorkerState::Idle
+    );
+    let age = match binding.status_age_secs {
+        Some(age) if active && age > 300 => format!(" · status stale ({age} s old)"),
+        Some(age) => format!(" · status {age} s old"),
+        None => " · no status file".to_owned(),
+    };
+    let _ = write!(
+        html,
+        "<article><b>{}</b><p>{} · {} · {}{}</p></article>",
+        escape(&binding.name),
+        escape(&binding.branch),
+        escape(&binding.model),
+        escape(&state),
+        age
+    );
+}
+
 fn workers(html: &mut String, view: &View<'_>, now: u64) {
+    use crate::workers::tool::BindingsError;
     html.push_str("<section id=lanes><h2>Workers</h2>");
+    let live = matches!(view.workers, Some(Ok(_)));
+    match view.workers {
+        Some(Ok(bindings)) => {
+            html.push_str("<p class=muted>Live workers of the Lead session</p>");
+            bindings.iter().for_each(|binding| binding_row(html, binding));
+        }
+        Some(Err(BindingsError::Refused)) => html.push_str(
+            "<p>Live workers refused: the worker registry is unreadable or corrupt. It was left untouched.</p>",
+        ),
+        Some(Err(BindingsError::Absent)) | None => {}
+    }
     if let Some(s) = view.situation {
         let _ = write!(
             html,
@@ -527,7 +617,7 @@ fn workers(html: &mut String, view: &View<'_>, now: u64) {
                 }
             }
         }
-    } else {
+    } else if !live && !matches!(view.workers, Some(Err(BindingsError::Refused))) {
         html.push_str("<p>Lane status unavailable. No runner observation reached this page, so workers and their state cannot be shown; the source did not say why.</p>");
     }
     html.push_str("</section>");
@@ -733,16 +823,6 @@ mod tests {
             Page::Item(17),
             Page::Chat(Prompt::Status, None),
         ] {
-            if matches!(page, Page::Chat(..)) {
-                // The chat page's times come from its thread entries, never from a
-                // snapshot age; the thread test asserts them with its fixture session.
-                let html = document_for(page, &view, 100);
-                assert!(
-                    html.contains("chat-head") && !html.contains("1970-01-01"),
-                    "{page:?}"
-                );
-                continue;
-            }
             let html = document_for(page, &view, 100);
             assert!(html.contains("01:00 CET"), "{page:?}");
             assert!(
@@ -760,9 +840,10 @@ mod tests {
             let html = document_for(page, &view, 100);
             if matches!(page, Page::Chat(..)) {
                 // The chat page carries the goal as a header chip, not as the goal section.
-                let offered = html.contains("class=\"chip quiet\">Goal pursuing</span>");
-                let absent = html.contains("Owner goal");
-                assert!(offered || absent, "{html}");
+                assert!(
+                    html.contains("class=\"chip quiet\">Goal pursuing</span>"),
+                    "{html}"
+                );
                 continue;
             }
             let section = owner_goal_section(&html);
@@ -1618,7 +1699,7 @@ return true;
         // never the private ids a session carries.
         assert!(!html.contains("private-session-source") && !html.contains("private-entry-source"));
         assert!(!html.contains(&reference.id));
-        for invented in ["not connected yet", "Could not read", "No answer"] {
+        for invented in ["not connected yet", "No answer"] {
             assert!(!html.contains(invented), "{invented}: {html}");
         }
         // Without owner chat the composer says why in words, and no message form exists.
@@ -1628,6 +1709,44 @@ return true;
         });
         assert!(off.contains("Chat is off: enable <code>oxa.lead.serve.owner_chat</code>"));
         assert!(!off.contains("name=message"));
+        // The attached session keeps its own form, naming the session it was rendered for.
+        let attached_entries = [oxa_proto::Entry {
+            id: "a1b2c3d4".into(),
+            parent: None,
+            ts_ms: (now - 30) * 1000,
+            body: oxa_proto::EntryBody::Msg {
+                wire: oxa_proto::WireMsg::user("Hello from the attached fixture"),
+                parts: Vec::new(),
+                tool: None,
+            },
+        }];
+        let attached = read(&View {
+            attached: Some(super::AttachedView {
+                csrf: "attached-csrf",
+                entries: &attached_entries,
+                truncated: false,
+                live: true,
+                short_id: "a1b2c3d4".into(),
+                id: "a1b2c3d4-full".into(),
+                sent: true,
+                activity: Some("working"),
+                context_tokens: Some(900),
+            }),
+            ..Default::default()
+        });
+        assert!(attached.contains("Hello from the attached fixture"), "{attached}");
+        assert!(
+            attached.contains("name=session value=\"a1b2c3d4-full\""),
+            "{attached}"
+        );
+        assert!(
+            attached.contains("name=csrf value=\"attached-csrf\""),
+            "{attached}"
+        );
+        assert!(
+            attached.contains("Sent. The session reads it at its next turn."),
+            "{attached}"
+        );
         // An empty session opens with the snapshot digest; none of it is a model call.
         let empty: Vec<oxa_proto::Entry> = Vec::new();
         let digest = read(&View {
@@ -2119,6 +2238,47 @@ return true;
             assert!(!render_at(&payload, MERGED + 45 * 60), "{field}");
         }
     }
+    #[test]
+    fn live_worker_rows_render_and_each_unavailable_state_is_explicit() {
+        use crate::workers::{
+            registry::WorkerState,
+            tool::{Binding, BindingsError},
+        };
+        let binding = |name: &str, state, age| Binding {
+            name: name.into(),
+            branch: format!("agent/{name}"),
+            model: "provider/model".into(),
+            state,
+            started_ms: 0,
+            status_age_secs: age,
+        };
+        let found: Result<Vec<Binding>, BindingsError> = Ok(vec![
+            binding("alive", WorkerState::Working, Some(5)),
+            binding("gone", WorkerState::Dead, None),
+            binding("slow", WorkerState::Idle, Some(900)),
+        ]);
+        let page = |workers| {
+            document_for(
+                Page::Workers,
+                &View {
+                    workers,
+                    ..Default::default()
+                },
+                100,
+            )
+        };
+        let html = page(Some(&found));
+        assert!(html.contains("agent/alive") && html.contains("Working"));
+        assert!(html.contains("Dead: its process is gone"));
+        assert!(html.contains("status stale (900 s old)"));
+        assert!(!html.contains("Lane status unavailable"));
+        let refused = Err(BindingsError::Refused);
+        assert!(page(Some(&refused)).contains("Live workers refused"));
+        let absent = Err(BindingsError::Absent);
+        assert!(page(Some(&absent)).contains("Lane status unavailable"));
+        assert!(page(None).contains("Lane status unavailable"));
+    }
+
     #[test]
     fn workers_put_reported_stalls_first_and_keep_observation_order_within_groups() {
         use oxa_proto::work::{Event, Fact, Incident};

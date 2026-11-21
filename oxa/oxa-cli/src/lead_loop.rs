@@ -2,9 +2,13 @@
 //! A stuck-work signal is never a silent wait: every pass acts on it, by recording
 //! an assignment in its report or by escalating an ask to the owner, before the
 //! loop waits again (#1451, #1575).
-use crate::{lead_input, lead_page, LeadOwnerBinding};
+use crate::{lead_observation::Observation, LeadOwnerBinding};
 use oxa_config::{Dirs, Env};
-use oxa_proto::{codes, work::Snapshot, OxaError, Value};
+use oxa_proto::{
+    codes,
+    work::{LocalAcceptance, PullRequest},
+    OxaError, Value,
+};
 use oxa_session::{Goal, GoalStatus, OpenGoalAsk, SessionStore};
 use oxa_work::board::{Action, Board, Entry};
 use std::{collections::BTreeSet, fs, io::Write, os::unix::fs::MetadataExt, path::Path, time::Duration};
@@ -111,6 +115,8 @@ fn idle_worker(board: &Board, now: u64) -> Option<String> {
 /// asks stays the caller's job against the goal store's revision.
 #[derive(Default)]
 struct Stuck {
+    /// Workers whose process is gone or stopped: never an assignee.
+    gone: BTreeSet<String>,
     signals: Vec<String>,
     report: Vec<Value>,
     escalations: Vec<OpenGoalAsk>,
@@ -121,11 +127,25 @@ impl Stuck {
         self.signals.is_empty()
     }
 
+    /// A candidate whose binding is Dead or Stopped is not an owner: the signal says so and
+    /// the row gets none, so the existing no-worker escalation fires (#1382).
+    fn live_assignee(&mut self, candidate: Option<String>) -> Option<String> {
+        let name = candidate?;
+        if !self.gone.contains(&name) {
+            return Some(name);
+        }
+        let signal = format!("worker_gone:{name}");
+        if !self.signals.contains(&signal) {
+            self.signals.push(signal);
+        }
+        None
+    }
+
     /// An idle worker takes a red main when one exists; otherwise the owner is
     /// the assignee of last resort and the pass escalates (#1451).
     fn main_red(&mut self, board: &Board, revision: u64, now: u64) {
         self.signals.push("main_red".into());
-        match idle_worker(board, now) {
+        match self.live_assignee(idle_worker(board, now)) {
             Some(worker) => self.report.push(serde_json::json!({
                 "subject": "main",
                 "reason": "required checks on main failed",
@@ -155,7 +175,7 @@ impl Stuck {
             .collect();
         for entry in blocking {
             let assignee = if entry.action == Action::FixRequiredCi {
-                match assignee(board, entry, now) {
+                match self.live_assignee(assignee(board, entry, now)) {
                     Some(worker) => Some(worker),
                     None => {
                         self.escalations.push(OpenGoalAsk {
@@ -182,7 +202,7 @@ impl Stuck {
 
     /// A PR that has waited too long in the merge queue is the runner's to
     /// advance or dequeue: the loop escalates it, it never assumes a cause.
-    fn overdue_queue(&mut self, overdue: &[oxa_proto::work::PullRequest], revision: u64) {
+    fn overdue_queue(&mut self, overdue: &[&PullRequest], revision: u64) {
         for pr in overdue {
             self.signals.push(format!("overdue_queue:{}", pr.number));
             self.escalations.push(OpenGoalAsk {
@@ -216,17 +236,9 @@ impl Stuck {
 
     /// A worker's locally accepted commit has no publication: the loop cannot
     /// push, so it escalates at once instead of logging and waiting (#1575).
-    fn publish_pending(&mut self, situation: &Snapshot, revision: u64) {
-        let published: BTreeSet<&str> = situation
-            .published
-            .iter()
-            .map(|publication| publication.task.as_str())
-            .collect();
+    fn publish_pending(&mut self, unpublished: &[&LocalAcceptance], revision: u64) {
         let mut pending: BTreeSet<&str> = BTreeSet::new();
-        for acceptance in &situation.local_accepted {
-            if published.contains(acceptance.task.as_str()) {
-                continue;
-            }
+        for acceptance in unpublished {
             let task = acceptance.task.as_str();
             if pending.insert(task) {
                 self.signals.push(format!("publish_pending:{task}"));
@@ -234,10 +246,82 @@ impl Stuck {
                     id: format!("lead:stuck:publish:{task}"),
                     revision,
                     question: format!(
-                        "Task {task} has a locally accepted commit with no publication. Push its branch or stop the worker."
+                        "Task {task} has a locally accepted commit with no matching PR receipt. Ask the worker that owns publication to finish the handoff, or route it to the authorized runner if the worker does not own GitHub access."
                     ),
                 });
             }
+        }
+    }
+
+    /// The reviewer refused the configured requester account: nothing is re-sent under
+    /// that identity, so the owner must connect an account or change the requester.
+    fn review_rejected(&mut self, rejected: &[u64], revision: u64) {
+        for number in rejected {
+            self.signals.push(format!("review_rejected:{number}"));
+            self.escalations.push(OpenGoalAsk {
+                id: format!("lead:stuck:review-identity:{number}"),
+                revision,
+                question: format!(
+                    "The reviewer refused the review requester for PR #{number}; set the review policy requester to an account connected to the reviewer."
+                ),
+            });
+        }
+    }
+
+    /// PRs held by unresolved review threads, queued ones first and then the
+    /// oldest thread first, within the report bound. A cut-off thread page is
+    /// reported as incomplete, never as zero (#1549). A held PR that is queued
+    /// at its exact head is also escalated: it is the owner's to dequeue, and
+    /// the signal ending on a later pass is the recorded outcome (#1673).
+    fn review_held(&mut self, obs: &Observation, revision: u64) {
+        // Outdated-only threads do not hold landing (the landing plan holds on
+        // `current > 0`); an incomplete page stays reported, never as zero.
+        let mut held = obs.thread_holds();
+        held.retain(|h| h.hold.current > 0 || h.hold.incomplete);
+        if held.is_empty() {
+            return;
+        }
+        held.sort_by_key(|h| {
+            let at = if h.hold.oldest_at == 0 {
+                u64::MAX
+            } else {
+                h.hold.oldest_at
+            };
+            (!h.queued, at, h.number)
+        });
+        self.signals.push("review_held".into());
+        let (now, budget) = (obs.now_ms / 1000, REPORT_ROWS.saturating_sub(self.report.len()));
+        for h in held.iter().take(budget) {
+            let candidate = obs
+                .board
+                .entries
+                .iter()
+                .find(|entry| entry.number == h.number)
+                .and_then(|entry| assignee(&obs.board, entry, now));
+            let owner = self.live_assignee(candidate);
+            self.report.push(serde_json::json!({
+                "pr": h.number,
+                "head": h.head,
+                "reason": "unresolved review threads",
+                "held": true,
+                "threads": h.hold.unresolved,
+                "current": h.hold.current,
+                "oldest_thread_age_secs": (h.hold.oldest_at > 0).then(|| now.saturating_sub(h.hold.oldest_at)),
+                "thread_authors": h.hold.authors,
+                "incomplete": h.hold.incomplete,
+                "assignee": owner,
+            }));
+        }
+        for h in held.iter().filter(|h| h.queued && h.hold.current > 0) {
+            self.signals.push(format!("queued_findings:{}", h.number));
+            self.escalations.push(OpenGoalAsk {
+                id: format!("lead:stuck:queued-findings:{}", h.number),
+                revision,
+                question: format!(
+                    "PR #{} is in the merge queue at {} with {} current unresolved review threads. Dequeue it so the findings are addressed.",
+                    h.number, h.head, h.hold.current
+                ),
+            });
         }
     }
 }
@@ -246,51 +330,34 @@ impl Stuck {
 /// alarm sources produce no signal: the loop never invents a stall, and a stale
 /// record never manufactures an escalation. A standing ask is its own action, so
 /// it is reported through `asks` and never re-escalated here.
-fn stuck_signals(
-    fresh: bool,
-    board: &Board,
-    alarms: &lead_page::Alarms,
-    situation: Option<&Snapshot>,
-    revision: u64,
-    now_ms: u64,
-) -> Stuck {
-    let mut stuck = Stuck::default();
-    if fresh {
+fn stuck_signals(obs: &Observation, revision: u64) -> Stuck {
+    let mut stuck = Stuck {
+        gone: obs.gone_workers().into_iter().map(str::to_owned).collect(),
+        ..Stuck::default()
+    };
+    if obs.fresh() {
+        let (board, alarms, now) = (&obs.board, &obs.alarms, obs.now_ms / 1000);
         if alarms.main_red == Some(true) {
-            stuck.main_red(board, revision, now_ms / 1000);
+            stuck.main_red(board, revision, now);
         }
         if alarms.main_merge_stalled == Some(true) {
-            stuck.merge_stalled(board, revision, now_ms / 1000);
+            stuck.merge_stalled(board, revision, now);
         }
-        if let Some(overdue) = alarms
-            .overdue_queue
-            .as_ref()
-            .filter(|overdue| !overdue.is_empty())
-        {
-            stuck.overdue_queue(overdue, revision);
+        if let Some(overdue) = obs.overdue_in_queue().filter(|overdue| !overdue.is_empty()) {
+            stuck.overdue_queue(&overdue, revision);
         }
         if let Some(runs) = alarms.stalled_runs.as_ref().filter(|runs| !runs.is_empty()) {
             stuck.queued_runs(runs, revision);
         }
+        stuck.review_held(obs, revision);
+        stuck.review_rejected(&obs.review_rejected, revision);
     }
-    // The runner situation keeps its own freshness window: a stale situation
-    // never claims a worker is stuck.
-    if let Some(situation) = situation
-        .filter(|s| s.at_ms <= now_ms.saturating_add(60_000) && now_ms.saturating_sub(s.at_ms) <= 900_000)
-    {
-        stuck.publish_pending(situation, revision);
-    }
+    stuck.publish_pending(&obs.unpublished(), revision);
     stuck
 }
 
-fn tick(
-    binding: &LeadOwnerBinding,
-    board: &Board,
-    alarms: &lead_page::Alarms,
-    situation: Option<&Snapshot>,
-    now_ms: u64,
-) -> Result<Value, OxaError> {
-    let fresh = !lead_page::stale(board, now_ms / 1000);
+fn tick(binding: &LeadOwnerBinding, obs: &Observation) -> Result<Value, OxaError> {
+    let (board, now_ms, fresh) = (&obs.board, obs.now_ms, obs.fresh());
     binding.with_goal_store(|store, session| {
         let entries = store.load(session)?;
         let revision = Goal::revision(&entries);
@@ -311,8 +378,28 @@ fn tick(
         let next = entries.len() as u64 + 1;
         // Stuck work outranks a new proposal: every signal is acted on in this
         // pass, by assignment or escalation, before the loop waits again (#1575).
-        let stuck = stuck_signals(fresh, board, alarms, situation, next, now_ms);
-        if !stuck.empty() {
+        let stuck = stuck_signals(obs, next);
+        // Signals with neither a report row that has an owner nor an escalation
+        // (a stall whose only rows are ready PRs) leave the pass free to propose
+        // the next Board action instead of ending in a silent assignment (#2088).
+        // A review_held row is information, not an assignment: it never ends the
+        // pass, or the proposal loop starves on the normal lab state.
+        let acted = !stuck.escalations.is_empty()
+            || stuck
+                .report
+                .iter()
+                .any(|row| row["held"] != true && row["assignee"].is_string());
+        let attach = |mut value: Value| {
+            if !stuck.empty() {
+                value["stuck"] = serde_json::json!({
+                    "signals": stuck.signals,
+                    "report": stuck.report,
+                    "escalated": Vec::<String>::new(),
+                });
+            }
+            value
+        };
+        if acted {
             let open: BTreeSet<String> = goal
                 .lead
                 .as_ref()
@@ -357,7 +444,7 @@ fn tick(
         if goal.lead.as_ref().is_some_and(|lead| !lead.open_asks.is_empty()) {
             // An earlier process may have appended and stopped before it could sync.
             store.sync(session)?;
-            return Ok(view(Some(&goal), revision, "awaiting_owner", false));
+            return Ok(attach(view(Some(&goal), revision, "awaiting_owner", false)));
         }
         let ask = fresh.then(|| proposal(board, next)).flatten();
         let has_ask = ask.is_some();
@@ -374,7 +461,7 @@ fn tick(
             (true, false) => "no_eligible_action",
             (false, false) => "board_unavailable",
         };
-        Ok(view(Some(&goal), revision, status, false))
+        Ok(attach(view(Some(&goal), revision, status, false)))
     })
 }
 
@@ -442,19 +529,12 @@ pub(crate) fn run(
     let mut previous = None;
     loop {
         let (binding, uid) = binding(dirs, cwd, env)?;
-        let (board, alarms, cause) = match lead_input::sample(board_path, uid) {
-            Ok(sample) => (sample.board, sample.alarms, None),
-            // The default board keeps held asks and the stale policy; only a
-            // fixed allowlisted cause and its hint reach operator status.
-            Err(error) => (
-                Board::default(),
-                lead_page::Alarms::default(),
-                Some(lead_input::board_cause(error)),
-            ),
-        };
-        let situation = situation_path.and_then(|path| lead_input::situation(path, uid).ok());
-        let now_ms = oxa_proto::time::now_ms();
-        let mut state = match tick(&binding, &board, &alarms, situation.as_ref(), now_ms) {
+        let obs = Observation::read(board_path, situation_path, uid, oxa_proto::time::now_ms()).with_workers(
+            &dirs.agent_dir,
+            &dirs.sessions_dir,
+            binding.session_id(),
+        );
+        let mut state = match tick(&binding, &obs) {
             Ok(state) => state,
             Err(error) if !once && error.code == codes::BUSY => {
                 std::thread::sleep(INTERVAL);
@@ -462,12 +542,16 @@ pub(crate) fn run(
             }
             Err(error) => return Err(error),
         };
-        if let Some(cause) = cause {
+        if let Some(cause) = obs.cause {
             state["cause"] = cause.text().into();
             state["hint"] = cause.hint().into();
         }
-        if !lead_page::stale(&board, now_ms / 1000) {
-            state["board_observed_at"] = board.observed_at.into();
+        if !obs.quota_deferred.is_empty() {
+            // Say why a source is absent: the owner's App reserve deferred it.
+            state["quota_deferred"] = serde_json::to_value(&obs.quota_deferred).unwrap_or_default();
+        }
+        if obs.fresh() {
+            state["board_observed_at"] = obs.board.observed_at.into();
         }
         if previous.as_ref() != Some(&state) {
             write(out, &state)?;

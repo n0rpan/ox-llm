@@ -10,6 +10,7 @@ pub(super) fn run(
     common: &Path,
     env: &oxa_config::Env,
     dirs: &oxa_config::Dirs,
+    err: &mut dyn Write,
 ) -> Result<i32, String> {
     let [mode, flag, config] = args else {
         return Err("usage: oxa work board --claims-readback --config PATH".into());
@@ -17,7 +18,7 @@ pub(super) fn run(
     if mode != "--claims-readback" || flag != "--config" {
         return Err("invalid Claims readback options".into());
     }
-    let (value, _, _) = refill::configuration(Path::new(config), root, env, dirs)?;
+    let (value, _, _) = refill::configuration(Path::new(config), root, env, dirs, err)?;
     let path = Path::new(text(&value, "claims")?);
     crate::work_cmd::protected_storage(path, root, common)?;
     let claims = Claims::open(path)?;

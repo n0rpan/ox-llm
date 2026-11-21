@@ -1,7 +1,8 @@
 //! Explicitly opted-in, read-only GitHub sampling. Never invokes a worker or mutation.
-use crate::lead_quota::{GitHubIdentity, GitHubQuotas, GitHubResource};
+use crate::lead_quota::{Admission, GitHubIdentity, GitHubQuotas, GitHubResource};
 pub mod refill_input;
 use oxa_work::board::{Board, GitHub, Incomplete, Mergeability, Policy, PullRequest, RequiredCi, Snapshot};
+use oxa_work::shadow::Deferral;
 use serde_json::Value;
 mod claims_readback;
 mod refill;
@@ -44,7 +45,17 @@ pub(crate) struct Reader<'a> {
     deadline: Cell<Instant>,
     bytes: Cell<usize>,
     app_quota: Option<RefCell<GitHubQuotas>>,
+    /// Requests kept back per App resource for required work (`oxa.lead.github_reserve`).
+    /// Unset: no gate.
+    reserve: Option<u64>,
+    /// The optional work in progress; its reads are admitted against the reserve.
+    optional: Cell<Option<&'static str>>,
+    probed: Cell<bool>,
+    deferred: RefCell<Vec<Deferral>>,
 }
+
+/// The message of a read the reserve deferred; callers treat it as a recorded skip.
+const DEFERRED: &str = "GitHub read deferred by the App reserve";
 
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 const LIST: &str = "pullRequests(first:100,states:OPEN){totalCount pageInfo{hasNextPage endCursor} nodes{number headRefOid}}";
@@ -148,6 +159,77 @@ impl<'a> Reader<'a> {
             deadline: Cell::new(Instant::now() + Duration::from_secs(120)),
             bytes: Cell::new(0),
             app_quota: None,
+            reserve: None,
+            optional: Cell::new(None),
+            probed: Cell::new(false),
+            deferred: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Run optional work: its reads proceed only while the App window stays above
+    /// the owner's reserve. Required reads never pass through here.
+    fn optional<T>(&mut self, work: &'static str, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.optional.set(Some(work));
+        let result = f(self);
+        self.optional.set(None);
+        result
+    }
+
+    /// The one admission point of both transports, called before a request is
+    /// launched or charged: a deferred read changes neither the request count nor
+    /// the byte budget. Windows come from one free `rate_limit` read per sample.
+    fn admit(&self, resource: GitHubResource) -> Result<(), QueryError> {
+        let (Some(reserve), Some(work), Some(quota)) = (self.reserve, self.optional.get(), &self.app_quota)
+        else {
+            return Ok(());
+        };
+        if !self.probed.replace(true) {
+            self.probe_rate_limit();
+        }
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        let (until, awaiting_observation) =
+            match quota
+                .borrow()
+                .admit(GitHubIdentity::App, resource, now, 1, Some(reserve))
+            {
+                Admission::Proceed => return Ok(()),
+                Admission::AwaitObservation => (None, true),
+                Admission::WaitUntil(reset) => (Some(reset), false),
+            };
+        let resource = match resource {
+            GitHubResource::Core => "core",
+            GitHubResource::Graphql => "graphql",
+        };
+        let mut deferred = self.deferred.borrow_mut();
+        if !deferred.iter().any(|d| d.work == work && d.resource == resource) {
+            eprintln!("oxa work: {work} deferred: the {resource} App reserve is held back");
+            deferred.push(Deferral {
+                work: work.into(),
+                resource: resource.into(),
+                until,
+                awaiting_observation,
+            });
+        }
+        Err(QueryError::Other(DEFERRED))
+    }
+
+    /// GitHub does not charge `rate_limit`. A failed read leaves the windows as the
+    /// response headers observed them, so optional work is deferred, never guessed.
+    fn probe_rate_limit(&self) {
+        let (Some(quota), Ok((remaining, duration))) = (&self.app_quota, self.read_budget()) else {
+            return;
+        };
+        let mut command = self.api_command();
+        command.arg("rate_limit");
+        let Some((0, text)) = oxa_work::command_runner(command, Some(remaining), duration) else {
+            return;
+        };
+        if let Ok(response) = serde_json::from_str::<Value>(&text) {
+            quota
+                .borrow_mut()
+                .observe_rate_limit(GitHubIdentity::App, &response);
         }
     }
 
@@ -227,6 +309,7 @@ impl<'a> Reader<'a> {
     }
 
     fn query_once(&self, fields: &str) -> Result<(Value, usize), QueryError> {
+        self.admit(GitHubResource::Graphql)?;
         let invalid = QueryError::Other;
         let (owner, name) = self.repo.split_once('/').ok_or(invalid("expected OWNER/REPO"))?;
         let query = format!("query{{repository(owner:{owner:?},name:{name:?}){{{fields}}}}}");
@@ -315,6 +398,7 @@ impl<'a> Reader<'a> {
     }
 
     fn actions_json(&self, path: &str) -> Result<Value, String> {
+        self.admit(GitHubResource::Core).map_err(QueryError::message)?;
         let (remaining, duration) = self.read_budget().map_err(QueryError::message)?;
         let mut command = self.actions_get(path);
         if self.app_quota.is_some() {
@@ -778,12 +862,13 @@ pub(crate) fn run(
     env: &oxa_config::Env,
     dirs: &oxa_config::Dirs,
     policy: &oxa_work::RunPolicy,
+    err: &mut dyn std::io::Write,
 ) -> Result<i32, String> {
     if args.first().is_some_and(|arg| arg == "--claims-readback") {
-        return claims_readback::run(args, root, common, env, dirs);
+        return claims_readback::run(args, root, common, env, dirs, err);
     }
     if args.first().is_some_and(|arg| arg == "--refill") {
-        return refill::run(args, root, common, env, dirs, policy);
+        return refill::run(args, root, common, env, dirs, policy, err);
     }
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
@@ -794,6 +879,7 @@ pub(crate) fn run(
     let (mut queue_evidence, mut landing_shadow, mut quota_shadow) = (false, false, false);
     let mut lead_alarms = false;
     let mut report_file = None;
+    let mut reserve = None;
     let mut options = options.iter();
     while let Some(option) = options.next() {
         match option.as_str() {
@@ -803,6 +889,10 @@ pub(crate) fn run(
             "--landing-shadow" => landing_shadow = true,
             "--app-quota-shadow" => quota_shadow = true,
             "--lead-alarms" => lead_alarms = true,
+            "--app-quota-reserve" if reserve.is_none() => {
+                let value = options.next().ok_or("missing App reserve")?;
+                reserve = Some(value.parse::<u64>().map_err(|_| "invalid App reserve")?);
+            }
             "--queue-report-policy" if report_file.is_none() => {
                 report_file = Some(options.next().ok_or("missing queue report policy file")?);
             }
@@ -815,25 +905,26 @@ pub(crate) fn run(
     if !once && !streamed {
         return Err("continuous sampling requires --token-stdin; use --once with a five-minute token-refresh supervisor otherwise".into());
     }
+    // The owner's reserve: the flag, else the user setting. Unset keeps today's behaviour.
+    let reserve = reserve.or_else(|| {
+        oxa_config::Settings::load(dirs, root, false)
+            .user_value("oxa.lead.github_reserve")
+            .and_then(Value::as_u64)
+    });
+    if reserve.is_some() && !quota_shadow {
+        return Err("the App reserve requires --app-quota-shadow".into());
+    }
     if quota_shadow && !streamed {
         return Err("App quota observations require the protected --token-stdin source".into());
     }
-    if repo.split('/').count() != 2
-        || repo.split('/').any(|p| {
-            p.is_empty()
-                || matches!(p, "." | "..")
-                || !p
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-        })
-    {
+    if !oxa_work::valid_repository(repo) {
         return Err("expected OWNER/REPO".into());
     }
     if policy.offline {
         return Err("GitHub board is unavailable in offline mode".into());
     }
-    if !crate::work_cmd::trusted(root, env, dirs)? {
-        return Err("source project is not trusted".into());
+    if !crate::work_cmd::trusted(root, env, dirs, err)? {
+        return Err(crate::work_cmd::needs_trust(root, "the work board"));
     }
     let review_settings = review_file
         .map(|path| review::Settings::read(Path::new(path)))
@@ -877,6 +968,7 @@ pub(crate) fn run(
             let mut reader = Reader::new(&gh, &policy.host_path, repo, &token);
             if quota_shadow {
                 reader.app_quota = Some(RefCell::new(GitHubQuotas::default()));
+                reader.reserve = reserve;
             }
             reader.review_rows = review_settings.as_ref().map(|_| Value::Null);
             let now = SystemTime::now()
@@ -899,7 +991,12 @@ pub(crate) fn run(
                 Vec::new()
             };
             if let Some(settings) = &mut report_settings {
-                reader.sample_test_reports(&mut queue_rejections, settings)?;
+                match reader.optional("sample_test_reports", |r| {
+                    r.sample_test_reports(&mut queue_rejections, settings)
+                }) {
+                    Err(error) if error.contains(DEFERRED) => {}
+                    result => result?,
+                }
             }
             let (landing, landing_main) = if landing_shadow {
                 landing::review_decisions(&reader, &board)?
@@ -910,14 +1007,14 @@ pub(crate) fn run(
             // fails independently, so one missing record never hides the others and a
             // degraded sample stays an explicit partial observation.
             let (panels, runs) = if lead_alarms {
-                let panels = match reader.lead_panels() {
+                let panels = match reader.optional("lead_panels", Reader::lead_panels) {
                     Ok(panels) => Some(panels),
                     Err(error) => {
                         eprintln!("oxa work: lead panels unavailable in this sample: {error}");
                         None
                     }
                 };
-                let runs = match reader.queued_run_pages() {
+                let runs = match reader.optional("queued_run_pages", Reader::queued_run_pages) {
                     Ok(runs) => Some(runs),
                     Err(error) => {
                         eprintln!("oxa work: queued-run observation unavailable in this sample: {error}");
@@ -941,6 +1038,7 @@ pub(crate) fn run(
                     .app_quota
                     .as_ref()
                     .and_then(|quota| quota.borrow().app_sample(now)),
+                quota_deferred: reader.deferred.take(),
             })
         },
         std::thread::sleep,

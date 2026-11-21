@@ -22,6 +22,10 @@ const PAGE_LINES: u32 = 400;
 const SMALL_PAGE_LINES: u32 = 200;
 /// T8: bytes of the first page of `read`.
 const PAGE_BYTES: u32 = 8192;
+/// A cloud model with a known window reads larger pages (#1594): 2000 lines, 50 KiB, within
+/// the output cap. The local profile keeps its pages.
+const CLOUD_PAGE_LINES: u32 = 2000;
+const CLOUD_PAGE_BYTES: u32 = 50 * 1024;
 /// R5: the kept tail of a compaction on a small context, in tokens (when the user sets none).
 pub(crate) const SMALL_KEEP_TOKENS: u32 = 2000;
 /// R5: the least output cap of a small context, in bytes.
@@ -91,7 +95,9 @@ pub(crate) fn tune_for_model(
     // L4: the first page of `read` is cut at most at 8 KiB within the output cap; `grep`,
     // `find`, `ls` and the other reads at the output cap itself.
     let cap = u32::try_from(output_cap_for_model(settings, n_ctx, soft, cloud_model)).unwrap_or(u32::MAX);
-    let (read_page_lines, read_page_bytes) = if is_small(n_ctx) {
+    let (read_page_lines, read_page_bytes) = if cloud_model && n_ctx > 0 {
+        (CLOUD_PAGE_LINES, CLOUD_PAGE_BYTES.min(cap))
+    } else if is_small(n_ctx) {
         (SMALL_PAGE_LINES, PAGE_BYTES.min(cap))
     } else {
         (PAGE_LINES, PAGE_BYTES.min(cap))
@@ -108,6 +114,8 @@ pub(crate) fn tune_for_model(
             && !settings.user_bool("images.blockImages", false)
             && !settings.bool("images.blockImages", false),
         max_image_bytes: settings.read_max_image_bytes(),
+        ci_poll_hint: settings.user_bool("oxa.bash.ciPollHint", true),
+        wait_tool: settings.bool("oxa.tools.wait", true),
     }
 }
 
@@ -215,6 +223,25 @@ mod tests {
         assert!(!t.diet);
         assert_eq!((t.read_page_lines, t.read_page_bytes), (400, 8192));
         assert_eq!(t.bash_timeout_s, 30);
+    }
+
+    /// #1594: a cloud model with a known window reads pages of 2000 lines / 50 KiB (within the
+    /// output cap); the local profile and an unknown window keep today's pages.
+    #[test]
+    fn cloud_profile_reads_larger_pages() {
+        let s = none();
+        let cloud = tune_for_model(&s, 200_000, 0, false, true);
+        assert_eq!(cloud.read_page_lines, 2000);
+        assert_eq!(cloud.read_page_bytes, (50u32 * 1024).min(cloud.output_cap_bytes));
+        let capped = Settings::from_values(json!({"oxa": {"toolOutputCap": 20_000}}), json!({}));
+        assert_eq!(
+            tune_for_model(&capped, 200_000, 0, false, true).read_page_bytes,
+            20_000
+        );
+        let local = tune_for_model(&s, 200_000, 0, false, false);
+        assert_eq!((local.read_page_lines, local.read_page_bytes), (400, 8192));
+        let unknown = tune_for_model(&s, 0, 0, false, true);
+        assert_eq!((unknown.read_page_lines, unknown.read_page_bytes), (400, 8192));
     }
 
     #[test]

@@ -83,7 +83,7 @@ pub struct State {
 }
 
 /// The RPC `get_session_stats` data plus cache accounting.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Stats {
     pub user_messages: u32,
     pub assistant_messages: u32,
@@ -115,6 +115,19 @@ pub struct Stats {
     /// The current prompt/triggered operation exhausted its `done` repair rounds. Reset
     /// when new agent work is claimed; process-wide aggregation lives in the drivers.
     pub done_failed: bool,
+    /// The last run's finish decision: `Some(true)` an edit was followed by a passing check,
+    /// `Some(false)` it was not, `None` the run changed no file.
+    pub proved: Option<bool>,
+    /// Background jobs still running when the last run ended (after the finish nudge).
+    pub jobs_left: u32,
+    /// T6: the tool the task's acceptance names when no command of the last run ran it (what the
+    /// run checked is a substitute); `None` when it ran or the task names no tool.
+    pub verifier: Option<String>,
+    /// The last run read an image file, changed files and ended without an independent check
+    /// of its reading (after the finish nudge).
+    pub image_unverified: bool,
+    /// `bash` results of the current operation that carried the CI polling note (`ui.ciPoll`).
+    pub ci_polls: u32,
     /// Whether the current agent operation's last reply stopped at its output token limit.
     pub output_truncated: bool,
     /// Terminal result of the last prompt or extension-triggered run.
@@ -128,7 +141,6 @@ pub struct Session {
     pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
-    startup_limit: Option<Box<dyn Send>>,
 }
 
 /// The CLI-level choices of [`Session::open`]. `None` in [`enter`] means a switch inside a
@@ -314,11 +326,7 @@ impl Session {
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
-        let session = Session {
-            st,
-            preloaded: false,
-            startup_limit: None,
-        };
+        let session = Session { st, preloaded: false };
         session.bind_jobs_owner();
         sync_job_wake(&session.st);
         // The hook is always installed: `wake_job` asks the live setting, which a reload updates.
@@ -394,6 +402,8 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<(), OxaError> {
+        // Answers the broker gave without any pump (yolo) are recorded at the start of every turn.
+        crate::host::drain_owner_confirm_records(&mut self.st, sink);
         // pi (agent-session.ts `prompt`): a line naming an extension command runs that command
         // instead of a prompt; no run starts unless the command triggers one.
         if let Expanded::Hook { name, args } = crate::expand_input(&self.st, &text) {
@@ -540,6 +550,9 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<RunEnd>, OxaError> {
+        if self.st.goal.is_some() {
+            crate::open_epoch(&mut self.st, "goal", false, sink)?;
+        }
         let guard = self.begin_run()?;
         let ran = oxa_proto::panic::contain(|| queued_run(&mut self.st, sink, ui, true))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
@@ -623,7 +636,6 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::fork_at(&mut self.st, entry, &mut ui);
         if r.is_ok() {
-            drop(self.startup_limit.take());
             self.st.jobs.reset();
             self.bind_jobs_owner();
         }
@@ -636,7 +648,6 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::clone_current(&mut self.st, &mut ui);
         if r.is_ok() {
-            drop(self.startup_limit.take());
             self.st.jobs.reset();
             self.bind_jobs_owner();
         }
@@ -652,8 +663,10 @@ impl Session {
         let reason = payload["reason"].as_str().unwrap_or("new");
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
+        if let Some(capture) = self.st.shared.gate.wire_evidence.get() {
+            capture.stop();
+        }
         enter(&mut self.st, how, None, sink, ui)?;
-        drop(self.startup_limit.take());
         self.bind_jobs_owner();
         self.preloaded = false;
         Ok(())
@@ -908,7 +921,7 @@ impl Session {
     }
 
     pub fn stats(&self) -> Stats {
-        self.st.stats
+        self.st.stats.clone()
     }
 
     /// Set an opt-in, process-local final answer contract without changing the prefix.
@@ -965,20 +978,27 @@ impl Session {
     }
 
     /// Read access for front ends (tree view, export, RPC `get_entries`).
-    pub fn inner(&self) -> &SessionState {
-        &self.st
+    /// Arm process-local evidence for this session. The owner CLI is the sole caller.
+    pub fn arm_wire_evidence(&mut self) -> crate::wire_evidence::WireEvidence {
+        self.st
+            .shared
+            .gate
+            .wire_evidence
+            .get_or_init(crate::wire_evidence::WireEvidence::start)
+            .clone()
     }
 
-    /// Keep the startup limit armed until this session closes or switches files.
-    pub fn hold_startup_limit(&mut self, limit: impl Send + 'static) {
-        self.startup_limit = Some(Box::new(limit));
+    pub fn inner(&self) -> &SessionState {
+        &self.st
     }
 
     /// Leave this session without stopping the hook sets: fire `SessionShutdown` and drop the
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
-        drop(self.startup_limit.take());
+        if let Some(capture) = self.st.shared.gate.wire_evidence.get() {
+            capture.stop();
+        }
         crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
@@ -988,6 +1008,7 @@ impl Session {
             &mut sink,
             ui,
         );
+        crate::host::drain_owner_confirm_records(&mut self.st, &mut sink);
         if let Some(broker) = self.st.shared.owner_confirm() {
             broker.close();
         }
@@ -1174,6 +1195,11 @@ impl Session {
         let guard = self.begin_foreground()?;
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
+        self.st.stats.proved = None;
+        self.st.stats.jobs_left = 0;
+        self.st.stats.verifier = None;
+        self.st.stats.image_unverified = false;
+        self.st.stats.ci_polls = 0;
         self.st.stats.output_truncated = false;
         crate::goal::begin(&self.st);
         Ok(guard)
@@ -1745,6 +1771,14 @@ fn restore_locked(
     attach_ids(st);
     attach_hosts(st, sink, ui);
     apply_branch_counts(&mut st.stats, &branch);
+    // #2292: restore the branch's last explicit preservation requirement, so a resumed
+    // session's danger floor keeps the checkpoint note without a new prompt.
+    for entry in branch.iter().rev() {
+        if let Some(requirement) = crate::agent_loop::preservation_of(entry) {
+            st.policy.set_preservation(Some(&requirement));
+            break;
+        }
+    }
     st.stats.context_tokens = st.transcript.context();
     if let Some(cli) = cli {
         let mut all = cli.builtins.clone();
@@ -1765,7 +1799,8 @@ fn restore_locked(
     match replayed {
         Some(prefix) => {
             st.prefix = prefix;
-            crate::tune::refresh(st);
+            // The stored prefix declares `wait` and the goal controls; bind live handlers to them.
+            crate::epoch::rebind_tools(st, sink);
             let enabled = st.compact.enabled;
             st.compact = CompactPolicy {
                 enabled,
@@ -2207,6 +2242,9 @@ pub(crate) fn switch_model(
     }
     persist(st, EntryBody::ModelChange(m.to_string()), sink)?;
     let previous = std::mem::replace(&mut st.model, m.to_string());
+    if let Some(capture) = st.shared.gate.wire_evidence.get().filter(|_| previous != m) {
+        capture.stop();
+    }
     // The speed belongs to the model that produced it.
     st.stats.last_tok_s = 0.0;
     sink.emit(&AgentEvent::ModelSelect {
@@ -2319,7 +2357,11 @@ pub(crate) fn budget_confirmed(st: &SessionState) -> bool {
 ///   budget is provisional, each limit the smaller of the previous one and the reported one,
 ///   and it is re-read before and after each run until the engine reports the target.
 /// * An `info` failure keeps the previous metadata (a notice says so); the policy is still
-///   recomputed so changed settings apply.
+///   recomputed so changed settings apply. It also drops the previous model's provider and
+///   keeps the remote flag ([`oxa_proto::EngineCaps::remote`]): the engine did not say where
+///   the switched-to model runs, so the session labels it remote but unverified rather than
+///   keeping the old model's `cloud · <provider>` label (`remote` without a provider). The
+///   next successful re-read replaces the flag.
 ///
 /// Auto-compaction: the runtime switch (`set_auto_compaction`) wins over the
 /// `compaction.enabled` setting. `prev_enabled` is that setting before a `/reload`: only when
@@ -2378,11 +2420,17 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             st.info.caps.remote = true;
             notice(sink, Level::Warning, e.to_string());
         }
-        Err(e) => notice(
-            sink,
-            Level::Warning,
-            format!("could not re-read the engine limits ({e}); keeping the previous ones"),
-        ),
+        Err(e) => {
+            notice(
+                sink,
+                Level::Warning,
+                format!("could not re-read the engine limits ({e}); keeping the previous ones"),
+            );
+            if st.info.limits_for != st.model {
+                st.info.caps.remote = true;
+                st.info.caps.remote_provider = None;
+            }
+        }
     }
     apply_budget_settings(st, prev_enabled);
 }
@@ -2723,6 +2771,49 @@ mod tests {
             .expect("stored prompt");
         assert_eq!(crate::envnote::strip_note(&texts[1], parts), "now");
         assert!(s.st.next_turn.is_empty());
+    }
+
+    /// #2292: the branch's last explicit preservation requirement is restored on resume, so
+    /// the danger floor's checkpoint note survives a restart without a new prompt.
+    #[test]
+    fn preservation_requirement_is_restored_on_resume() {
+        let env = oxa_fake::TestEnv::new();
+        let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
+        let danger_deps = || {
+            let mut d = deps(&env, store.clone());
+            d.policy = Box::new(
+                oxa_perm::ModePolicy::new()
+                    .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new()),
+            );
+            d
+        };
+        let mut s = Session::open(danger_deps(), Open::New).expect("open");
+        crate::append_entry(
+            &mut s.st,
+            EntryBody::Msg {
+                wire: WireMsg::user("clean up the repo, but keep commit abc123 exactly as it is"),
+                parts: Vec::new(),
+                tool: None,
+            },
+        )
+        .expect("append user");
+        let push = Access::Exec {
+            command: "git push --force origin main".to_string(),
+            net: false,
+        };
+        let noted = s.st.policy.danger_ask(&push, &s.st.cwd);
+        assert!(noted[0].1.contains("keep commit abc123"), "{noted:?}");
+        let sref = s.inner().sref.clone();
+        drop(s);
+        let reopened = Session::open(danger_deps(), Open::Resume(sref)).expect("resume");
+        let st = reopened.inner();
+        let hits = st.policy.danger_ask(&push, &st.cwd);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].1.contains("reversible checkpoint"), "{hits:?}");
+        assert!(
+            hits[0].1.contains("keep commit abc123 exactly as it is"),
+            "{hits:?}"
+        );
     }
 }
 

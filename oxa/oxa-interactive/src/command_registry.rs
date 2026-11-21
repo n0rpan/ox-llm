@@ -139,6 +139,22 @@ commands! {
         },
         requirements: NO_REQUIREMENTS,
     },
+    Cache {
+        path: &["cache"],
+        aliases: &[],
+        summary: "Report saved prompt-cache evidence without contacting a model",
+        arguments: &[
+            Argument { name: "session-id|path", kind: ArgumentKind::Word, required: true },
+            Argument { name: "json", kind: ArgumentKind::Flag, required: false },
+        ],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("Cache reports are a CLI command"),
+            menu: Availability::Exception("Cache reports are a CLI command"),
+            web: Availability::Exception("Cache reports are a CLI command"),
+        },
+        requirements: NO_REQUIREMENTS,
+    },
     WorkStatus {
         path: &["work", "status"],
         aliases: &[],
@@ -235,7 +251,7 @@ commands! {
     Send {
         path: &["send"],
         aliases: &[],
-        summary: "Send a session a follow-up, or answer its approval request (send <session-id> --approve <request-id> once|session|always|deny)",
+        summary: "Steer a session (send [--follow-up] <session-id> <text>; --follow-up queues for the end of its turn), or answer its approval request (send <session-id> --approve <request-id> once|session|always|deny)",
         arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
         surfaces: Surfaces {
             cli: Availability::Supported,
@@ -279,8 +295,11 @@ commands! {
         surfaces: MEMORY_CLI_ONLY, requirements: NO_REQUIREMENTS,
     },
     Models {
-        path: &["models"], aliases: &[], summary: "List the models the engine serves, as a table or as JSON",
-        arguments: &[Argument { name: "json", kind: ArgumentKind::Flag, required: false }],
+        path: &["models"], aliases: &[], summary: "List the local and cloud models this install can serve, as a table or as JSON",
+        arguments: &[
+            Argument { name: "json", kind: ArgumentKind::Flag, required: false },
+            Argument { name: "search", kind: ArgumentKind::Word, required: false },
+        ],
         surfaces: Surfaces {
             cli: Availability::Supported,
             slash: Availability::Exception("No models slash handler is shipped"),
@@ -536,13 +555,15 @@ mod tests {
     }
 
     #[test]
-    fn models_declares_its_json_flag_and_cli_only_surface() {
+    fn models_declares_its_json_flag_search_word_and_cli_only_surface() {
         let input = words("models --json");
         let parsed = parse_cli(&input).expect("models resolves on the CLI");
         assert_eq!(parsed.command.id, CommandId::Models);
         assert_eq!(parsed.args, &input[1..]);
         assert_eq!(parsed.command.arguments[0].name, "json");
         assert_eq!(parsed.command.arguments[0].kind, ArgumentKind::Flag);
+        assert_eq!(parsed.command.arguments[1].name, "search");
+        assert_eq!(parsed.command.arguments[1].kind, ArgumentKind::Word);
         assert!(dispatch_slash(&input).is_none());
     }
 

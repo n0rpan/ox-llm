@@ -6,7 +6,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 type Backend = Result<Arc<dyn Engine>, OxaError>;
 
-pub(super) fn is_go_model(model: &str, endpoint: &str) -> bool {
+pub(crate) fn is_go_model(model: &str, endpoint: &str) -> bool {
     let model = model.trim();
     let mut parts = model.split('/');
     let first = parts.next().unwrap_or_default();

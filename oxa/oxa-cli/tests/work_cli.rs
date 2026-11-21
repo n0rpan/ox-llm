@@ -1094,7 +1094,13 @@ fn untrusted_project_never_executes_external_checks() {
     let record = run(&env, vec![ScriptTurn::text("finished")]);
     assert!(!env.home().join("untrusted-check").exists(), "untrusted code ran");
     assert_eq!(record["outcome"], "blocked", "{record}");
-    assert!(record["detail"].as_str().unwrap().contains("trust"), "{record}");
+    let detail = record["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("not trusted")
+            && detail.contains("/trust")
+            && detail.contains(&env.work().join("project").display().to_string()),
+        "{record}"
+    );
 }
 
 #[test]
@@ -1204,6 +1210,10 @@ fn large_streamed_reply_does_not_enter_the_runner_receipt() {
 #[test]
 fn changed_project_commands_need_the_existing_content_approval() {
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"projectTrustPolicy":"content"}"#,
+    );
     setup(&env, "[]");
     let project = env.work().join("project");
     oxa_perm::TrustStore::load(&env.agent_dir().join("trust.json"))
@@ -2042,4 +2052,28 @@ fn security_failed_receipt_write_never_publishes_a_torn_record() {
     assert_eq!(retained["record"]["step"], "worker", "{retained}");
     assert_eq!(retained["record"]["outcome"], "running", "{retained}");
     assert!(retained["record"]["checkpoint_revision"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn changed_done_commands_run_with_saved_folder_trust() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let project = env.work().join("project");
+    let file = env.agent_dir().join("trust.json");
+    oxa_perm::TrustStore::load(&file)
+        .approve(&file, &project)
+        .unwrap();
+    env.write(
+        "work/project/.oxa/settings.json",
+        r#"{"done":["test -f .oxa/settings.json"]}"#,
+    );
+    git(&env, &project, &["add", ".oxa/settings.json"]);
+    git(&env, &project, &["commit", "-m", "add project check"]);
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(record["checks"][0]["status"], "passed", "{record}");
+    assert_eq!(
+        record["checks"][0]["command"], "test -f .oxa/settings.json",
+        "{record}"
+    );
 }

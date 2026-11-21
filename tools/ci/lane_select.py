@@ -10,15 +10,16 @@ import re
 import subprocess
 import tomllib
 
-WORKSPACES = ('oxa', 'engine')
-# oxe-cli includes ISA benchmark tests that require native ARM kernels too.
-PORTABLE_ENGINE = {'server', 'gguf', 'tokenizer', 'sched', 'chat'}
-LANE_CONTRACT = {
-    '.github/workflows/lane.yml', 'tools/ci/lane_select.py', 'tools/ci/lane_run.py',
-    'tools/ci/lane_queue.py', 'tools/ci/lane-nextest.toml', 'tools/ci/rust_cache_key.py',
-    'tools/ci/tests/test_lane_select.py', 'tools/ci/tests/test_lane_run.py',
-    'tools/ci/tests/test_lane_queue.py',
-}
+# One data file says which workspaces the lane tests and which paths are its contract; the Rust
+# lane guard (oxa-work lane/coverage.rs) reads the same file from the trusted base.
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lane_coverage.json')) as _file:
+    COVERAGE = json.load(_file)
+WORKSPACES = tuple(COVERAGE['workspaces'])
+# Workspaces that list packages run only those on the portable lane (oxe-cli includes ISA
+# benchmark tests that require native ARM kernels too); the rest is deferred.
+PORTABLE = {name: set(spec['packages']) for name, spec in COVERAGE['workspaces'].items()
+            if spec['packages'] != 'all'}
+LANE_CONTRACT = set(COVERAGE['contract'])
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]*\Z')
 
 
@@ -119,7 +120,7 @@ def select(current, previous, paths):
             if owners:
                 _, owner = max(owners, key=lambda entry: len(entry[0]))
                 affected.add(owner['name'])
-        for workspace in ('oxa', 'engine'):
+        for workspace in WORKSPACES:
             document = PurePosixPath(path).suffix in ('.md', '.rst') and (
                 path == f'{workspace}/README.md' or path.startswith(f'{workspace}/docs/'))
             if path.startswith(f'{workspace}/') and not document and not any(
@@ -140,12 +141,12 @@ def select(current, previous, paths):
     for workspace in WORKSPACES:
         selected = sorted(p['name'] for p in current.values()
                           if p['workspace'] == workspace and p['name'] in affected)
-        if workspace == 'engine':
-            deferred.extend(p for p in selected if p not in PORTABLE_ENGINE)
-            selected = [p for p in selected if p in PORTABLE_ENGINE]
+        if workspace in PORTABLE:
+            deferred.extend(p for p in selected if p not in PORTABLE[workspace])
+            selected = [p for p in selected if p in PORTABLE[workspace]]
         if not selected:
             continue
-        runners = ['ubuntu-24.04'] if workspace == 'engine' else ['ubuntu-24.04', 'ubuntu-24.04-arm']
+        runners = ['ubuntu-24.04'] if workspace in PORTABLE else ['ubuntu-24.04', 'ubuntu-24.04-arm']
         for runner in runners:
             matrix.append({'workspace': workspace, 'runner': runner, 'packages': selected})
     return {'include': matrix}, sorted(deferred), reasons
