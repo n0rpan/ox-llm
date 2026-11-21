@@ -2068,7 +2068,7 @@ fn skip_env(
     // this `env` moved to, so it composes here (`b` is resolved against `a` by the caller's chain) rather than
     // standing alone against the shell's own directory (#1768).
     if moved && words.get(i).is_some_and(|w| w == "env") {
-        i = skip_env(words, i + 1, inline, dirs);
+        i = skip_env(words, i + 1, inline, dirs, unknown);
     }
     i
 }
