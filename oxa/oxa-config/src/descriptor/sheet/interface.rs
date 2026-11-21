@@ -40,4 +40,8 @@ pub(super) const ROWS: &[PageRow] = &[
     row("enableSkillCommands", "bool", "`true`", "list skills in the slash-command autocomplete"),
     row("followUpMode", "`all` / `one-at-a-time`", "`one-at-a-time`", "how queued follow-up messages are sent"),
     row("steeringMode", "`all` / `one-at-a-time`", "`one-at-a-time`", "how queued steering messages are sent"),
+    row("oxa.desk.font", "string", "`null`", "desktop app (`oxa-desk`) only, user settings only: the font family of the window. Unset uses the system font. The terminal UI does not read the `oxa.desk.*` keys"),
+    row("oxa.desk.fontSize", "number", "`14`", "desktop app only, user settings only: text size in pixels. A value outside 8 to 40 is saved with a note, not refused"),
+    row("oxa.desk.blinkCursor", "bool", "`false`", "desktop app only, user settings only: blink the text cursor. Off by default, so an idle window does not wake up to redraw"),
+    row("oxa.desk.keepTranscripts", "number", "`30`", "desktop app only, user settings only: how many threads the desktop app keeps loaded in memory. Beyond that the one used longest ago is dropped and reloads when opened; the open thread and a thread with a pending question always stay loaded"),
 ];
