@@ -7,7 +7,6 @@
 //! commit. Nothing here ever force-pushes: both commits are kept.
 use crate::{checked, git, output, Result, RunPolicy};
 use serde::{Deserialize, Serialize};
-use std::fs::File;
 use std::path::Path;
 
 /// How the remote branch relates to the commit the runner asked to publish.
@@ -155,52 +154,6 @@ pub(crate) fn read_back(
             class: Divergence::RemoteUnknown,
         },
     }
-}
-
-/// Push `head` to `branch` and read the destination back. The receipt is stored in `slot` on
-/// success and on failure. A success that reads back another commit is an error; a rejected
-/// push says what the remote holds. No force push anywhere.
-pub(crate) fn push_with_receipt(
-    policy: &RunPolicy,
-    repo: &Path,
-    head: &str,
-    branch: &str,
-    lock: &File,
-    slot: &mut Option<PublishReceipt>,
-) -> Result<()> {
-    let pushed = super::push_head(policy, repo, head, branch, lock);
-    let url = checked(git(
-        policy,
-        repo,
-        &["remote", "get-url", "--push", "--all", "origin"],
-    ))
-    .ok()
-    .and_then(|text| text.lines().next().map(str::to_owned));
-    let receipt = match url {
-        Some(url) => read_back(policy, repo, &url, branch, head),
-        None => PublishReceipt {
-            requested: head.to_owned(),
-            remote: None,
-            class: Divergence::RemoteUnknown,
-        },
-    };
-    let verdict = match pushed {
-        Ok(()) => match receipt.class {
-            // An unreadable remote after a successful push is recorded, not guessed.
-            Divergence::Published => Ok(()),
-            Divergence::RemoteUnknown if receipt.remote.is_none() => Ok(()),
-            _ => Err(format!("push reported success but {}", receipt.describe(branch))),
-        },
-        Err(error) => match receipt.class {
-            Divergence::Published | Divergence::RemoteUnknown if receipt.remote.is_none() => Err(error),
-            _ => Err(format!(
-                "push rejected; {}; nothing was force-pushed, both commits are kept",
-                receipt.describe(branch)
-            )),
-        },
-    };
-    *slot = Some(receipt);
-    verdict
 }
 
 #[cfg(test)]

@@ -7,7 +7,6 @@ pub use landing::{
     Admission, AdmissionAcknowledgment, AdmissionReceipt, DeliveryReceipt, LandingPublisher, NoticeIntent,
     RejectedLanding, RetryIntent,
 };
-pub(crate) use receipt::push_with_receipt;
 pub use receipt::{Divergence, PublishReceipt};
 use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
