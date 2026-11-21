@@ -297,11 +297,9 @@ mod tests {
         assert!(out.contains("&lt;b&gt;bold&lt;/b&gt;"));
         assert!(out.contains("&lt;script&gt;alert(1)&lt;/script&gt;") && !out.contains("<script>"));
         // The list item text is its own paragraph, so `<p>` wraps each item's text.
-        for item in [
-            "<li><p>one</p></li>",
-            "<li><p>two</p></li>",
-            "<li><p>step</p></li>",
-        ] {
+        // A list item keeps its own paragraph when the source has one; a tight item
+        // is its text alone.
+        for item in ["<li><p>one</p></li>", "<li><p>two</p></li>", "<li>step</li>"] {
             assert!(out.contains(item), "{item}: {out}");
         }
         assert!(out.contains("<ul>") && out.contains("</ul>"), "{out}");

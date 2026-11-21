@@ -363,7 +363,8 @@ fn owner_lists_running_sessions_switches_and_returns() {
 
     // The service starts on the dedicated Lead chat and lists exactly the running sessions.
     let page = fixture.get("/chat", OWNER);
-    assert!(page.contains("Chat with Lead"), "{page}");
+    // The page's own title; its body is the thread, not a second "Chat with Lead" section.
+    assert!(page.contains(">Chat with lead</h1>"), "{page}");
     assert!(
         page.contains(&short(&first)) && page.contains(&short(&second)),
         "{page}"

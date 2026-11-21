@@ -162,6 +162,7 @@ mod tests {
             proposal: proposal.as_ref(),
             confirmed,
             entries: Some(&entries),
+            short_id: Some("a1b2c3d4"),
         };
         document_for(
             Page::Chat(Prompt::Status, None),

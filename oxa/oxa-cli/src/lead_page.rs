@@ -136,6 +136,8 @@ pub struct OwnerChatView<'a> {
     /// rendered from this source. `None` means the reading was refused or absent, which the
     /// page says; an empty slice is an empty session.
     pub entries: Option<&'a [oxa_proto::Entry]>,
+    /// The bound Lead Session's id, first eight characters only, as main's page named it.
+    pub short_id: Option<&'a str>,
 }
 
 /// Every role a session entry can show as in the thread.
@@ -1796,6 +1798,7 @@ return true;
             proposal: Some(&proposal),
             confirmed: false,
             entries: Some(&entries),
+            short_id: Some("a1b2c3d4"),
         };
         let (goal, reference) = owner_goal_fixture();
         let observation = oxa_core::goal::GoalObservation {
@@ -1836,12 +1839,18 @@ return true;
         assert!(html.contains("name=csrf value=\"fixed-csrf\""));
         assert!(html.contains("href=\"/chat?prompt=workers\""));
         assert!(html.contains("name=csrf value=\"csrf-example\""));
-        // The reply bubble is the process's own text; its card is pinned by the proposal
-        // test, which supplies a reply the session holds.
+        // The process's validated reply is the newest lead bubble, and its action card is
+        // under that bubble with the one confirmation the route accepts.
+        let bubble = html
+            .split("class=\"msg lead\"")
+            .find(|part| part.contains("Because the fixture item is waiting for a review."))
+            .expect("the reply is a lead bubble");
         assert!(
-            html.contains("Because the fixture item is waiting for a review."),
-            "{html}"
+            bubble.contains("name=proposal_id value=\"proposal-example\""),
+            "{bubble}"
         );
+        assert!(bubble.contains("Confirm proposal"), "{bubble}");
+        assert!(bubble.contains("Proposed follow-up"), "{bubble}");
         // A chat page never renders the tool the owner did not ask to see as a bubble, and
         // never the private ids a session carries.
         assert!(!html.contains("private-session-source") && !html.contains("private-entry-source"));
@@ -1903,6 +1912,7 @@ return true;
                 proposal: None,
                 confirmed: false,
                 entries: Some(&empty),
+                short_id: Some("a1b2c3d4"),
             }),
             ..Default::default()
         });
@@ -1920,6 +1930,7 @@ return true;
                 proposal: None,
                 confirmed: false,
                 entries: Some(&empty),
+                short_id: Some("a1b2c3d4"),
             }),
             board: Some(&board),
             ..Default::default()
@@ -1933,6 +1944,7 @@ return true;
                 proposal: None,
                 confirmed: false,
                 entries: None,
+                short_id: Some("a1b2c3d4"),
             }),
             ..Default::default()
         });
@@ -1959,10 +1971,10 @@ return true;
             ("/chat?before=a1b2c3d", None),
             ("/chat?before=x&before=y", None),
             ("/chat?prompt=status&extra=1", None),
-            ("/chat?prompt=status&fragment=1", None),
         ] {
             assert_eq!(Page::request(path), expected.map(|page| (page, false)), "{path}");
         }
+        // A trailing fragment is the page's own marker, peeled before the fields parse.
         assert_eq!(
             Page::request("/chat?prompt=status&fragment=1"),
             Some((Page::Chat(Prompt::Status, None), true))

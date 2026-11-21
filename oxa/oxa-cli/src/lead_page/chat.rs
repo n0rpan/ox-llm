@@ -18,52 +18,23 @@ const PROMPTS: [(Prompt, &str, &str); 3] = [
     (Prompt::Attention, "attention", "What needs me?"),
 ];
 
-/// The newest request's context: the prompt tokens of the most recent reported usage.
-fn context_tokens(entries: &[Entry]) -> Option<u32> {
-    entries.iter().rev().find_map(|entry| match &entry.body {
-        oxa_proto::EntryBody::Usage { usage, .. } if !usage.unreported => Some(usage.prompt),
-        _ => None,
-    })
-}
-
-/// The header strip: which session the page talks to, its state and tokens, and the owner's
-/// running sessions as one popover. The popover is the switcher; a dedicated Lead chat has
-/// nothing to switch to there, so it says where the choice lives instead.
+/// The header strip: the sessions the owner can switch to, then the session this page talks
+/// to and its state. A dedicated Lead chat is named by its own id; an attached session by
+/// the one the page mounted. Nothing here is a second request or a new capability.
 fn header(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<div class=chat-head>");
     if let Some(list) = &view.sessions {
         session::render_list(html, list, now);
-        if let Some(attached) = &view.attached {
-            session::render_attached_status(html, attached);
+    }
+    if let Some(owner) = &view.owner_chat {
+        session::render_lead_status(html, owner.short_id, owner.entries, now);
+        if owner.entries.is_none() {
+            html.push_str(
+                "<p class=\"chat-status muted\">The selected Lead Session's entries could not be read.</p>",
+            );
         }
     } else if let Some(attached) = &view.attached {
         session::render_attached_status(html, attached);
-    } else {
-        html.push_str("<details class=sessions><summary>Lead");
-        if let Some(entries) = view.owner_chat.as_ref().and_then(|owner| owner.entries) {
-            let working = entries
-                .last()
-                .is_some_and(|entry| entry.ts_ms / 1000 + session::RUNNING > now);
-            let _ = write!(
-                html,
-                "<span class=chip>{}</span>",
-                if working { "running" } else { "idle" }
-            );
-            if let Some(tokens) = context_tokens(entries) {
-                let _ = write!(html, "<span class=\"num muted\">{tokens} tokens</span>");
-            }
-        }
-        html.push_str("</summary><div class=sheet>");
-        match view.owner_chat.as_ref() {
-            Some(owner) if owner.entries.is_some() => html.push_str(
-                "<p>The selected Lead Session. Choose another in <code>oxa.lead.sessionId</code>.</p>",
-            ),
-            Some(_) => html.push_str("<p>The selected Lead Session's entries could not be read.</p>"),
-            None => html.push_str(
-                "<p>Owner chat is off: enable <code>oxa.lead.serve.owner_chat</code> to message lead.</p>",
-            ),
-        }
-        html.push_str("</div></details>");
     }
     // The goal's detail page belongs to a later slice, so the chip states its state.
     if let Some((goal, _)) = view.owner_goal {
@@ -192,17 +163,24 @@ fn composer(html: &mut String, view: &View<'_>) {
 fn thread(html: &mut String, view: &View<'_>, prompt: Prompt, before: Option<[u8; 8]>, now: u64) {
     let ctx = ScrubCtx::default();
     html.push_str("<div class=thread role=log aria-label=\"Conversation with lead\">");
-    let rows: Vec<Item> = match (&view.owner_chat, &view.attached) {
+    let mut rows: Vec<Item> = match (&view.owner_chat, &view.attached) {
         (Some(owner), _) => owner
             .entries
-            .map(|entries| session::thread_items(entries, &ctx))
+            .map(|entries| session::thread_items(entries, &ctx, true))
             .unwrap_or_default(),
         (None, Some(attached)) => {
             let skip = attached.entries.len().saturating_sub(session::SHOWN_ENTRIES);
-            session::thread_items(&attached.entries[skip..], &ctx)
+            session::thread_items(&attached.entries[skip..], &ctx, false)
         }
         (None, None) => Vec::new(),
     };
+    // The dedicated chat shows the validated reply, never the contract's JSON answer: its
+    // bubble is added here when the session holds no prose of its own.
+    if let Some(reply) = view.owner_chat.as_ref().and_then(|owner| owner.reply) {
+        if !session::shows(&rows, &md::render(&reply.text)) {
+            rows.push(session::reply_row(&reply.text, session::newest(&rows)));
+        }
+    }
     let bound = before.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
     let (page, older) = session::thread_page(rows, bound.as_deref());
     if older {

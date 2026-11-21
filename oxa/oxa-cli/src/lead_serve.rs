@@ -872,6 +872,9 @@ impl Source {
                     proposal: latest.as_ref().and_then(|latest| latest.proposal.as_ref()),
                     confirmed: latest.as_ref().is_some_and(|latest| latest.confirmed),
                     entries: entries.as_deref(),
+                    short_id: dedicated
+                        .map(|binding| binding.session_id().chars().take(8).collect::<String>())
+                        .as_deref(),
                 }),
             board: good.map(|g| &g.board),
             situation: observation.as_ref().and_then(|o| o.situation.as_ref()),
@@ -1237,11 +1240,15 @@ mod tests {
             .unwrap();
         let page = crate::lead_page::Page::Chat(crate::lead_page::Prompt::Status, None);
         let html = source.render(page, false);
-        // The reply is in the thread as a lead bubble, escaped, and its action card is on
-        // the page with the one confirmation the route accepts.
-        assert!(html.contains("class=\"msg lead\""));
-        assert!(!html.contains("fixture <b>reply</b>"));
-        assert!(html.contains("Confirm proposal"));
+        // The reply is the thread's newest lead bubble, escaped, with its confirmation.
+        let bubble = html
+            .split("class=\"msg lead\"")
+            .find(|part| part.contains("fixture &lt;b&gt;reply&lt;/b&gt;"))
+            .expect("the reply is a lead bubble");
+        assert!(!bubble.contains("fixture <b>reply</b>"));
+        assert!(bubble.contains("Confirm proposal"), "{bubble}");
+        // The model's own JSON answer never reaches the page.
+        assert!(!html.contains("\"facts\"") && !html.contains("```json"));
         assert_eq!(
             owner.post(OwnerSubmission::Confirm("wrong".into()), &env),
             Err("409 Conflict")

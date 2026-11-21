@@ -416,7 +416,10 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
             if prompt == "status" {
                 assert!(
                     reply.contains("0 items")
-                        && reply.contains("href=/board>Board · observed 1970-01-01 00:00 UTC")
+                        && reply.contains("href=\"/board\"")
+                        && reply.contains("Board")
+                        && reply.contains("observed 1970-01-01 00:00 UTC"),
+                    "{reply}"
                 );
             }
             assert_eq!(reply.contains("<!doctype html>"), suffix.is_empty());

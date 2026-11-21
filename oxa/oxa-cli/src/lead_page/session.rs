@@ -91,6 +91,49 @@ pub(super) fn render_list(html: &mut String, list: &SessionListView<'_>, now: u6
     html.push_str("</div></details>");
 }
 
+/// The dedicated Lead chat's status lines: which session, whether it is running (read from
+/// its newest entry, the same rule the page applies to an attached session) and its tokens.
+pub(super) fn render_lead_status(
+    html: &mut String,
+    short_id: Option<&str>,
+    entries: Option<&[Entry]>,
+    now: u64,
+) {
+    if let Some(short) = short_id {
+        let _ = write!(
+            html,
+            "<p class=\"chat-status muted\">Lead session {}</p>",
+            escape(short)
+        );
+    }
+    if let Some(entries) = entries {
+        let items = thread_items(entries, &ScrubCtx::default(), false);
+        let state = if working(&items, now) {
+            "Status: running"
+        } else {
+            "Status: idle"
+        };
+        let _ = write!(html, "<p class=\"chat-status muted\">{state}</p>");
+        if let Some((prompt, completion)) = newest_usage(entries) {
+            let _ =
+                write!(
+                html,
+                "<p class=\"chat-status muted\">Context: {prompt} tokens in the newest request ({} reported)",
+                if completion > 0 { "and completion" } else { "prompt only" }
+            );
+            html.push_str("</p>");
+        }
+    }
+}
+
+/// The newest reported usage of a set of entries: prompt and completion tokens.
+fn newest_usage(entries: &[Entry]) -> Option<(u32, u32)> {
+    entries.iter().rev().find_map(|entry| match &entry.body {
+        EntryBody::Usage { usage, .. } if !usage.unreported => Some((usage.prompt, usage.completion)),
+        _ => None,
+    })
+}
+
 /// The attached session's status line, above its thread.
 pub(super) fn render_attached_status(html: &mut String, view: &AttachedView<'_>) {
     let _ = write!(
@@ -627,7 +670,7 @@ mod tests {
     use oxa_proto::{ToolCall, WireMsg};
 
     fn built(entries: &[Entry]) -> Vec<Item> {
-        thread_items(entries, &ScrubCtx::default())
+        thread_items(entries, &ScrubCtx::default(), false)
     }
 
     fn rendered(entries: &[Entry]) -> String {
@@ -645,7 +688,7 @@ mod tests {
         assert!(html.contains("class=\"msg lead\""), "{html}");
         assert!(html.contains("<strong>item</strong>"), "{html}");
         assert!(
-            html.contains("<li><p>the first one</p></li>") && html.contains("<li><p>the second one</p></li>"),
+            html.contains("<li>the first one</li>") && html.contains("<li>the second one</li>"),
             "{html}"
         );
         assert!(
