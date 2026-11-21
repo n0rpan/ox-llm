@@ -191,3 +191,27 @@ fn cache_realistic_session_cost() {
         );
     }
 }
+
+#[test]
+fn cache_help_answers_before_the_session_argument() {
+    let env = TestEnv::new();
+    let out = Command::new(BIN)
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .current_dir(env.work())
+        .args(["--offline", "cache", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "cache --help exited {:?}: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.starts_with("oxa cache - "), "{stdout}");
+    assert!(
+        stdout.contains("oxa cache <session-id|path> [--json]"),
+        "{stdout}"
+    );
+}

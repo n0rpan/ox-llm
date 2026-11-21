@@ -283,6 +283,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "Read a saved session's current progress and stall signal",
     ),
     (
+        "oxa cache <session-id|path> [--json]",
+        "Report saved prompt-cache evidence without contacting a model",
+    ),
+    (
         "oxa models [--json] [search]",
         "List the local and cloud models this install can serve, as a table or as JSON",
     ),
