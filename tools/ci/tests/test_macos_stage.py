@@ -63,8 +63,16 @@ exec {real_tar} "${{args[@]}}"
         self.assertNotEqual(proc.returncode, 0)
         self.assertFalse(list((root / 'out').glob('*')) if (root / 'out').exists() else [])
 
+    def test_accepts_release_tags(self):
+        for version in ('v0.2.2', 'v0.3.0-rc.1'):
+            with self.subTest(version=version):
+                root, proc = self.run_stage(b'\xcf\xfa\xed\xfe' + b'\0' * 64, version=version)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertTrue((root / 'out' / f'ox-llm-{version}-macos-arm64.tar.gz').is_file())
+
     def test_refuses_a_malformed_version(self):
-        for version in ('0.2.1', 'v0.2.1-dev.abcdef0', 'v0.2.1-dev.137+abcdef0'):
+        for version in ('0.2.1', 'v0.2.1-dev.abcdef0', 'v0.2.1-dev.137+abcdef0', 'v0.2.2+meta',
+                        'v0.2.2/../x'):
             with self.subTest(version=version):
                 root, proc = self.run_stage(b'\xcf\xfa\xed\xfe', version=version)
                 self.assertNotEqual(proc.returncode, 0)

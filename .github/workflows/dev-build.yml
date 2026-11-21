@@ -72,11 +72,16 @@ jobs:
       skip_source_tests: ${{ needs.covered.outputs.covered == 'true' }}
   macos:
     if: github.event_name == 'push' || inputs.macos_stage_only
-    # A failed main build never blocks Linux; an explicit qualification must pass.
+    # A failed main build never blocks Linux; an explicit qualification must pass. This is the
+    # only macOS build after a merge (PRs build macOS only for macOS-relevant paths, the merge
+    # queue never), so `macos-health` below turns a failure into a p1 issue.
     needs: version
     runs-on: macos-15
     continue-on-error: ${{ github.event_name == 'push' }}
     timeout-minutes: 90
+    outputs:
+      # Set by the last step only: continue-on-error reports a failed job as success to `needs`.
+      built: ${{ steps.built.outputs.built }}
     env:
       CARGO_BUILD_JOBS: '3'
       RUST_VERSION: '1.99.1'
@@ -120,6 +125,45 @@ jobs:
           path: ${{ steps.stage.outputs.archive }}
           if-no-files-found: error
           retention-days: 7
+      - id: built
+        run: echo built=true >> "$GITHUB_OUTPUT"
+  macos-health:
+    # macOS must never stay broken on main: a failed main-push build opens one p1 issue (or
+    # comments on the open one); the next green main-push build closes it. Pushes are serialized
+    # (concurrency above), so the newest result decides.
+    needs: macos
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'oxstack/ox-llm' && needs.macos.result != 'skipped' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILT: ${{ needs.macos.outputs.built }}
+      TITLE: macOS dev build broken on main
+    steps:
+      - name: Open, update or close the macOS breakage issue
+        run: |
+          set -euo pipefail
+          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          commit="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
+          number=$(gh issue list --state open --search "\"$TITLE\" in:title" --limit 50 \
+            --json number,title --jq 'map(select(.title == $ENV.TITLE)) | .[0].number // empty')
+          if [ "$BUILT" = true ]; then
+            if [ -n "$number" ]; then
+              gh issue close "$number" --comment "The macOS arm64 dev build is green again at $commit ($run)."
+            fi
+          elif [ -n "$number" ]; then
+            gh issue comment "$number" --body "Still failing at $commit: $run"
+          else
+            gh issue create --title "$TITLE" --label p1 --label dogfood --body "$(printf '%s\n' \
+              "The native macOS arm64 build in dev-build.yml failed on a push to main, so the dev release" \
+              "was published without the macOS archive. PRs build macOS only for macOS-relevant paths and" \
+              "the merge queue never does, so this is the first signal." \
+              "" "Commit: $commit" "Run: $run" "" \
+              "This issue closes itself when a later main push builds macOS green.")"
+          fi
   publish:
     needs: [version, build, macos]
     if: ${{ !cancelled() && needs.build.result == 'success' && github.repository == 'oxstack/ox-llm' && github.event_name == 'push' && github.ref == 'refs/heads/main' && !github.event.repository.private }}
