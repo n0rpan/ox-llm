@@ -287,6 +287,30 @@ code, tests, CI and docs; the owner validates on hardware.
 - **Ambiguous task:** open the PR as a draft with your question at the top instead of guessing.
 - **A workflow that does not start** (fork PRs wait for approval): say so in the PR; do not work around it.
 
+### Desktop app slices
+
+The desktop app (`oxa-desk`) is built in small slices from [the build plan](oxa/docs/design/desk/build-plan.md) and
+[`slices.json`](oxa/docs/design/desk/slices.json). The rules above apply, with these differences:
+
+- **Branch and PR:** branch `desk/<slice-id>` from a fresh `origin/main`, title `desk <slice-id>: <title>`, labels
+  `desk` and `desk-w<wave>`. The body has `Closes #<slice issue>`, the plan link and the slice's done-when. A slice
+  touches only the files `slices.json` lists for it, plus one changelog fragment `changelog.d/desk-<slice-id>.md`
+  (lower case) and its own snapshots.
+- **Nested workspace:** the desk crates live in `oxa/desk/`, a workspace of its own with its own `Cargo.lock`. They
+  are not members of the `oxa` workspace, so GPUI never enters `oxa/Cargo.lock`.
+- **Manifests are architect-owned:** only wave-0 PRs change a `Cargo.toml`, a `Cargo.lock`, a workflow, `lib.rs`,
+  a `mod.rs` or `store.rs` under `oxa/desk/`. A slice that needs a new dependency or a new shared item stops and
+  reports `needs-dep` or `needs-hook`.
+- **No `macos` or `darwin` in a desk file or directory name** (`platform/mac.rs`, not `macos.rs`): such a path
+  selects the 90-minute macOS build.
+- **Review:** for a desk slice the `oxa-review` line decides, not the Codex review. The review script runs an oxa
+  review on the exact head and posts one comment whose first line is
+  `oxa-review head=<full 40-character sha> verdict=pass|block p0=N p1=N p2=N p3=N`. A line for another head is
+  stale. `verdict=block` is only for P0/P1, as in "What blocks a merge". For a slice in the security core (label
+  `two-review`), or whenever the script wants one, the script itself starts an independent security review with oxa
+  and a ChatGPT-plan model in clean contexts; it does not go through the lead. An open security review blocks. Each
+  P2 becomes a follow-up issue with the label `desk-followup`.
+
 ### GitHub access
 
 ## What to test (owner rule)
@@ -395,7 +419,7 @@ Owner decision for the early stage, until v0.3:
 
 - **Required checks** are green at the exact head. This always applies.
 - **Restrictions:** a PR with a `Restricts:` line merges only with the owner's `owner-accepted` label.
-- **Review:** the latest Codex review on the exact head decides. Only P0/P1 findings and an open security review
+- **Review:** the latest Codex review on the exact head decides. (A desktop app slice is decided by its `oxa-review` line: see "Desktop app slices".) Only P0/P1 findings and an open security review
   block. A security finding is P0/P1 only when it hits the block list in `docs/threat-model.md`. P2/P3 findings become follow-up issues and are fixed forward on main. Only threads opened on
   the current head count. Never bulk-resolve review threads.
 - **Security core:** the sandbox and permissions, secrets and credentials, login, redaction, publishing and owner
