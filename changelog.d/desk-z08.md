@@ -1,0 +1,1 @@
+- The sudo password dialog now receives what asks (the exact command, the sudo process and the tool), and oxa overwrites its copy of the password with zeros once it is handed to sudo. The terminal dialog looks and behaves as before.

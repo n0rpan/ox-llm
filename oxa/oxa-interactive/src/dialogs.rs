@@ -3,8 +3,8 @@
 use crate::{Block, UiRequest, ViewModel};
 use oxa_config::Keymap;
 use oxa_proto::{
-    Access, Answer, ComponentAction, CustomOpts, DangerAnswer, KeyId, Level, Mode, Placement, ToolClass, Ui,
-    UiComponent, Value,
+    Access, Answer, ComponentAction, CustomOpts, DangerAnswer, KeyId, Level, Mode, Placement, SecretAsk,
+    SecretValue, ToolClass, Ui, UiComponent, Value,
 };
 use oxa_tui::{
     frame_lines, Component, CursorPos, Editor, EditorAction, EditorOpts, Input, InputAction, Interactive,
@@ -114,10 +114,24 @@ impl Ui for UiProxy {
         rx.recv().ok().flatten()
     }
     fn secret(&mut self, title: &str, body: &str) -> Option<String> {
+        let ask = SecretAsk {
+            title,
+            prompt: body,
+            command: "",
+            pid: 0,
+            tool: "",
+        };
+        let value = self.secret_ask(&ask)?;
+        std::str::from_utf8(value.expose()).ok().map(str::to_string)
+    }
+    fn secret_ask(&mut self, ask: &SecretAsk<'_>) -> Option<SecretValue> {
         let (reply, rx) = channel();
         let req = UiRequest::Secret {
-            title: title.to_string(),
-            body: body.to_string(),
+            title: ask.title.to_string(),
+            body: ask.prompt.to_string(),
+            command: ask.command.to_string(),
+            pid: ask.pid,
+            tool: ask.tool.to_string(),
             reply,
         };
         if !self.post(req) {
@@ -356,16 +370,19 @@ impl DialogHost {
                 };
                 self.push(dialog, now_ms);
             }
-            UiRequest::Secret { title, body, reply } => {
+            UiRequest::Secret {
+                title, body, reply, ..
+            } => {
                 // The prompt is the requesting process's text: one sanitized line, shown as data
-                // in the title row, with the typed characters masked.
+                // in the title row, with the typed characters masked. The answer leaves as a
+                // `SecretValue` that takes over the submitted string's buffer.
                 let prompt = body.lines().last().map(sanitize_dialog_text).unwrap_or_default();
                 let mut input = Input::new(&prompt);
                 input.set_masked(true);
                 let dialog = Dialog {
                     title,
                     body: Body::Text { input },
-                    reply: Reply::Text(reply),
+                    reply: Reply::Secret(reply),
                     timeout_ms: None,
                     deadline: None,
                     last_secs: None,
@@ -960,6 +977,8 @@ enum Reply {
     Index(Sender<Option<usize>>),
     Bool(Sender<Option<bool>>),
     Text(Sender<Option<String>>),
+    /// The masked password dialog: the text leaves as a value that is zeroed when dropped.
+    Secret(Sender<Option<SecretValue>>),
     Access(Sender<Answer>),
     /// The dangerous-command answer and the rule keys it covers.
     Danger(Sender<DangerAnswer>, Vec<String>),
@@ -986,6 +1005,12 @@ impl Reply {
                 let _ = tx.send(Some(s));
             }
             (Reply::Text(tx), _) => {
+                let _ = tx.send(None);
+            }
+            (Reply::Secret(tx), Some(Outcome::Text(s))) => {
+                let _ = tx.send(Some(SecretValue::from_string(s)));
+            }
+            (Reply::Secret(tx), _) => {
                 let _ = tx.send(None);
             }
             (Reply::Access(tx), Some(Outcome::Access(a))) => {
