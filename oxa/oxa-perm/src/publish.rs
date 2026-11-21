@@ -10,7 +10,7 @@
 //! `issue view|list`, `repo view`, `api` GET). A line that mixes such a command with any other
 //! command outside a short local list (`cd`, `git status`, `head`...) is a hit on the other
 //! command: the network permission of a publish command never covers a neighbour.
-use crate::danger::Stage;
+use crate::danger::{Stage, SHELLS};
 use std::path::{Path, PathBuf};
 
 /// Names (the first word) that cannot reach the network or write outside the worktree on their
@@ -38,6 +38,283 @@ const GIT_LOCAL: &[&str] = &[
 ];
 const DEFAULT_BRANCHES: &[&str] = &["main", "master", "trunk"];
 
+/// Git builtins available on the supported Git baseline, not external helpers.
+/// Keep `hook` outside the list: older Git versions can resolve it as an alias.
+/// Anything outside this allowlist may resolve to a configuration alias or an external `git-*`
+/// executable, so it keeps the publish floor. `send-pack` is
+/// deliberately not consulted here: it is classified as unsafe before this list is reached.
+const GIT_BUILTINS: &[&str] = &[
+    "add",
+    "am",
+    "annotate",
+    "apply",
+    "archive",
+    "bisect",
+    "blame",
+    "branch",
+    "bugreport",
+    "bundle",
+    "cat-file",
+    "check-attr",
+    "check-ignore",
+    "check-mailmap",
+    "check-ref-format",
+    "checkout",
+    "checkout-index",
+    "cherry",
+    "cherry-pick",
+    "clean",
+    "clone",
+    "column",
+    "commit",
+    "commit-graph",
+    "commit-tree",
+    "config",
+    "count-objects",
+    "credential",
+    "credential-cache",
+    "credential-store",
+    "describe",
+    "diff",
+    "diff-files",
+    "diff-index",
+    "diff-tree",
+    "difftool",
+    "fast-export",
+    "fast-import",
+    "fetch",
+    "fmt-merge-msg",
+    "for-each-ref",
+    "for-each-repo",
+    "format-patch",
+    "fsck",
+    "fsck-objects",
+    "gc",
+    "grep",
+    "hash-object",
+    "help",
+    "index-pack",
+    "init",
+    "init-db",
+    "interpret-trailers",
+    "log",
+    "ls-files",
+    "ls-remote",
+    "ls-tree",
+    "mailinfo",
+    "mailsplit",
+    "maintenance",
+    "merge",
+    "merge-base",
+    "merge-file",
+    "merge-index",
+    "merge-ours",
+    "merge-recursive",
+    "merge-tree",
+    "mktag",
+    "mktree",
+    "multi-pack-index",
+    "mv",
+    "name-rev",
+    "notes",
+    "pack-objects",
+    "pack-redundant",
+    "pack-refs",
+    "patch-id",
+    "prune",
+    "prune-packed",
+    "pull",
+    "push",
+    "range-diff",
+    "read-tree",
+    "rebase",
+    "reflog",
+    "remote",
+    "repack",
+    "replace",
+    "rerere",
+    "reset",
+    "restore",
+    "rev-list",
+    "rev-parse",
+    "revert",
+    "rm",
+    "shortlog",
+    "show",
+    "show-branch",
+    "show-index",
+    "show-ref",
+    "sparse-checkout",
+    "stage",
+    "stash",
+    "status",
+    "switch",
+    "symbolic-ref",
+    "tag",
+    "unpack-file",
+    "unpack-objects",
+    "update-index",
+    "update-ref",
+    "update-server-info",
+    "upload-archive",
+    "upload-pack",
+    "var",
+    "verify-commit",
+    "verify-pack",
+    "verify-tag",
+    "version",
+    "whatchanged",
+    "worktree",
+    "write-tree",
+];
+
+/// #2055: the resolved facts a push acts on, re-read at every decision: the remote's identity (a
+/// digest of the origin URLs and rewrites, never the URLs themselves, which can hold
+/// credentials) and the object id of each source ref. `None` when the line pushes nothing,
+/// `Some(Ok(digest))` for the facts, `Some(Err(()))` when a push is present but its facts cannot
+/// be resolved (dynamic words, an env prefix that can redirect git, an unreadable repository).
+/// A grant keyed on text alone would cover the same words after a commit, a reset or a
+/// `git remote set-url`; keyed on these facts it does not.
+pub(crate) fn push_facts(stages: &[Stage], cwd: &Path) -> Option<Result<String, ()>> {
+    let mut facts: Vec<String> = Vec::new();
+    for st in stages.iter().filter(|st| st.mark.is_none()) {
+        let fx = crate::effects::of(&st.words, &st.redirects, false);
+        let Some(name) = fx.argv.first() else { continue };
+        if base(name) != "git" {
+            // A wrapper that carries a push in its words hides it from this reading.
+            let hides = st.words.iter().any(|w| w.contains("git") && w.contains("push"));
+            if hides {
+                return Some(Err(()));
+            }
+            continue;
+        }
+        let rest = &fx.argv[1..];
+        let (k, dirs, opaque) = git_globals(rest);
+        if rest.get(k).map(String::as_str) != Some("push") {
+            continue;
+        }
+        if name.as_str() != "git"
+            || opaque
+            || !fx.dirs.is_empty()
+            || env_unsafe(&st.words)
+            || st.words.iter().any(|w| dynamic(w))
+        {
+            return Some(Err(()));
+        }
+        match one_push_facts(&rest[k + 1..], &git_working_dir(cwd, &dirs)) {
+            Some(text) => facts.push(text),
+            None => return Some(Err(())),
+        }
+    }
+    if facts.is_empty() {
+        return None;
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(facts.join("\n").as_bytes());
+    Some(Ok(digest.iter().map(|b| format!("{b:02x}")).collect()))
+}
+
+/// The facts of one `git push` (arguments after `push`) run in `wd`.
+fn one_push_facts(push: &[String], wd: &Path) -> Option<String> {
+    let Some((gitdir, common)) = git_dirs(wd) else {
+        // Outside any repository a push fails by itself; a `.git` that cannot be read is
+        // unresolvable.
+        let has_dotgit = wd
+            .ancestors()
+            .any(|d| std::fs::symlink_metadata(d.join(".git")).is_ok());
+        return (!has_dotgit).then(|| "no repository".to_string());
+    };
+    let remote = url_fingerprint(wd)?.join("\n");
+    let mut positional: Vec<&str> = Vec::new();
+    let mut whole = false;
+    for a in push {
+        match a.as_str() {
+            "--all" | "--mirror" | "--tags" | "--branches" => whole = true,
+            s if s.starts_with('-') => {}
+            s => positional.push(s),
+        }
+    }
+    let mut lines = vec![
+        format!("remote {remote}"),
+        format!("head {}", resolve_ref(&gitdir, &common, "HEAD")?),
+    ];
+    if whole || positional.len() < 2 {
+        // No refspec, or every ref: the content of every local branch decides what goes out.
+        lines.push(format!(
+            "packed {}",
+            read_small(&common.join("packed-refs")).unwrap_or_default()
+        ));
+        let mut branches: Vec<String> = Vec::new();
+        collect_refs(&common.join("refs/heads"), "refs/heads", &mut branches);
+        branches.sort();
+        lines.extend(branches);
+    }
+    for spec in positional.iter().skip(1) {
+        let spec = spec.strip_prefix('+').unwrap_or(spec);
+        let (src, dst) = spec.split_once(':').unwrap_or((spec, spec));
+        if src.is_empty() {
+            lines.push(format!("delete {dst}"));
+            continue;
+        }
+        let full = match src {
+            "HEAD" => "HEAD".to_string(),
+            s if s.starts_with("refs/") => s.to_string(),
+            s => format!("refs/heads/{s}"),
+        };
+        lines.push(format!(
+            "{full} {} -> {dst}",
+            resolve_ref(&gitdir, &common, &full)?
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+/// The object id `name` (`HEAD`, `refs/heads/x`) points at, read from the git directory: a loose
+/// ref file, then `packed-refs`. No git process runs. `None` when it cannot be read.
+fn resolve_ref(gitdir: &Path, common: &Path, name: &str) -> Option<String> {
+    let mut name = name.to_string();
+    for _ in 0..5 {
+        let loose = [gitdir, common]
+            .iter()
+            .find_map(|dir| read_small(&dir.join(&name)))
+            .map(|t| t.trim().to_string());
+        let value = match loose {
+            Some(v) => v,
+            None => read_small(&common.join("packed-refs"))?
+                .lines()
+                .find_map(|l| {
+                    l.strip_suffix(name.as_str())
+                        .and_then(|oid| oid.strip_suffix(' '))
+                })
+                .map(str::to_string)?,
+        };
+        match value.strip_prefix("ref: ") {
+            Some(next) => name = next.trim().to_string(),
+            None if value.len() >= 40 && value.chars().all(|c| c.is_ascii_hexdigit()) => return Some(value),
+            None => return None,
+        }
+    }
+    None
+}
+
+/// `<ref> <content>` of every loose ref file under `dir`.
+fn collect_refs(dir: &Path, prefix: &str, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = format!("{prefix}/{}", entry.file_name().to_string_lossy());
+        let Ok(md) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if md.file_type().is_dir() {
+            collect_refs(&entry.path(), &name, out);
+        } else if let Some(text) = read_small(&entry.path()) {
+            out.push(format!("{name} {}", text.trim()));
+        }
+    }
+}
+
 /// What one simple command is, for the publish rule.
 #[derive(PartialEq, Eq)]
 enum Kind {
@@ -48,7 +325,6 @@ enum Kind {
     /// Anything else.
     Other,
 }
-
 /// The segments of `stages` that need an approval, re-joined by the caller's `segment`.
 pub(crate) fn publish_hits(stages: &[Stage], cwd: &Path) -> Vec<String> {
     let unordered = stages.iter().any(|st| st.background || st.mark.is_some());
@@ -211,13 +487,31 @@ fn kind_of(words: &[String], cwd: &Path, moved: bool) -> Kind {
             {
                 return Kind::Unsafe;
             }
-            let hides = args.iter().skip(1).any(|w| {
+            // Only a direct, unambiguous shell file operand is not inline text. Leave
+            // the argv checks, other operands and the mixed-command check unchanged.
+            let script_file = if first_word(words) == Some(name.as_str()) && SHELLS.contains(&base(&name)) {
+                let i = if args.get(1).is_some_and(|w| w == "--") {
+                    2
+                } else {
+                    1
+                };
+                args.get(i)
+                    .filter(|w| {
+                        !w.starts_with('-')
+                            && w.bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))
+                    })
+                    .map(|_| i)
+            } else {
+                None
+            };
+            let hides = args.iter().enumerate().skip(1).any(|(i, w)| {
                 // Quotes and backslashes can split a word (`pu''sh`); compare the plain text.
                 let plain = w.replace(['\'', '"', '\\'], "");
                 w == "gh"
                     || w.contains("gh ")
                     || w.ends_with("/gh")
-                    || (plain.contains("git") && plain.contains("push"))
+                    || (Some(i) != script_file && plain.contains("git") && plain.contains("push"))
                     || (plain.contains("git") && w.contains(['$', '`']))
             }) || args.iter().enumerate().any(|(i, w)| {
                 // A wrapper may rewrite argv before it invokes git. Keep this
@@ -300,13 +594,17 @@ fn git_kind(all: &[String], args: &[String], cwd: &Path, moved: bool) -> Kind {
         return Kind::Unsafe;
     }
     if sub != Some("push") {
-        // An alias can expand to a push; builtin names cannot be shadowed by one.
-        if let Some(name) = sub {
-            if !GIT_LOCAL.contains(&name) && is_alias(&rest[..k], name, cwd, &dirs) {
-                return Kind::Unsafe;
-            }
-        }
-        return Kind::Other;
+        // Git resolves a name that is not one of its documented builtins through
+        // configuration aliases and external `git-*` executables, and such a command may be a
+        // publish command in disguise (`git ship` with `alias.ship = push ...`). Trying to
+        // duplicate Git's alias resolution leaves configuration sources such as conditional
+        // and worktree config uncovered, so an unresolved name asks; a documented builtin is
+        // what it says and keeps its existing classification.
+        return match sub {
+            Some(name) if GIT_BUILTINS.contains(&name) => Kind::Other,
+            Some(_) => Kind::Unsafe,
+            None => Kind::Other,
+        };
     }
     let push = &rest[k + 1..];
     if opaque || moved || env_unsafe(all) || all.iter().any(|w| dynamic(w)) {
@@ -630,6 +928,11 @@ fn urls_unchanged(session: &Path, target: &Path) -> bool {
     }
 }
 
+/// A `core.*` key (lower case, without the section) whose value is a program git runs.
+pub(crate) fn program_running_core_key(key: &str) -> bool {
+    matches!(key, "sshcommand" | "gitproxy" | "hookspath")
+}
+
 fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Option<Vec<String>>) {
     let mut fp: Vec<String> = Vec::new();
     let mut config_risky = false;
@@ -689,7 +992,7 @@ fn scan_config(dir: &Path, branch: &str, implicit: bool) -> (bool, Option<Vec<St
             ("remote", None) => key == "pushdefault",
             ("remote", Some("origin")) => matches!(key.as_str(), "push" | "pushurl" | "mirror"),
             ("url", _) => key == "pushinsteadof",
-            ("core", _) => matches!(key.as_str(), "sshcommand" | "gitproxy" | "hookspath"),
+            ("core", _) => program_running_core_key(&key),
             ("branch", Some(b)) if b == branch && implicit => match key.as_str() {
                 "remote" | "pushremote" => val != "origin",
                 "merge" => val != format!("refs/heads/{branch}"),
@@ -776,91 +1079,4 @@ fn logical_lines(text: &str) -> Vec<String> {
         out.push(buf);
     }
     out
-}
-
-/// Collect the `alias.*` names of one config file. False when the file cannot be read safely
-/// or pulls in another file (an include), so the answer is unknown.
-fn config_aliases(path: &Path, out: &mut Vec<String>) -> bool {
-    let text = match std::fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
-        _ => match read_small(path) {
-            Some(t) => t,
-            None => return false,
-        },
-    };
-    let mut section = String::new();
-    for raw in logical_lines(&text) {
-        let mut line = raw.trim();
-        if line.starts_with('[') {
-            let Some(end) = line.find(']') else { return false };
-            section = line[1..end]
-                .split(['"', ' ', '.'])
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase();
-            line = line[end + 1..].trim();
-        }
-        if section.starts_with("include") {
-            return false;
-        }
-        if section == "alias" && !line.is_empty() && !line.starts_with(['#', ';']) {
-            let key = line.split('=').next().unwrap_or("").trim();
-            out.push(key.to_ascii_lowercase());
-        }
-    }
-    true
-}
-
-/// Whether git subcommand `name` may be an alias: defined by `-c alias.<name>=` on the command
-/// line or in the repo, global or system config. An unreadable config counts as an alias.
-fn is_alias(globals: &[String], name: &str, cwd: &Path, dirs: &[String]) -> bool {
-    let name = name.to_ascii_lowercase();
-    let mut k = 0;
-    while k < globals.len() {
-        if globals[k] == "-c" {
-            if let Some(kv) = globals.get(k + 1) {
-                let key = kv.split('=').next().unwrap_or("").to_ascii_lowercase();
-                if key == format!("alias.{name}") {
-                    return true;
-                }
-            }
-            k += 2;
-        } else {
-            k += 1;
-        }
-    }
-    let mut files: Vec<PathBuf> = Vec::new();
-    let wd = git_working_dir(cwd, dirs);
-    for dir in [cwd, wd.as_path()] {
-        match git_dirs(dir) {
-            Some((_, common)) => files.push(common.join("config")),
-            None => return true,
-        }
-    }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let xdg = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home.as_ref().map(|h| h.join(".config")));
-    if let Some(g) = std::env::var_os("GIT_CONFIG_GLOBAL") {
-        files.push(PathBuf::from(g));
-    }
-    if let Some(h) = &home {
-        files.push(h.join(".gitconfig"));
-    }
-    if let Some(x) = xdg {
-        files.push(x.join("git/config"));
-    }
-    files.push(
-        std::env::var_os("GIT_CONFIG_SYSTEM")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/etc/gitconfig")),
-    );
-    let mut names = Vec::new();
-    for f in &files {
-        if !config_aliases(f, &mut names) {
-            return true;
-        }
-    }
-    names.contains(&name)
 }

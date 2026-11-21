@@ -144,10 +144,21 @@ pub fn run_loop(
     // pi's loop starts with the run's prompt messages (the user messages appended since the
     // last reply): `message_start` / `message_end` each, and they open `agent_end.messages`.
     let opening = crate::fire::opening_messages(st);
-    let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
+    // #2293 A: the declared file deliverables of this run, checked once at its end.
+    let mut done = crate::done::DoneState::default();
+    done.begin(st);
+    let result = run_inner(st, sink, ui, &mut run_msgs, &opening, &mut done);
+    // A failed run records why its pursuing goal stopped; `/goal resume` (or the a2a resume)
+    // continues it in this session.
+    if let Ok(RunEnd::Failed(error)) = &result {
+        crate::goal::record_failure(st, error, sink)?;
+    }
     crate::goal::checkpoint(st, false, sink)?;
     drop(steering);
     crate::think::end_run(st, ui);
+    // The completion record of the files this run declared, also after a wrap-up, an abort or
+    // a failure. A run that declared none emits nothing, so an unrelated task pays nothing.
+    crate::done::report_deliverables(st, &done, sink);
     sink.emit(&AgentEvent::AgentEnd {
         messages: run_msgs.clone(),
         will_retry: false,
@@ -163,12 +174,11 @@ fn run_inner(
     ui: &mut dyn Ui,
     run_msgs: &mut Vec<EventMessage>,
     opening: &[EventMessage],
+    done: &mut crate::done::DoneState,
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
     let mut schema_repaired = None;
     let mut pending_completion = None;
-    let mut done = crate::done::DoneState::default();
-    done.begin(st);
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
     let mut length_recoveries = 0;
@@ -179,6 +189,11 @@ fn run_inner(
     // Consecutive transient failures of one logical request. This state lives inside the run so
     // recovery preserves done checks, the turn limit and the request idempotency key.
     let mut goal_failures: u32 = 0;
+    // #2183: when a tool boundary of a pursuing goal first saw a follow-up that is still queued.
+    let mut follow_up_seen: Option<std::time::Instant> = None;
+    // Replies in a row without a tool call while a goal is pursued: the first continues, the
+    // second adds one nudge, the third and later wait before the next request. Run-local.
+    let mut idle_streak: u32 = 0;
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
@@ -202,6 +217,24 @@ fn run_inner(
             return Ok(RunEnd::Failed(e));
         }
         if !wrapping_up {
+            // Time awareness: one short note at 70% and one at 90% of `--max-time`. It is a user
+            // message at a turn boundary, so the frozen prefix does not change.
+            let note = (crate::Handle {
+                shared: st.shared.clone(),
+            })
+            .take_time_note();
+            if let Some(note) = note {
+                let tail = if note.percent >= 90 {
+                    "; commit what works now"
+                } else {
+                    ""
+                };
+                let text = format!(
+                    "[time: {}% of this run's time limit used, about {} min left{tail}]",
+                    note.percent, note.minutes_left
+                );
+                push_user(st, text, sink, ui, run_msgs)?;
+            }
             let reason = match st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) {
                 1 => Some(crate::WrapUpReason::TimeLimit),
                 2 => Some(crate::WrapUpReason::Signal),
@@ -210,7 +243,15 @@ fn run_inner(
             };
             if let Some(reason) = reason {
                 wrapping_up = true;
-                push_user(st, crate::prompt::WRAP_UP.to_string(), sink, ui, run_msgs)?;
+                crate::progress::notify(
+                    st,
+                    crate::Progress::WrapUp {
+                        limit: reason.limit(),
+                    },
+                );
+                // #2293 A: a declared file that is not on disk is named here, so the last
+                // turn can still write it.
+                push_user(st, crate::done::wrap_up_message(done), sink, ui, run_msgs)?;
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Info,
                     text: reason.notice().to_string(),
@@ -231,7 +272,7 @@ fn run_inner(
             }
         }
         let first = st.stats.requests == 0;
-        let expected = expected_cached(st);
+        let mut expected = expected_cached(st);
 
         let pending = pending_message();
         sink.emit(&AgentEvent::MessageStart {
@@ -243,7 +284,7 @@ fn run_inner(
         crate::think::before_reply(st, ui);
         let mut opts = RequestOpts {
             kind: TurnKind::Chat,
-            max_tokens: wrapping_up.then_some(1024),
+            max_tokens: wrapping_up.then(|| wrap_up_tokens(st)),
             thinking: wrapping_up.then_some(false),
             background: false,
             snapshot_keep: false,
@@ -264,7 +305,7 @@ fn run_inner(
             events: true,
             idem_key: String::new(),
         };
-        let thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
+        let mut thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
         let mut retried = false;
         let mut empty_retries: u32 = 0;
         let mut replays: u32 = 0;
@@ -382,38 +423,96 @@ fn run_inner(
                     } else {
                         partial
                     };
-                    let progress = persist(st, EntryBody::Shown { text, why }, sink)?;
                     let retry_stopped = st.shared.gate.retry_stopped.swap(false, Ordering::SeqCst);
-                    if !retry_stopped {
-                        if let Some(delay) = crate::goal::failure_backoff(st, &e, goal_failures) {
-                            goal_failures += 1;
-                            let text = format!(
+                    let delay = (!retry_stopped)
+                        .then(|| crate::goal::failure_backoff(st, &e, goal_failures))
+                        .flatten();
+                    let progress = persist_with(st, EntryBody::Shown { text, why }, delay.is_some(), sink)?;
+                    if let Some(delay) = delay {
+                        goal_failures += 1;
+                        let text = format!(
                                 "Goal waiting {} s after a transient request failure ({}); no request is sent meanwhile, then the goal continues.",
                                 delay.as_secs(), e.code
                             );
-                            persist(
+                        persist(
+                            st,
+                            EntryBody::Shown {
+                                text: text.clone(),
+                                why: shown_why::NOTICE,
+                            },
+                            sink,
+                        )?;
+                        let shared = st.shared.clone();
+                        shared.wait_wake.reset();
+                        *crate::queue::lock(&shared.gate.backoff_model) = Some(None);
+                        sink.emit(&AgentEvent::Notice {
+                            level: Level::Info,
+                            text,
+                        });
+                        let deadline = std::time::Instant::now() + delay;
+                        loop {
+                            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                            let has_input = shared.has_steering();
+                            let ended = crate::goal::wait_failure_backoff(
                                 st,
-                                EntryBody::Shown {
-                                    text: text.clone(),
-                                    why: shown_why::NOTICE,
+                                if has_input {
+                                    std::time::Duration::ZERO
+                                } else {
+                                    remaining
                                 },
-                                sink,
-                            )?;
-                            sink.emit(&AgentEvent::Notice {
-                                level: Level::Info,
-                                text,
-                            });
-                            match crate::goal::wait_failure_backoff(st, delay) {
-                                crate::goal::BackoffEnd::Elapsed => {
-                                    sink.emit(&AgentEvent::MessageStart {
-                                        message: pending_message(),
-                                    });
-                                    continue;
-                                }
+                            );
+                            let mut waiting = crate::queue::lock(&shared.gate.backoff_model);
+                            let model = waiting.take().flatten();
+                            shared.wait_wake.reset();
+                            drop(waiting);
+                            match ended {
                                 crate::goal::BackoffEnd::Aborted => return Ok(RunEnd::Aborted),
                                 crate::goal::BackoffEnd::RetryStopped => return Ok(RunEnd::Failed(e)),
+                                crate::goal::BackoffEnd::Elapsed => {}
                             }
+                            let mut changed = false;
+                            if let Some(model) = model.filter(|m| *m != st.model) {
+                                match crate::session::switch_model(
+                                    st,
+                                    &model,
+                                    crate::OverCap::Refuse,
+                                    sink,
+                                    ui,
+                                ) {
+                                    Ok(()) => changed = true,
+                                    // A persistence error after the model changed must not replay the old key.
+                                    Err(error) if st.model == model => return Err(error),
+                                    Err(error) => sink.emit(&AgentEvent::Notice {
+                                        level: Level::Warning,
+                                        text: format!(
+                                            "{error}. Stop the retry to use the full model switch dialog."
+                                        ),
+                                    }),
+                                }
+                            }
+                            changed |= deliver_steering(st, sink, ui, run_msgs)?;
+                            if changed {
+                                opts.idem_key.clear();
+                                goal_failures = 0;
+                                replays = 0;
+                                retried = false;
+                                empty_retries = 0;
+                                expected = expected_cached(st);
+                                thinking_on =
+                                    !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
+                            }
+                            if changed || std::time::Instant::now() >= deadline {
+                                sink.emit(&AgentEvent::MessageStart {
+                                    message: pending_message(),
+                                });
+                                break;
+                            }
+                            *crate::queue::lock(&shared.gate.backoff_model) = Some(None);
                         }
+                        continue;
+                    }
+                    if e.code == "cloud_quota_exhausted" {
+                        return Ok(RunEnd::Failed(e));
                     }
                     let soft_stop = st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0;
                     if soft_stop {
@@ -724,9 +823,12 @@ fn run_inner(
                 crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
                 tool_msgs.push(msg);
             }
+            idle_streak = 0;
             done.note_edits(&results);
+            st.stats.ci_polls += results.iter().filter(|r| r.ui["ciPoll"] == true).count() as u32;
             done.note_proof(&calls, &results);
             done.note_bash(st, &results);
+            crate::exec::note_stored_images(st, &results, sink)?;
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;
@@ -745,7 +847,7 @@ fn run_inner(
 
             crate::goal::account(st, false)?;
             if crate::goal::terminal(st) {
-                let _ = crate::done::check(st, &mut done, sink, ui);
+                let _ = crate::done::check(st, done, sink, ui);
                 crate::advice::observe_done(st, done.observation.take(), false, sink)?;
                 if st.stats.done_failed {
                     if let Some(goal) = &st.goal {
@@ -766,11 +868,27 @@ fn run_inner(
                             continue;
                         }
                     }
+                    // One nudge per open fact (unproven edits, running jobs): the goal stays
+                    // pursuing for one more turn, then the completion goes through.
+                    if !wrapping_up && !st.shared.has_input() {
+                        match crate::done::finish_decision(st, done, true) {
+                            crate::done::FinishDecision::Nudge(text) => {
+                                pending_completion = goal.defer_completion();
+                                crate::goal::checkpoint(st, false, sink)?;
+                                crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                                continue;
+                            }
+                            crate::done::FinishDecision::End { unresolved } => {
+                                crate::done::record_end(st, done, &unresolved, sink)?;
+                            }
+                        }
+                    }
                 }
                 crate::goal::checkpoint(st, false, sink)?;
                 return Ok(RunEnd::Stopped);
             }
             crate::goal::checkpoint(st, false, sink)?;
+            announce_exceeded(st, &results, sink)?;
 
             if st.shared.cancel.is_cancelled() || wrapping_up {
                 return Ok(wrap_up_failure.map_or(RunEnd::Aborted, RunEnd::Failed));
@@ -820,7 +938,7 @@ fn run_inner(
                     });
                     // The files edited so far are still checked and the result shown; the run
                     // is over, so a failure is not sent back to the model.
-                    let _ = crate::done::check(st, &mut done, sink, ui);
+                    let _ = crate::done::check(st, done, sink, ui);
                     crate::advice::observe_done(st, done.observation.take(), false, sink)?;
                     // Not a finished task: a caller must not read it as success.
                     return Ok(RunEnd::Failed(OxaError::new("advisor_escalation_required", text)));
@@ -844,6 +962,14 @@ fn run_inner(
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
+            // #2183: a pursuing goal can call tools without ever stopping or waiting, so a
+            // follow-up is not left behind such a turn for ever: one that has waited
+            // `oxa.goal.followUpMaxWaitSeconds` is delivered at this tool boundary.
+            if crate::goal::follow_up_due(st, &mut follow_up_seen) {
+                for text in drain_follow_ups(st, sink) {
+                    push_user(st, text, sink, ui, run_msgs)?;
+                }
+            }
             // A wait that input woke hands that input to the model now: a follow-up is
             // otherwise only drained when the run stops, after the model has answered
             // the wait result without it.
@@ -908,7 +1034,7 @@ fn run_inner(
         if deliver_steering(st, sink, ui, run_msgs)? {
             continue;
         }
-        let failed_check = crate::done::check(st, &mut done, sink, ui);
+        let failed_check = crate::done::check(st, done, sink, ui);
         let advised = crate::advice::observe_done(st, done.observation.take(), true, sink)?;
         if matches!(advised, crate::advice::AdviceResult::Escalate) {
             return Ok(RunEnd::Failed(OxaError::new(
@@ -931,6 +1057,17 @@ fn run_inner(
         }
         if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
             crate::goal::checkpoint(st, false, sink)?;
+            if pending_completion.is_some() && turn.finish != Finish::Length && !st.shared.has_input() {
+                match crate::done::finish_decision(st, done, true) {
+                    crate::done::FinishDecision::Nudge(text) => {
+                        crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                        continue;
+                    }
+                    crate::done::FinishDecision::End { unresolved } => {
+                        crate::done::record_end(st, done, &unresolved, sink)?;
+                    }
+                }
+            }
             if let Some(evidence) = pending_completion.take() {
                 if goal.pursuing() {
                     goal.finish_completion(evidence)?;
@@ -939,15 +1076,42 @@ fn run_inner(
                 return Ok(RunEnd::Stopped);
             }
             let was_pursuing = goal.pursuing();
-            let (snapshot, idle_noted) = goal.stopped(st.settings.user_bool("oxa.goal.idlePause", false));
+            let idle_action = crate::goal::idle_action(st, &goal, max_turns);
+            let (mut snapshot, idle_noted) = goal.stopped(idle_action.enforces());
+            let mut idle_stopped = None;
+            if idle_action == oxa_config::OnExceed::Stop
+                && was_pursuing
+                && snapshot.status == oxa_session::GoalStatus::Paused
+            {
+                let reason = snapshot.pause_reason.clone().unwrap_or_default();
+                snapshot = goal.stop_because(&reason);
+                idle_stopped = Some(reason);
+            }
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
             if idle_noted {
                 crate::goal::announce_idle(sink);
+                crate::goal::record_notice(st, crate::goal::IDLE_NOTICE.into(), sink)?;
             }
             if was_pursuing && snapshot.status == oxa_session::GoalStatus::Paused {
                 if let Some(reason) = snapshot.pause_reason.as_deref() {
                     crate::goal::announce_pause(reason, sink);
+                    crate::goal::record_notice(st, format!("Goal paused: {reason}; /goal resume"), sink)?;
                 }
+            }
+            if let Some(reason) = idle_stopped {
+                crate::goal::record_exceeded(
+                    st,
+                    format!("Goal stopped: {reason} (oxa.onExceed.goalIdle is stop)"),
+                    sink,
+                )?;
+            }
+            if goal.pursuing() && st.active.get("goal_done").is_none() {
+                // The owner's tool selection removed the goal controls: the continue
+                // instruction would name a tool that does not exist, so stop with a reason.
+                let snapshot = goal.pause_because(crate::goal::CONTROLS_MISSING);
+                crate::goal::save_checkpoint(st, &snapshot, sink)?;
+                crate::goal::announce_pause(crate::goal::CONTROLS_MISSING, sink);
+                return Ok(RunEnd::Stopped);
             }
             if goal.pursuing() {
                 // Queued input (a follow-up that woke a wait) is the next user message:
@@ -955,7 +1119,49 @@ fn run_inner(
                 if st.shared.has_input() {
                     return Ok(RunEnd::Stopped);
                 }
-                push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
+                idle_streak += 1;
+                // A reply that matched the output schema is an answer, not an idle reply: say
+                // that it was recorded and what comes next (a wait or goal_done).
+                let answered = st.output_schema.is_some();
+                let mut text = if answered {
+                    crate::prompt::GOAL_CONTINUE_AFTER_ANSWER
+                } else {
+                    crate::prompt::GOAL_CONTINUE
+                };
+                if idle_streak == 2 {
+                    text = crate::prompt::GOAL_IDLE_NUDGE;
+                } else if let Some(delay) = crate::goal::idle_wait(st, &goal, idle_streak) {
+                    let note = format!(
+                        "Goal idle: {idle_streak} replies without an action; waiting {} s (oxa.goal.idleBackoffSeconds; oxa.goal.idlePause pauses instead)",
+                        delay.as_secs()
+                    );
+                    st.shared.wait_wake.reset();
+                    persist(
+                        st,
+                        EntryBody::Shown {
+                            text: note.clone(),
+                            why: shown_why::NOTICE,
+                        },
+                        sink,
+                    )?;
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Info,
+                        text: note,
+                    });
+                    if st.shared.has_input() {
+                        return Ok(RunEnd::Stopped);
+                    }
+                    match crate::goal::wait_failure_backoff(st, delay) {
+                        crate::goal::BackoffEnd::Aborted => return Ok(RunEnd::Aborted),
+                        crate::goal::BackoffEnd::RetryStopped => return Ok(RunEnd::Stopped),
+                        crate::goal::BackoffEnd::Elapsed => {}
+                    }
+                    st.shared.wait_wake.reset();
+                    if st.shared.has_input() {
+                        return Ok(RunEnd::Stopped);
+                    }
+                }
+                push_user(st, text.into(), sink, ui, run_msgs)?;
                 continue;
             }
         }
@@ -978,6 +1184,17 @@ fn run_inner(
                     .to_string(),
             });
             continue;
+        }
+        if turn.finish != Finish::Length && !st.shared.has_input() {
+            match crate::done::finish_decision(st, done, false) {
+                crate::done::FinishDecision::Nudge(text) => {
+                    crate::done::send_nudge(st, text, sink, ui, run_msgs)?;
+                    continue;
+                }
+                crate::done::FinishDecision::End { unresolved } => {
+                    crate::done::record_end(st, done, &unresolved, sink)?;
+                }
+            }
         }
         return Ok(RunEnd::Stopped);
     }
@@ -1120,6 +1337,32 @@ fn drain_follow_ups(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> 
         sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
     }
     taken
+}
+
+/// An owner budget a tool result exceeded (`oxa.onExceed`): one warning notice and one recorded
+/// `Shown` entry per result, whatever the action was (warn, or a refused call).
+fn announce_exceeded(
+    st: &mut SessionState,
+    results: &[crate::exec::CallResult],
+    sink: &mut dyn EventSink,
+) -> Result<(), OxaError> {
+    for result in results {
+        if let Some((_, notice)) = oxa_proto::ToolOutput::exceeded_notice(&result.ui) {
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Warning,
+                text: notice.to_string(),
+            });
+            persist(
+                st,
+                EntryBody::Shown {
+                    text: notice.to_string(),
+                    why: shown_why::NOTICE,
+                },
+                sink,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Persist a body and announce the entry. A dropped reply (aborted, failed, cut) ends the
@@ -1430,4 +1673,17 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Output cap of the wrap-up turn: the owner's `oxa.run.wrapUpTokens`, else the model's own
+/// output limit, at most 4096 (room to commit and report).
+fn wrap_up_tokens(st: &SessionState) -> u32 {
+    let own = st.settings.user_u32("oxa.run.wrapUpTokens", 0);
+    if own > 0 {
+        return own;
+    }
+    match st.info.max_output {
+        0 => 4096,
+        limit => limit.min(4096),
+    }
 }

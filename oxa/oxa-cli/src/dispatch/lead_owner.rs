@@ -28,7 +28,7 @@ pub struct LeadOwnerBinding {
     file: (u64, u64),
 }
 
-fn unavailable() -> OxaError {
+pub(crate) fn unavailable() -> OxaError {
     OxaError::new(
         "lead_owner_unavailable",
         "The selected Lead session is unavailable.",
@@ -42,12 +42,12 @@ fn canonical(path: &Path) -> Result<(), OxaError> {
     Ok(())
 }
 
-fn private_file(path: &Path, uid: u32) -> Result<File, OxaError> {
+pub(crate) fn private_file(path: &Path, uid: u32) -> Result<File, OxaError> {
     canonical(path)?;
     crate::lead_input::open(path, uid).map_err(|_| unavailable())
 }
 
-fn private_directory(path: &Path, uid: u32) -> Result<(), OxaError> {
+pub(crate) fn private_directory(path: &Path, uid: u32) -> Result<(), OxaError> {
     canonical(path)?;
     let metadata = fs::symlink_metadata(path).map_err(|_| unavailable())?;
     if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
@@ -57,7 +57,7 @@ fn private_directory(path: &Path, uid: u32) -> Result<(), OxaError> {
 }
 
 /// The owner-private user settings, or `None` when no settings file exists.
-fn user_settings(dirs: &Dirs, uid: u32) -> Result<Option<Value>, OxaError> {
+pub(crate) fn user_settings(dirs: &Dirs, uid: u32) -> Result<Option<Value>, OxaError> {
     let path = dirs.settings_file();
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -144,6 +144,11 @@ fn dedicated_file(path: &Path, uid: u32, id: &str, project: &Path) -> Result<Opt
 }
 
 impl LeadOwnerBinding {
+    /// The dedicated Lead session's exact id: the parent of the workers it starts.
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session.id
+    }
+
     /// Explicit operator action after owner authentication. Returns a new ID for
     /// user settings. Opens no provider and imports no history, model, or goal.
     pub fn create(dirs: &Dirs, canonical_project: &Path, owner_uid: u32) -> Result<String, OxaError> {

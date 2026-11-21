@@ -11,8 +11,6 @@ use oxa_proto::{Autonomy, YoloSwitch};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::MemStore;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -55,17 +53,8 @@ fn sockets_under(tmp: &std::path::Path) -> Vec<PathBuf> {
 }
 
 /// One question through `sock`, answered by whatever broker (if any) is bound there.
-fn ask(sock: &std::path::Path) -> serde_json::Value {
-    let mut stream = UnixStream::connect(sock).expect("connect");
-    writeln!(
-        stream,
-        "{}",
-        serde_json::json!({"question": "Push?", "preview_sha256": "test"})
-    )
-    .expect("write");
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).expect("reply");
-    serde_json::from_str(&line).expect("json")
+fn ask(sock: &std::path::Path) -> oxa_core::owner_confirm::Reply {
+    oxa_core::owner_confirm::ask(sock, &oxa_core::owner_confirm::Request::ask("Push", "Push?"))
 }
 
 /// Two SDK sessions in one process share `Dirs`: their brokers must stay separate, and a
@@ -99,7 +88,8 @@ fn two_sessions_in_one_process_keep_their_own_brokers() {
     // serving its dialog. It must not reach the second session's yolo broker and answer yes.
     let answer = ask(&first_sock);
     assert_ne!(
-        answer["answer"], "yes",
+        answer.verdict,
+        oxa_core::owner_confirm::Verdict::Yes,
         "a standard session must never inherit a second session's yolo answer"
     );
 }

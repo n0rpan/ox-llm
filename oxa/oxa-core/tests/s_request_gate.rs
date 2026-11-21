@@ -428,6 +428,52 @@ fn queued_run_applies_changed_settings_only_when_live_settings_is_on() {
 }
 
 #[test]
+fn live_project_settings_respect_saved_folder_content_and_denial() {
+    for (policy, denied, expected) in [
+        ("folder", false, "echo updated check"),
+        ("content", false, "echo original check"),
+        ("folder", true, "echo original check"),
+    ] {
+        let env = TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let cwd = env.work();
+        let user = dirs.settings_file();
+        let project = dirs.project_settings_file(&cwd);
+        for path in [&user, &project] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        std::fs::write(user, format!(r#"{{"projectTrustPolicy":"{policy}"}}"#)).unwrap();
+        std::fs::write(&project, r#"{"done":["echo original check"]}"#).unwrap();
+        let file = dirs.trust_file();
+        let mut trust = oxa_perm::TrustStore::load(&file);
+        trust.save(&file, &cwd, true).unwrap();
+        trust.approve(&file, &cwd).unwrap();
+        let (engine, _) = Holding::new(vec![ScriptTurn::text("answer")]);
+        let settings = Settings::load(&dirs, &cwd, true);
+        let mut session = open_with_settings(&env, engine, Vec::new(), settings);
+        if denied {
+            trust.save(&file, &cwd, false).unwrap();
+        }
+        std::fs::write(
+            &project,
+            r#"{"done":["echo updated check"],"projectTrustPolicy":"folder"}"#,
+        )
+        .unwrap();
+        session.handle().follow_up("waiting".to_string());
+        let mut sink = VecSink::default();
+        assert_eq!(
+            session.run_queued(&mut sink, &mut HeadlessUi::default()).unwrap(),
+            Some(RunEnd::Stopped)
+        );
+        assert_eq!(session.inner().settings.list("done"), vec![expected.to_string()]);
+        let reloaded = sink.0.iter().any(|event| {
+            matches!(event, AgentEvent::Notice { text, .. } if text.contains("Project settings reloaded:") && text.contains("settings.json"))
+        });
+        assert_eq!(reloaded, policy == "folder" && !denied);
+    }
+}
+
+#[test]
 fn queued_run_preserves_settings_supplied_by_the_session_caller() {
     let env = TestEnv::new();
     let (engine, _started) = Holding::new(vec![ScriptTurn::text("answer")]);

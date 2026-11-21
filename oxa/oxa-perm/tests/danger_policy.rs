@@ -329,3 +329,78 @@ fn preservation_note_covers_every_destructive_rule() {
     assert!(hits[0].1.contains("reversible checkpoint"), "{hits:?}");
     assert!(hits[0].1.contains(requirement), "{hits:?}");
 }
+
+/// #784: an owner-named root action skips oxa's own `sudo` question for exactly that command; a
+/// compound line, a computed word or a redirect keeps it, and a policy built without the list (a
+/// worker) still asks.
+#[cfg(unix)]
+#[test]
+fn a_named_root_action_skips_only_the_sudo_question() {
+    let guard = guard();
+    let entries = vec!["check: /usr/bin/true *".to_string()];
+    let (rules, warnings) = DangerRules::builtin().with_root_actions(&entries);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let ids = |rules: &DangerRules, command: &str| -> Vec<String> {
+        rules
+            .classify(command, cwd(), &guard)
+            .into_iter()
+            .map(|hit| hit.rule)
+            .collect()
+    };
+    assert!(ids(&rules, "/usr/bin/sudo /usr/bin/true a").is_empty());
+    assert!(ids(&rules, "/usr/bin/sudo -n /usr/bin/true a").is_empty());
+    for command in [
+        "/usr/bin/sudo /usr/bin/true a; rm -rf /",
+        "/usr/bin/sudo /usr/bin/true $X",
+        "/usr/bin/sudo /usr/bin/true {a,b}",
+        "/usr/bin/sudo /usr/bin/true *.conf",
+        "/usr/bin/sudo /usr/bin/true slot?",
+        "/usr/bin/sudo /usr/bin/true slot[12]",
+        "/usr/bin/sudo /usr/bin/true ~",
+        "/usr/bin/sudo /usr/bin/true a > /etc/x",
+        "sudo rm -rf /srv",
+        "/usr/bin/sudo /usr/bin/true a b",
+        "/usr/bin/sudo ./true a",
+        "/usr/bin/sudo -u root /usr/bin/true a",
+        "sudo /usr/bin/true a",
+        "/usr/bin/sudo true a",
+    ] {
+        assert!(ids(&rules, command).contains(&"sudo".to_string()), "{command}");
+    }
+    // A policy built without the list (the worker path) still asks.
+    let plain = DangerRules::builtin();
+    assert_eq!(
+        ids(&plain, "/usr/bin/sudo /usr/bin/true a"),
+        vec!["sudo".to_string()]
+    );
+    let (legacy, warnings) = DangerRules::builtin().with_root_actions(&["check: true *".into()]);
+    assert_eq!(ids(&legacy, "sudo true a"), vec!["sudo".to_string()]);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    for entry in [
+        "no colon here",
+        "check: /usr/bin/../bin/true *",
+        "check: /usr/bin *",
+    ] {
+        let (_, warnings) = DangerRules::builtin().with_root_actions(&[entry.into()]);
+        assert_eq!(warnings.len(), 1, "{entry}: {warnings:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_named_root_action_rejects_a_writable_executable_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = oxa_fake::TestEnv::new();
+    let dir = env.work().canonicalize().unwrap();
+    let target = dir.join("fixture");
+    std::fs::write(&target, b"not executed").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let (rules, warnings) =
+        DangerRules::builtin().with_root_actions(&[format!("fixture: {}", target.display())]);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(rules
+        .classify(&format!("/usr/bin/sudo '{}'", target.display()), &dir, &guard())
+        .iter()
+        .any(|hit| hit.rule == "sudo"));
+}

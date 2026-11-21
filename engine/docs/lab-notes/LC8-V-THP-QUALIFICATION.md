@@ -19,7 +19,7 @@ bullet). Everything else is the plan, its acceptance fields and its decision rul
 | The measurement route exists and already writes a JSON receipt: engine commit, effective switch line, model path, cpus/threads, `n_ctx`, ms/token (median/mean/min/p90), tok/s, barriers/token, generated ids **and their hash**, load seconds/backing/cache hit, `memory_kb`, kernel cflags | `oxe bench --out FILE` ([oxe.rs](../../crates/oxe-cli/src/bin/oxe.rs#L2476)); wrapper [run_bench.sh](../../tools/run_bench.sh) |
 | `memory_kb` already carries VmHWM, VmRSS, RssAnon, RssFile and `smaps.AnonHugePages` / `smaps.Rss` / `smaps.FilePmdMapped` | [memory_report](../../crates/model/src/load.rs#L51) |
 | Admission uses **qualified bounds**, not observed RSS: `kv_bytes_per_position`, `scratch_bytes`, `mtp_state_bytes`, `margin_bytes` against context padded to 256; `oxe admission --json` emits them for a model and launch profile ([SERVER.md](SERVER.md), `oxe-cli/src/admission_cmd.rs`) | [admission.rs](../../../oxa/oxc-local/src/admission.rs#L11) |
-| `--thp-collapse` is a different knob: it applies `MADV_HUGEPAGE` + `MADV_COLLAPSE` to the **weights** backing, never to the V region | [weights.rs](../../crates/model/src/weights.rs#L817), [M2.md](M2.md) |
+| `--thp-collapse` is a different knob: it applies `MADV_HUGEPAGE` + `MADV_COLLAPSE` to the **weights** backing, never to the V region | [weights.rs](../../crates/model/src/weights.rs#L817); the earlier `M2.md` lab note is not kept in this tree |
 | The prior THP receipt in the tree is also a different arm: `flash-next-thp.json` disables THP for a **whole process** on the Flash engine, records `production_admitted: false`, and notes that whole-process disable also removes useful dense THP | [flash-next-thp.json](../../../oxc/benchmarks/results/flash-next-thp.json) |
 | This PR: the effective switch line now names the V-region arm (`kv_v_thp=0|1`) | [engine.rs:796](../../crates/model/src/engine.rs#L796) |
 
@@ -87,7 +87,8 @@ existing route writes it and the plan only asks that it be kept, not re-derived.
 - **Qwen first, but never extrapolated to Ornith.** Both models are measured or the note says why
   not.
 - **Do not rerun disqualified variants.** MTP depths already qualified/refused in
-  [M3-MTP.md](M3-MTP.md) and the legacy per-head attention path in [M3-ATTN.md](M3-ATTN.md) stay
+  the earlier `M3-MTP.md` lab note and the legacy per-head attention path in `M3-ATTN.md` (neither
+  note is kept in this tree) stay
   as they are; this plan touches one madvise only.
 - **Exactness first.** A throughput or memory difference with unequal `generated_hash` is
   reported as an exactness problem, not as a gain.

@@ -115,6 +115,13 @@ pub struct Stats {
     /// The current prompt/triggered operation exhausted its `done` repair rounds. Reset
     /// when new agent work is claimed; process-wide aggregation lives in the drivers.
     pub done_failed: bool,
+    /// The last run's finish decision: `Some(true)` an edit was followed by a passing check,
+    /// `Some(false)` it was not, `None` the run changed no file.
+    pub proved: Option<bool>,
+    /// Background jobs still running when the last run ended (after the finish nudge).
+    pub jobs_left: u32,
+    /// `bash` results of the current operation that carried the CI polling note (`ui.ciPoll`).
+    pub ci_polls: u32,
     /// Whether the current agent operation's last reply stopped at its output token limit.
     pub output_truncated: bool,
     /// Terminal result of the last prompt or extension-triggered run.
@@ -128,7 +135,6 @@ pub struct Session {
     pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
-    startup_limit: Option<Box<dyn Send>>,
 }
 
 /// The CLI-level choices of [`Session::open`]. `None` in [`enter`] means a switch inside a
@@ -314,11 +320,7 @@ impl Session {
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
-        let session = Session {
-            st,
-            preloaded: false,
-            startup_limit: None,
-        };
+        let session = Session { st, preloaded: false };
         session.bind_jobs_owner();
         sync_job_wake(&session.st);
         // The hook is always installed: `wake_job` asks the live setting, which a reload updates.
@@ -394,6 +396,8 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<(), OxaError> {
+        // Answers the broker gave without any pump (yolo) are recorded at the start of every turn.
+        crate::host::drain_owner_confirm_records(&mut self.st, sink);
         // pi (agent-session.ts `prompt`): a line naming an extension command runs that command
         // instead of a prompt; no run starts unless the command triggers one.
         if let Expanded::Hook { name, args } = crate::expand_input(&self.st, &text) {
@@ -540,6 +544,9 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<RunEnd>, OxaError> {
+        if self.st.goal.is_some() {
+            crate::open_epoch(&mut self.st, "goal", false, sink)?;
+        }
         let guard = self.begin_run()?;
         let ran = oxa_proto::panic::contain(|| queued_run(&mut self.st, sink, ui, true))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
@@ -623,7 +630,6 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::fork_at(&mut self.st, entry, &mut ui);
         if r.is_ok() {
-            drop(self.startup_limit.take());
             self.st.jobs.reset();
             self.bind_jobs_owner();
         }
@@ -636,7 +642,6 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::clone_current(&mut self.st, &mut ui);
         if r.is_ok() {
-            drop(self.startup_limit.take());
             self.st.jobs.reset();
             self.bind_jobs_owner();
         }
@@ -653,7 +658,6 @@ impl Session {
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
-        drop(self.startup_limit.take());
         self.bind_jobs_owner();
         self.preloaded = false;
         Ok(())
@@ -969,16 +973,10 @@ impl Session {
         &self.st
     }
 
-    /// Keep the startup limit armed until this session closes or switches files.
-    pub fn hold_startup_limit(&mut self, limit: impl Send + 'static) {
-        self.startup_limit = Some(Box::new(limit));
-    }
-
     /// Leave this session without stopping the hook sets: fire `SessionShutdown` and drop the
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
-        drop(self.startup_limit.take());
         crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
@@ -988,6 +986,7 @@ impl Session {
             &mut sink,
             ui,
         );
+        crate::host::drain_owner_confirm_records(&mut self.st, &mut sink);
         if let Some(broker) = self.st.shared.owner_confirm() {
             broker.close();
         }
@@ -1174,6 +1173,9 @@ impl Session {
         let guard = self.begin_foreground()?;
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
+        self.st.stats.proved = None;
+        self.st.stats.jobs_left = 0;
+        self.st.stats.ci_polls = 0;
         self.st.stats.output_truncated = false;
         crate::goal::begin(&self.st);
         Ok(guard)
@@ -1773,7 +1775,8 @@ fn restore_locked(
     match replayed {
         Some(prefix) => {
             st.prefix = prefix;
-            crate::tune::refresh(st);
+            // The stored prefix declares `wait` and the goal controls; bind live handlers to them.
+            crate::epoch::rebind_tools(st, sink);
             let enabled = st.compact.enabled;
             st.compact = CompactPolicy {
                 enabled,
@@ -2327,7 +2330,11 @@ pub(crate) fn budget_confirmed(st: &SessionState) -> bool {
 ///   budget is provisional, each limit the smaller of the previous one and the reported one,
 ///   and it is re-read before and after each run until the engine reports the target.
 /// * An `info` failure keeps the previous metadata (a notice says so); the policy is still
-///   recomputed so changed settings apply.
+///   recomputed so changed settings apply. It also drops the previous model's provider and
+///   keeps the remote flag ([`oxa_proto::EngineCaps::remote`]): the engine did not say where
+///   the switched-to model runs, so the session labels it remote but unverified rather than
+///   keeping the old model's `cloud · <provider>` label (`remote` without a provider). The
+///   next successful re-read replaces the flag.
 ///
 /// Auto-compaction: the runtime switch (`set_auto_compaction`) wins over the
 /// `compaction.enabled` setting. `prev_enabled` is that setting before a `/reload`: only when
@@ -2386,11 +2393,17 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             st.info.caps.remote = true;
             notice(sink, Level::Warning, e.to_string());
         }
-        Err(e) => notice(
-            sink,
-            Level::Warning,
-            format!("could not re-read the engine limits ({e}); keeping the previous ones"),
-        ),
+        Err(e) => {
+            notice(
+                sink,
+                Level::Warning,
+                format!("could not re-read the engine limits ({e}); keeping the previous ones"),
+            );
+            if st.info.limits_for != st.model {
+                st.info.caps.remote = true;
+                st.info.caps.remote_provider = None;
+            }
+        }
     }
     apply_budget_settings(st, prev_enabled);
 }

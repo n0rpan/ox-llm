@@ -120,6 +120,8 @@ mod autonomy_tests {
             content_scan: None,
             offline: false,
             runner_owns_github: false,
+            github_token_command: Vec::new(),
+            github_token_write_paths: Vec::new(),
             worker_github: crate::WorkerGithub::default(),
             autonomy: oxa_proto::Autonomy::Yolo,
             authority_now: Some(now),
@@ -215,6 +217,7 @@ pub(crate) fn run(
         .env_remove(crate::WORKTREE_TRUST_SOURCE_ENV)
         .env_remove(oxa_proto::names::ENV_UNATTENDED);
     mark_unattended(&mut command);
+    command.env("OXA_WORK_INBOX", "1");
     command.current_dir(root).args([
         "--mode=json",
         "--model",
@@ -514,6 +517,8 @@ mod tests {
             offline: true,
             runner_owns_github: false,
             autonomy: oxa_proto::Autonomy::default(),
+            github_token_command: Vec::new(),
+            github_token_write_paths: Vec::new(),
             worker_github: Default::default(),
             authority_now: None,
             storage: std::env::temp_dir(),

@@ -21,7 +21,8 @@ impl RunOutcome {
             | codes::OFFLINE
             | "cloud_credentials_unavailable"
             | "cloud_ledger_unavailable"
-            | "cloud_sdk_unavailable" => Self::Blocked(error.code),
+            | "cloud_sdk_unavailable"
+            | "cloud_quota_exhausted" => Self::Blocked(error.code),
             _ => Self::Failed(error.code),
         }
     }
