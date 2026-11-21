@@ -660,6 +660,9 @@ impl Session {
         let reason = payload["reason"].as_str().unwrap_or("new");
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
+        if let Some(capture) = self.st.shared.gate.wire_evidence.get() {
+            capture.stop();
+        }
         enter(&mut self.st, how, None, sink, ui)?;
         self.bind_jobs_owner();
         self.preloaded = false;
@@ -972,6 +975,16 @@ impl Session {
     }
 
     /// Read access for front ends (tree view, export, RPC `get_entries`).
+    /// Arm process-local evidence for this session. The owner CLI is the sole caller.
+    pub fn arm_wire_evidence(&mut self) -> crate::wire_evidence::WireEvidence {
+        self.st
+            .shared
+            .gate
+            .wire_evidence
+            .get_or_init(crate::wire_evidence::WireEvidence::start)
+            .clone()
+    }
+
     pub fn inner(&self) -> &SessionState {
         &self.st
     }
@@ -980,6 +993,9 @@ impl Session {
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
+        if let Some(capture) = self.st.shared.gate.wire_evidence.get() {
+            capture.stop();
+        }
         crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
@@ -2214,6 +2230,9 @@ pub(crate) fn switch_model(
     }
     persist(st, EntryBody::ModelChange(m.to_string()), sink)?;
     let previous = std::mem::replace(&mut st.model, m.to_string());
+    if let Some(capture) = st.shared.gate.wire_evidence.get().filter(|_| previous != m) {
+        capture.stop();
+    }
     // The speed belongs to the model that produced it.
     st.stats.last_tok_s = 0.0;
     sink.emit(&AgentEvent::ModelSelect {

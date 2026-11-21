@@ -66,6 +66,7 @@ mod think;
 mod toolset;
 mod tune;
 mod user_bash;
+pub mod wire_evidence;
 
 pub use agent_loop::{append_entry, run_loop, RunEnd};
 pub use commands::{
