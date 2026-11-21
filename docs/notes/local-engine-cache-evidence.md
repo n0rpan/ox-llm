@@ -18,7 +18,7 @@ also carries an `engine` block taken from the reply's own `timings`:
 | `cache_source` | `unavailable` |
 
 `cache_source` is `unavailable` because no local engine endpoint reports it. A reply without
-timings (the cloud gateway, a plain OpenAI server) has no `engine` block, not a zero one. A
+timings (a remote provider) has no `engine` block, not a zero one. A
 missing usage or timing value stays absent. None of this is an allocation or a comparison.
 
 ## Missing hook
