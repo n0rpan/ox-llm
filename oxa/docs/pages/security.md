@@ -210,7 +210,7 @@ lane runner; submit those CI-control changes separately for normal review. Every
 
 `--offline`, `OXA_OFFLINE=1` (`1`, `true` or `yes`) and `"oxa": { "offline": true }` in user settings are one switch. It applies to everything oxa starts. What it does:
 
-- oxa refuses every connection from its own code to a host other than the loopback address, with one error that says offline mode is on. This covers MCP over HTTP and its OAuth sign-in, extension `fetch`, a remote git package install, and `oxa report-issue submit`. An MCP proxy that is not loopback is refused unless the target is on its `NO_PROXY` list (then the connection is direct), and a redirect is not followed (the offline gate checks the first URL only, so the client never uses a redirect target).
+- oxa refuses every connection from its own code to a host other than the loopback address, with one error that says offline mode is on. This covers MCP over HTTP and its OAuth sign-in, extension `fetch`, a remote git package install, and `oxa report-issue submit` (also when the oxa parent posts an approved publication through the confirm broker). An MCP proxy that is not loopback is refused unless the target is on its `NO_PROXY` list (then the connection is direct), and a redirect is not followed (the offline gate checks the first URL only, so the client never uses a redirect target).
 - bash runs without network;
 - `web_search` is not offered to the model, and a call that gets through is refused;
 - extension `exec` with `net: true` runs without network;
