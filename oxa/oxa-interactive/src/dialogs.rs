@@ -586,6 +586,12 @@ impl DialogHost {
         let mut header = Some(title.clone());
         let mut body: Vec<String> = Vec::new();
         let mut cursor: Option<(usize, u16)> = None;
+        // A preview on a terminal too short for the comfortable chrome drops its blank
+        // separators, its row counter and, at the smallest sizes, its frame and hint. The
+        // command and the choices stay on screen.
+        let mut compact = false;
+        let mut show_hint = true;
+        let mut unframed = false;
         // Dialog rows the terminal can show: its height, or none for an unbounded draw.
         let available = height.map(|h| h.max(1));
         match &mut dialog.body {
@@ -613,15 +619,28 @@ impl DialogHost {
                         }
                         // A page is at most the preview's cap and never more than the rows the
                         // terminal has left once the list, the hint, the frame and the row
-                        // counter are drawn.
-                        let fixed = CHROME_ROWS + choices.len() + 1;
+                        // counter are drawn. A terminal too short for that layout keeps one
+                        // command row plus the choices: it drops the blanks and the counter,
+                        // then the hint, then the frame, so the command never falls off the top
+                        // while the choices stay visible.
+                        let choices_rows = choices.len();
+                        let full_fixed = CHROME_ROWS + choices_rows + 1;
+                        compact = available.is_some_and(|h| h < full_fixed + 1);
+                        let fixed = if compact {
+                            let chrome = 2 + choices_rows;
+                            unframed = available.is_some_and(|h| h < chrome + 1);
+                            show_hint = available.is_some_and(|h| h >= chrome + 2);
+                            (if unframed { choices_rows } else { chrome }) + usize::from(show_hint)
+                        } else {
+                            full_fixed
+                        };
                         let cap = available.map_or(PREVIEW_ROWS, |h| h.saturating_sub(fixed));
                         *page = cap.clamp(1, PREVIEW_ROWS);
                         let max_scroll = preview.len().saturating_sub(*page);
                         *scroll = (*scroll).min(max_scroll);
                         let end = (*scroll + *page).min(preview.len());
                         body.extend(preview[*scroll..end].iter().cloned());
-                        if preview.len() > *page {
+                        if !compact && preview.len() > *page {
                             body.push(theme.fg(
                                 "muted",
                                 &format!(
@@ -639,10 +658,16 @@ impl DialogHost {
                         }
                     }
                 }
-                body.push(String::new());
+                if !compact {
+                    body.push(String::new());
+                }
                 body.extend(choices);
-                body.push(String::new());
-                body.push(theme.fg("muted", HINT_CHOICE));
+                if !compact {
+                    body.push(String::new());
+                }
+                if show_hint {
+                    body.push(theme.fg("muted", HINT_CHOICE));
+                }
             }
             Body::Text { input } => {
                 let row = body.len();
@@ -671,6 +696,9 @@ impl DialogHost {
                 body = lines;
                 header = None;
             }
+        }
+        if unframed {
+            return body;
         }
         let framed = frame_lines(&body, width, header.as_deref(), "borderAccent", theme);
         self.cursor_at = cursor.map(|(row, col)| CursorPos {

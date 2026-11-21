@@ -1024,6 +1024,37 @@ fn a_denial_of_another_text_keeps_the_typed_yes() {
     oxa_proto::owner_reply::clear();
 }
 
+/// #2165: an 11-row terminal leaves the fullscreen dialog eight rows. The layout compacts so
+/// the command and the choices stay on screen; the command is never dropped while an allow
+/// remains reachable.
+#[test]
+fn dangerous_dialog_short_terminal_keeps_the_command_on_screen() {
+    let mut host = DialogHost::new();
+    let mut vm = ViewModel::default();
+    let (tx, _rx) = channel();
+    host.handle(numbered_danger_request(tx), &mut vm, 0);
+    // Eight rows: one command row, the four choices and the hint inside the frame.
+    let lines = host.render_in(100, Some(8), &Theme::plain());
+    let shown = lines.join("\n");
+    assert_eq!(lines.len(), 8, "{shown}");
+    assert!(shown.contains("Dangerous command"), "{shown}");
+    assert!(shown.contains("step-01"), "{shown}");
+    for label in DANGER_LABELS {
+        assert!(shown.contains(label), "{label}\n{shown}");
+    }
+    // Seven rows: the hint goes first; the command and choices stay.
+    let lines = host.render_in(100, Some(7), &Theme::plain());
+    let shown = lines.join("\n");
+    assert_eq!(lines.len(), 7, "{shown}");
+    assert!(shown.contains("step-01") && shown.contains("Deny"), "{shown}");
+    // Six rows: the frame goes too; the command is still there.
+    let lines = host.render_in(100, Some(6), &Theme::plain());
+    let shown = lines.join("\n");
+    assert_eq!(lines.len(), 6, "{shown}");
+    assert!(shown.contains("step-01") && shown.contains("Deny"), "{shown}");
+    host.close_all();
+}
+
 /// #1772: two sessions that loaded their settings before either saved each add a different
 /// always key, and both keys are in the user file afterwards.
 #[test]
