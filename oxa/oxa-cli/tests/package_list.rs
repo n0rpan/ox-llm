@@ -185,6 +185,11 @@ fn package_list_untrusted_settings_worker() {
     };
     let root = std::path::PathBuf::from(root);
     let dirs = Dirs::under(&root);
+    // The owner's `never` opt-in: `env_clear` above drops nothing Settings reads, but naming it in
+    // the user file makes this listing's trust independent of the shipped default.
+    std::fs::create_dir_all(dirs.agent_dir.as_path()).expect("create the agent directory");
+    std::fs::write(&dirs.settings_file(), r#"{"defaultProjectTrust":"never"}"#)
+        .expect("write the owner's trust default");
     for words in [vec![], vec!["-l".to_string()]] {
         let mut out = Vec::new();
         let mut err = Vec::new();
@@ -195,6 +200,7 @@ fn package_list_untrusted_settings_worker() {
         let listed = String::from_utf8(out).unwrap();
         assert!(listed.contains("project is not trusted"), "{listed}");
         assert!(!listed.contains("installed at"), "{listed}");
+        assert!(!listed.contains("No packages declared."), "{listed}");
         assert!(err.is_empty());
     }
     assert!(!dirs.trust_file().exists());
@@ -267,4 +273,23 @@ fn package_list_does_not_open_untrusted_special_or_oversized_settings() {
         }
         assert!(!dirs.trust_file().exists());
     }
+}
+
+/// The trust decision runs before any settings read, so it must not open a project file at all:
+/// a FIFO at the project settings path used to hang `oxa list` in the fully untrusted state.
+#[cfg(target_os = "linux")]
+#[test]
+fn package_list_listing_never_opens_a_project_settings_path() {
+    use std::{fs, process::Command};
+
+    let env = TestEnv::new();
+    owner_trust(&env, "never");
+    let dirs = Dirs::under(env.root());
+    let path = dirs.project_settings_file(&env.work());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    assert!(Command::new("mkfifo").arg(&path).status().unwrap().success());
+    let listed = command(&env, "list", &[]);
+    assert!(listed.contains("project is not trusted"), "{listed}");
+    assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_fifo());
+    assert!(!dirs.trust_file().exists());
 }

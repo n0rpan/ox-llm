@@ -2,7 +2,7 @@
 //! content trust keeps the existing explicit re-approval path.
 use oxa_config::{Dirs, Env, Keymap, Settings};
 use oxa_interactive::{ask_trust_interactive, TrustChoice};
-use oxa_perm::{saved_trust, Approval, DefaultTrust, TrustOutcome, TrustStore};
+use oxa_perm::{resolve_trust, Approval, DefaultTrust, TrustInputs, TrustOutcome, TrustStore};
 use oxa_proto::{Level, OxaError};
 
 use std::{io::Write, path::Path};
@@ -41,7 +41,10 @@ pub(crate) fn check(c: Check<'_>) -> Result<bool, OxaError> {
         }
         if c.via_flag || c.asked_now {
             c.store.approve(&file, c.cwd)?;
-        } else {
+        } else if !c.via_default {
+            // Only an owner act records what is trusted: `--approve` and the dialog above. The
+            // default (the shipped `always`, SEC-001) trusts the project for loading and writes
+            // nothing, so there is no approved state to report changes against.
             c.store.record_baseline(&file, c.cwd)?;
         }
         return Ok(true);
@@ -102,7 +105,19 @@ pub(crate) fn saved_project_resources(
     let owner = Settings::load(dirs, cwd, false);
     let store = TrustStore::load(&dirs.trust_file());
     let default = DefaultTrust::from_setting(owner.project_trust_default());
-    if saved_trust(&store, cwd, default) != TrustOutcome::Trusted {
+    // The same decision [`saved_trust`] makes for `/reload` and workers, except that this command
+    // reads the project settings file itself: that file is the gated resource, so a project
+    // without one still needs the owner's answer (a missing file is not "nothing to gate").
+    // `ask` without a terminal is not an answer, which [`resolve_trust`] already enforces.
+    let outcome = resolve_trust(&TrustInputs {
+        flag: None,
+        extension: None,
+        saved: store.lookup(cwd),
+        default,
+        interactive: false,
+        has_gated: true,
+    });
+    if outcome != TrustOutcome::Trusted {
         return Ok(false);
     }
     if owner.project_trust_requires_content() {

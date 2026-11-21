@@ -741,8 +741,22 @@ fn present(out: &mut Vec<String>, path: &Path) {
     }
 }
 
-/// `settings.json` declares at least one exec hook (`hooks: {event: command}`).
+/// The largest `settings.json` this check opens. A settings file is small; anything larger is
+/// not read before the trust decision.
+const MAX_HOOKS_SETTINGS_BYTES: u64 = 1024 * 1024;
+
+/// `settings.json` declares at least one exec hook (`hooks: {event: command}`). Only a regular
+/// file is opened: a link, FIFO or device keeps its presence entry (`gated_resources`) but is
+/// never read, and neither is a file over [`MAX_HOOKS_SETTINGS_BYTES`]. The project-resource
+/// decision before a settings read ([`saved_trust`]) runs this first, so neither a reporting-only
+/// listing nor an untrusted start blocks on a FIFO, follows a link or allocates a large file.
 fn has_exec_hooks(settings: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(settings) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() > MAX_HOOKS_SETTINGS_BYTES {
+        return false;
+    }
     let Ok(text) = std::fs::read_to_string(settings) else {
         return false;
     };

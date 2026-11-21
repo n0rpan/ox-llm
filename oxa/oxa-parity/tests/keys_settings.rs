@@ -1378,6 +1378,7 @@ fn set_016() {
 /// SET-017: `defaultProjectTrust` `ask|always|never`; agent-directory settings only.
 #[test]
 fn set_017() {
+    // invariant: `defaultProjectTrust` is user-only; the shipped default `always` trusts a project with no setting and saves no decision, and `ask`/`never` are owner opt-ins (a project value is dropped with a warning, never honoured)
     // pi docs: settings.md `defaultProjectTrust` "Fallback project-trust behavior. Can only be
     // set in agent-directory settings." In print mode `ask` is untrusted (no dialog).
     // (a) `always` in the agent directory trusts the project: its defaultTools applies.

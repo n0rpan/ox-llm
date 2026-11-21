@@ -998,7 +998,14 @@ fn sec_001() {
 /// regardless of project trust").
 #[test]
 fn sec_002() {
+    // The rows below are what an untrusted project skips: name the owner's `never` opt-in, since
+    // the shipped default trusts the project.
     let env = TestEnv::new();
+    put_settings(
+        &env,
+        "home/.oxa/agent/settings.json",
+        serde_json::json!({ "defaultProjectTrust": "never" }),
+    );
     let mcp_marker = marker(&env, "sec002-mcp");
     env.write("work/.oxa/mcp.json", &marker_mcp(&mcp_marker));
     put_skill(&env, "work/.oxa/skills", "gated-skill", "Gated.");
@@ -1419,6 +1426,12 @@ fn thm_003() {
 #[test]
 fn thm_004() {
     let env = TestEnv::new();
+    // The `untrusted` run below names the owner's opt-in: the shipped default trusts the project.
+    put_settings(
+        &env,
+        "home/.oxa/agent/settings.json",
+        serde_json::json!({ "defaultProjectTrust": "never" }),
+    );
     let invalid = "{\"name\":\"t4-invalid\",\"colors\":{\"notARole\":\"#fff\"}}";
     env.write("home/.oxa/agent/themes/t4-agent.json", invalid);
     env.write("work/.oxa/themes/t4-project.json", invalid);
@@ -1548,7 +1561,13 @@ fn cfg_001() {
 /// pi docs: configuration.md ("Project .pi directory").
 #[test]
 fn cfg_002() {
+    // The `untrusted` run below names the owner's opt-in: the shipped default trusts the project.
     let env = TestEnv::new();
+    put_settings(
+        &env,
+        "home/.oxa/agent/settings.json",
+        serde_json::json!({ "defaultProjectTrust": "never" }),
+    );
     put_settings(
         &env,
         "work/.oxa/settings.json",
@@ -1678,6 +1697,12 @@ fn cfg_005() {
 #[test]
 fn cfg_006() {
     let env = TestEnv::new();
+    // The `untrusted` run below names the owner's opt-in: the shipped default trusts the project.
+    put_settings(
+        &env,
+        "home/.oxa/agent/settings.json",
+        serde_json::json!({ "defaultProjectTrust": "never" }),
+    );
     put_skill(&env, "work/.agents/skills", "c6-project", "Project .agents.");
     put_skill(&env, "home/.agents/skills", "c6-user", "User .agents.");
     let untrusted = drive(&env, &[], "hi");

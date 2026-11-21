@@ -104,7 +104,11 @@ fn undecided_falls_through_to_the_shipped_default() {
         env.work().join("project-log.txt").exists(),
         "no decision: defaultProjectTrust ships as always, so the project's extension loads"
     );
+    // `project_trust` asks before the default resolves, so the shipped default trusts the
+    // project without writing a decision the owner never made.
     assert!(!env.agent_dir().join("trust.json").exists(), "nothing saved");
+    let mut store = oxa_perm::TrustStore::load(&env.agent_dir().join("trust.json"));
+    assert_eq!(store.lookup(&env.work()), None);
 }
 
 /// An owner who wants the question (`defaultProjectTrust: "ask"`) keeps the old headless
