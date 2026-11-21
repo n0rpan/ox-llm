@@ -2,7 +2,7 @@
 
 **Status: preparation implemented; clean-install parity NOT passed.** The downloadable project must reconstruct the modified engines, selected weights, runtime/services and Local AI panel on a fresh installation, then pass new correctness and lifecycle checks. The working laptop and its historical qualification receipts cannot stand in for that test. The current manual guide is not completion of this gate.
 
-The preparation/staging module makes no host/configuration changes, source downloads, native builds or model runs. A separate [guarded source-only executor](BOOTSTRAP-SOURCE-FETCH.md) is the first live acquisition step; its success cannot establish build, install or inference qualification.
+The preparation/staging module makes no host/configuration changes, source downloads, native builds or model runs. A separate guarded source-only executor (`BOOTSTRAP-SOURCE-FETCH.md`, not kept in this tree) is the first live acquisition step; its success cannot establish build, install or inference qualification.
 
 The release acceptance target includes the modified engines and tested settings, local browser chat and image interfaces, ordinary OpenCode using local MoE, optional qualified model selection, and the always-visible right-side Local AI panel. The installed controls must load on demand, switch and unload models, and release memory. A newcomer needs linked dependencies, exact model identities and licenses, setup diagnostics and rollback. No personal Work directory, pre-existing installation or unpublished patch may be a prerequisite.
 
@@ -12,7 +12,7 @@ The release acceptance target includes the modified engines and tested settings,
 
 **Selected artifact acquisition/resume passed:** the pinned 335,304,388-byte VAE downloaded and verified in 9.81 s. A separate encoder transfer was deliberately stopped after a durable checkpoint, then resumed from the same cache and verified the complete 2,497,281,120-byte artifact in 59.22 s. [Live attempts, controlled stop and evidence limits](../benchmarks/results/bootstrap-selected-downloads.json). These are clean acquisition checks for two selected assets, not proof that the remaining MoE/Q8 downloads, image pipeline or full installation passed.
 
-The [sandbox source installer](BOOTSTRAP-INSTALL.md) now passes eleven focused tests, including rollback at all 15 tiny-fixture mutation checkpoints, existing canonical-inode/provider/layout preservation and edited-file handling. All [135 repository software tests](../benchmarks/results/repository-software-tests.json) passed in a bounded host unit. The initial restricted-tool attempt failed on denied local sockets/process controls; assertions were kept unchanged. The installer deliberately does not yet handle live-user activation, binaries/models or crash/SIGKILL acceptance. Those remain release requirements.
+The sandbox source installer (`BOOTSTRAP-INSTALL.md`, not kept in this tree) now passes eleven focused tests, including rollback at all 15 tiny-fixture mutation checkpoints, existing canonical-inode/provider/layout preservation and edited-file handling. All [135 repository software tests](../benchmarks/results/repository-software-tests.json) passed in a bounded host unit. The initial restricted-tool attempt failed on denied local sockets/process controls; assertions were kept unchanged. The installer deliberately does not yet handle live-user activation, binaries/models or crash/SIGKILL acceptance. Those remain release requirements.
 
 ## Product boundary and defaults
 
