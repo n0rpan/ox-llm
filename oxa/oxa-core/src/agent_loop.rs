@@ -849,11 +849,9 @@ fn run_inner(
             // #2295: the next repair request (if any) carries this batch's verified files.
             artifacts = done.verified_artifacts(&st.cwd);
             eprintln!(
-                "DEBUG-BATCH artifacts={} failed={} checked={} written={:?} done={:?}",
+                "DEBUG-BATCH artifacts={} {} done={:?}",
                 artifacts.is_some(),
-                done.failed_command,
-                done.proof.checked,
-                done.written,
+                done.debug_state(),
                 st.settings.done_commands()
             );
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.

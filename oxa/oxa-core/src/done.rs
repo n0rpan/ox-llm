@@ -559,6 +559,19 @@ impl DoneState {
     /// #2295: the verified-artifact line for a failed-check repair, only when the batch that
     /// ran the check also failed a command after writing the file; older writes are the parts a
     /// check or a formatter may already have rewritten, so they are not claimed here.
+    pub(crate) fn debug_state(&self) -> String {
+        format!(
+            "failed={} checked={} written={:?} done={:?}",
+            self.failed_command,
+            self.proof.checked,
+            self.written,
+            self.state_note()
+        )
+    }
+    fn state_note(&self) -> &'static str {
+        ""
+    }
+
     pub(crate) fn verified_artifacts(&self, cwd: &Path) -> Option<String> {
         if !self.failed_command || !self.proof.checked() {
             return None;
