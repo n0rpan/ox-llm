@@ -233,8 +233,9 @@ code, tests, CI and docs; the owner validates on hardware.
   is the cap against loops the guard cannot see.
   Image input follows it too: `read` attaches an image to a model that takes images, and an image
   over the user-only `oxa.read.maxImageBytes` (generous default, 0 = no limit) is not sent; that
-  setting also bounds aggregate images across retained session history and the current tool-call
-  batch. A project may enable `images.blockImages` but cannot disable the owner's choice. The result names the limit and the
+  setting also bounds the images each request sends: the newest fit, older ones are replaced by a
+  text marker (the stored session is untouched), and one warning is recorded when the session stores
+  more image bytes than the limit. A tool-call batch is refused only when it alone is over the limit. A project may enable `images.blockImages` but cannot disable the owner's choice. The result names the limit and the
   setting instead. `images.blockImages` prevents transmission. Private-path and pinned-open rules
   apply to images as to any file.
   The finish wake follows it too: a background bash job that finishes on its own queues one
