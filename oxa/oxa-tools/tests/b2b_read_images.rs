@@ -86,6 +86,8 @@ fn read_png_returns_an_image_part() {
         .decode(&out.images[0].base64)
         .expect("base64");
     assert_eq!(sent, bytes, "the image part carries the file bytes");
+    // The finish decision's marker (`oxa.done.imageCrossCheck`); display-only.
+    assert_eq!(out.ui["imageRead"], true);
 }
 
 #[test]
@@ -112,6 +114,8 @@ fn read_image_without_model_support_returns_the_placeholder() {
     assert!(!out.is_error, "{}", out.text);
     assert_eq!(out.text, oxa_proto::image_placeholder("pic.png", 3, 2));
     assert!(out.images.is_empty());
+    // A placeholder read still counts as consulting the image for the finish decision.
+    assert_eq!(out.ui["imageRead"], true);
 }
 
 #[test]

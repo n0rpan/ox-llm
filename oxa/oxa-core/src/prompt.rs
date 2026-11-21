@@ -693,6 +693,10 @@ pub const HEADLESS_NUDGE: &str = "Nobody can answer you and the task is not fini
 /// (`oxa.done.proveIt`). One per run.
 pub const PROVE_IT_NUDGE: &str = "You changed files and no check has passed since your last change. Run the project's check for what you changed (tests, build or lint) and fix what fails, or say in one line why no check exists. Then finish.";
 
+/// The finish decision's nudge for a run that read an image file and changed files with no
+/// check since the image was read (`oxa.done.imageCrossCheck`). One per run.
+pub const IMAGE_CROSS_CHECK_NUDGE: &str = "You read an image and wrote files, but nothing has checked your reading of the image independently. State the assumption your reading depends on (glyph set, font, grid, colour mapping) and run one concrete check that could falsify it: re-render your result and diff it against the source image, compare against an independent reader (such as OCR) if one is available, or test an invariant that must hold (counts, sums, a checksum against a hint already in the task). Fix what the check contradicts, or say in your final message which image-derived claim stays unverified and why. Then finish.";
+
 /// The finish decision's nudge for background jobs still running when a goal completes or a
 /// headless run ends (`oxa.done.waitForJobs`). One per run.
 pub fn jobs_nudge(ids: &[String], headless: bool) -> String {
