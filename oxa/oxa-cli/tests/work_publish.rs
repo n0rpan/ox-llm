@@ -1380,6 +1380,69 @@ fn status_distinguishes_a_saved_commit_from_a_push_without_a_pr_receipt() {
     assert!(status().get("publication").is_none());
 }
 
+/// The `oxa work` exit status for a file of the given records, composed by the CLI itself.
+fn cli_exit(env: &TestEnv, path: &str, tasks: &str) -> (serde_json::Value, i32) {
+    let dir = env.tmp().join("exit");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("tasks.json");
+    fs::write(&file, tasks).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", file.to_str().unwrap()])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    (
+        serde_json::from_slice(&output.stdout).unwrap(),
+        output.status.code().unwrap(),
+    )
+}
+
+#[test]
+fn accepted_work_without_a_publication_receipt_is_reported_pending_not_done() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let path = configure(&env);
+    // Acceptance passes; the publication push is refused before it reaches the destination.
+    let failed = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(path.clone()),
+    );
+    assert_eq!(failed["outcome"], "publication_pending", "{failed}");
+    assert_eq!(failed["acceptance_outcome"], "done", "{failed}");
+    let detail = failed["detail"].as_str().unwrap();
+    assert!(
+        detail.starts_with("publication pending: committed_no_push_recorded (age unknown)"),
+        "{detail}"
+    );
+    assert!(failed["head_sha"].is_string(), "{failed}");
+    assert!(
+        !fs::read_dir(env.home().join("gh-calls")).map(|_| 1).unwrap_or(0),
+        "{failed}"
+    );
+
+    // What the runner returns is what the command reports: not done, and not a failure.
+    let task = fs::read_to_string(env.work().join("tasks.json")).unwrap();
+    let (record, code) = cli_exit(&env, &path, &task);
+    assert_eq!(record["outcome"], "publication_pending", "{record}");
+    assert_eq!(code, 3, "{record}");
+    let listed = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "status"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    let text = String::from_utf8(listed.stdout).unwrap();
+    assert!(text.contains("pending publication, not done"), "{text}");
+    assert!(text.contains("committed_no_push_recorded"), "{text}");
+}
+
 #[test]
 fn a_normal_publish_records_a_receipt_read_back_from_the_remote() {
     let env = TestEnv::new();

@@ -41,7 +41,8 @@ pub mod shadow;
 mod state;
 mod status;
 pub use status::{
-    status, task_usage, task_usage_for_binding, Liveness, PublicationStatus, Status, TaskUsage,
+    publication_pending, status, task_usage, task_usage_for_binding, Liveness, PublicationStatus, Status,
+    TaskUsage,
 };
 mod tree;
 pub use state::{CheckpointKind, CheckpointObserver, Step};
@@ -113,6 +114,9 @@ pub enum Outcome {
     Interrupted,
     Done,
     NothingToDo,
+    /// Accepted work whose publication action left no useful exact-head receipt (#2304).
+    /// Not a failure and not a publishable verdict: the next step is publication.
+    PublicationPending,
     Red,
     Blocked,
     /// The checks could not run (toolchain missing, timeout, unreadable evidence), so the
@@ -178,6 +182,15 @@ impl Record {
             self.outcome,
             Outcome::Red | Outcome::Blocked | Outcome::Interrupted | Outcome::Unverified
         ) || self.reports.iter().any(|report| report.disposition == "failed")
+    }
+
+    /// The saved work was accepted: done, nothing to do, or accepted with its publication still
+    /// owed. Reading it back (status, a publication retry) is not a new execution.
+    pub fn work_accepted(&self) -> bool {
+        matches!(
+            self.outcome,
+            Outcome::Done | Outcome::NothingToDo | Outcome::PublicationPending
+        )
     }
 }
 
@@ -287,7 +300,7 @@ pub fn plan_task_for_actions(
     plan_task_mode(repo, task, policy, rerun, true, false)
 }
 
-fn completed_execution(step: Step) -> bool {
+pub(crate) fn completed_execution(step: Step) -> bool {
     matches!(step, Step::Finished | Step::Publishing | Step::Reporting)
 }
 
@@ -307,8 +320,7 @@ fn plan_task_mode(
         return Err("task specification changed; use a new task id".into());
     }
     if !(rerun && completed_execution(saved.record.step))
-        && (saved.record.step != Step::Finished
-            || (!rerun && (actions || matches!(saved.record.outcome, Outcome::Done | Outcome::NothingToDo))))
+        && (saved.record.step != Step::Finished || (!rerun && (actions || saved.record.work_accepted())))
     {
         let execution = saved.execution.ok_or("missing task execution checkpoint")?;
         if saved.record.base_sha.as_deref() != Some(&execution.base) {
@@ -1725,7 +1737,7 @@ fn run_locked(
             return Ok(old.record);
         }
         if completed_execution(old.record.step) {
-            if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
+            if !rerun && old.record.work_accepted() {
                 if old.record.checks.is_empty() {
                     let mut old = old;
                     old.record.outcome = Outcome::Unverified;
@@ -1821,7 +1833,10 @@ fn run_locked(
                 .map_err(RunError::Checkpoint)?;
             if let Err(error) = execute::save_work(&root, binary, task, &policy, lock_file, &mut state.record)
             {
-                if !matches!(state.record.outcome, Outcome::Interrupted | Outcome::Unverified) {
+                if !matches!(
+                    state.record.outcome,
+                    Outcome::Interrupted | Outcome::Unverified | Outcome::PublicationPending
+                ) {
                     state.record.outcome = Outcome::Blocked;
                 }
                 if !state.record.detail.is_empty() {
@@ -1959,6 +1974,19 @@ fn run_locked(
     // #1376: a native task is held for publication; say what finished and what did not.
     if planned.native && state.record.outcome == Outcome::Done && state.record.detail.is_empty() {
         state.record.detail = "local verified; publication held".into();
+    }
+    // #2304: accepted work whose publication action has no useful exact-head receipt is
+    // pending, not done: the record, the exit code and `oxa work status` say so.
+    let pending = matches!(state.record.outcome, Outcome::Done | Outcome::NothingToDo)
+        .then(|| crate::PublicationStatus::summary(&state.record, state::now_ms()))
+        .flatten();
+    if let Some(pending) = pending {
+        state.record.outcome = Outcome::PublicationPending;
+        if state.record.detail.is_empty() {
+            state.record.detail = pending;
+        } else {
+            state.record.detail = format!("{}; {pending}", state.record.detail);
+        }
     }
     writer
         .save(&mut state, Step::Finished, observer)

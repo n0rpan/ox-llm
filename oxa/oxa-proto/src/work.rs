@@ -210,6 +210,8 @@ macro_rules! tagged {
 choice!(WorkerOutcome {
     Done => "done", NothingToDo => "nothing_to_do", Blocked => "blocked",
     Failed => "failed", Interrupted => "interrupted",
+    /// Finished work whose publication action left no exact-head receipt (#2304).
+    PublicationPending => "publication_pending",
 });
 choice!(TaskStep {
     Preparing => "preparing", Worker => "worker", Acceptance => "acceptance",
@@ -348,8 +350,12 @@ record!(WorkerFinished {
     if let Some(code) = &s.error_class { atom(code, 64)?; }
     require(
         match s.outcome {
-            WorkerOutcome::Done | WorkerOutcome::NothingToDo => s.error_class.is_none(),
-            WorkerOutcome::Blocked | WorkerOutcome::Failed | WorkerOutcome::Interrupted => s.error_class.is_some(),
+            WorkerOutcome::Done | WorkerOutcome::NothingToDo | WorkerOutcome::PublicationPending => {
+                s.error_class.is_none()
+            }
+            WorkerOutcome::Blocked | WorkerOutcome::Failed | WorkerOutcome::Interrupted => {
+                s.error_class.is_some()
+            }
         },
         "worker outcome and error class disagree",
     )

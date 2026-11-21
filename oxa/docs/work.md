@@ -334,13 +334,24 @@ child: status also checks the inherited stdin lock. Without `--json` it prints
 one summary line per task, plus any pending publication and its next step.
 
 For a saved head that differs from its base, status distinguishes a commit with
-no recorded push, an unconfirmed destination, and a branch whose exact head was
-pushed but has no recorded PR. The age is time since the runner saved that head,
+no recorded push, an unconfirmed destination, a branch whose exact head was
+pushed but has no recorded PR, and a recorded PR whose push could not be read
+back. The age is time since the runner saved that head,
 not the last retry; old checkpoints may have no age. These are local observations,
 not proof that GitHub currently has no PR or that a manually pushed branch is absent.
 Status adds no network probes. An authorized local worker owns the push, ready PR,
 CI fixes and review replies; a worker without GitHub access hands off to its authorized
 runner. Seeing a pending row does not grant publication authority.
+
+A `--publish` run that ends with accepted commits but no useful receipt at its
+saved head is not reported as done: its outcome is `publication_pending`, its
+`detail` names the publication phase and the age since that head was saved, and
+`oxa work status` marks the row `pending publication, not done`. This covers a
+refused or unanswered push, a failed PR step and an offline retry. It is a
+distinct result, not a new refusal: nothing is blocked, and the next `--publish`
+or lane acceptance resumes without replaying the agent. A `publication_pending`
+exit code is 3, so a caller that reads only the code does not take owed
+publication for success.
 
 The [checkpoint integration contract](work-state.md) defines the runner's public
 event hook. Event/situation/standing stores and their CLI adapters are a separate
