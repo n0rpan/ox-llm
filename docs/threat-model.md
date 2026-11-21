@@ -14,6 +14,17 @@ Used by automated security review (Codex) and by human/agent reviewers. Keep it 
 - **Upstream providers and the network:** malformed or hostile streams, oversized responses, redirects, wrong usage/billing fields.
 - **LAN share guests** and **outside contributors** (fork PRs on this public repo).
 
+## Risk we accept (owner 2026-11-21)
+oxa is a power tool for its owner, not an enterprise endpoint product. It must stay powerful, so it carries risk on purpose. The guards (dangerous-command rules, publish floor, output masking, approvals) are seatbelts that catch mistakes and ordinary model misbehaviour. They are not a boundary against a determined attacker who already runs code as the owner.
+
+So these are **not** P0/P1 and never block a merge (at most P3 hardening, filed as a follow-up):
+- an attacker who already runs code with the owner's UID or in the owner's trusted, writable repo: same-UID ptrace or process dumping, hard links, symlink or rename races (TOCTOU), a hostile project script or background job undoing a check;
+- shell obfuscation that slips a command past a guard (`coproc`, `exec -a`, clustered `env` options, wrappers, watch loops), when the command itself is something the owner's mode allows anyway;
+- anything in yolo beyond its two hard refusals (publishing a secret, an OS-breaking wipe);
+- theoretical chains with no concrete trigger a real model or project hits in normal use.
+
+What still blocks (P0/P1): a secret leaving the machine or landing in model context, logs or session files; a remote party (network, LAN guest, fork PR, provider stream) gaining code execution, credentials or spend; metered money spent past the reservation, ledger or a configured cap; an untrusted project changing user-only settings; data loss or an OS-breaking wipe under default settings; offline mode using the network.
+
 ## Trust boundaries (must hold)
 1. **Secrets never leave their store:** never printed, logged, put in prompts, tool output, session files, telemetry, test fixtures, CI logs or error messages; redaction covers streamed text and decoded tool arguments.
 2. **User-only settings:** a project file can never change engine transport, native binary/provider selection, `allowRemote`, sharing, login, feature flags, or budgets.

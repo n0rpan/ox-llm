@@ -461,6 +461,11 @@ read its result; they never launch builds or tests.
 
 **How to review**
 
+- **Security severity is calibrated to a power tool** (owner 2026-11-21, `docs/threat-model.md` "Risk we accept"): an
+  attack that needs code already running as the owner, or shell obfuscation that only reaches what the owner's mode
+  allows anyway, is P3 hardening at most and is filed as a follow-up. P0/P1 security means real exposure: a secret
+  leaving the machine or reaching the model, a remote party gaining code, credentials or spend, money past a cap, an
+  untrusted project changing user settings, or data loss under defaults.
 - Reserve P0/P1 for a violated invariant below, concrete data loss or a crash. Report only introduced, actionable
   defects with a failure scenario; skip style and speculative risks. Do not ask to split a PR of up to about 800
   lines.

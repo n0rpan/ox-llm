@@ -14,6 +14,8 @@ Treat as **high** severity:
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
 - new `unsafe`/FFI/process/network code in the engine without bounds checks.
 
+**Risk calibration (owner 2026-11-21):** read "Risk we accept" in `docs/threat-model.md` before rating. Attacks that need code already running as the owner (same-UID ptrace, hard links, races, a hostile script in a trusted writable repo) and shell obfuscation that reaches only what the mode allows anyway are P3 hardening at most, never high severity. oxa is powerful by design; flag real exposure, not every theoretical path.
+
 Skill reactivation after compaction is a user-only opt-in. A project setting cannot add
 the skill reactivation instructions to later turns.
 
