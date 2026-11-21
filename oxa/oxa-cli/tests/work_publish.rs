@@ -1420,10 +1420,7 @@ fn accepted_work_without_a_publication_receipt_is_reported_pending_not_done() {
         "{detail}"
     );
     assert!(failed["head_sha"].is_string(), "{failed}");
-    assert!(
-        !fs::read_dir(env.home().join("gh-calls")).map(|_| 1).unwrap_or(0),
-        "{failed}"
-    );
+    assert!(fs::read_dir(env.home().join("gh-calls")).is_err(), "{failed}");
 
     // What the runner returns is what the command reports: not done, and not a failure.
     let task = fs::read_to_string(env.work().join("tasks.json")).unwrap();
