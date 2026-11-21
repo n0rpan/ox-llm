@@ -984,11 +984,11 @@ fn with_frame(name: &str, run: impl FnOnce(u16, &str, &std::path::Path)) {
         .as_secs();
     let board = directory.join("board.jsonl");
     if !frame["board_record"].is_null() {
-        let record = &mut frame["board_record"];
         let age = frame["age_secs"]
             .as_u64()
             .expect("a frame declares its board age");
-        let observed = record["observed_at"].as_u64().unwrap();
+        let observed = frame["board_record"]["observed_at"].as_u64().unwrap();
+        let record = &mut frame["board_record"];
         shift_timestamps(record, now as i64 - observed as i64 - age as i64);
         let mut line = serde_json::to_string(record).unwrap();
         line.push('\n');
@@ -998,9 +998,9 @@ fn with_frame(name: &str, run: impl FnOnce(u16, &str, &std::path::Path)) {
     let situation = if frame["situation"].is_null() {
         None
     } else {
-        let document = &mut frame["situation"];
         let age = frame["situation_age_secs"].as_u64().unwrap();
-        let at_ms = document["data"]["at_ms"].as_u64().unwrap();
+        let at_ms = frame["situation"]["data"]["at_ms"].as_u64().unwrap();
+        let document = &mut frame["situation"];
         shift_timestamps(document, now as i64 - (at_ms / 1000) as i64 - age as i64);
         // The frame must be a native situation document, not an approximation of one.
         let bytes = serde_json::to_vec(document).unwrap();
