@@ -35,54 +35,115 @@ pub struct PublicationStatus {
 
 impl PublicationStatus {
     fn read(record: &Record, now_ms: u64) -> Option<Self> {
-        use crate::Divergence;
-        let head = record.head_sha.as_deref()?;
-        if record.base_sha.as_deref()? == head {
-            return None;
-        }
-        let receipt = record.publish_receipt.as_ref().filter(|r| r.requested == head);
-        let pushed = match receipt {
-            Some(r) => r.class == Divergence::Published && r.remote.as_deref() == Some(head),
-            // A terminal lane verdict is obtained only after a successful exact-tip readback.
-            None => record.lane.as_ref().is_some_and(|lane| lane.head == head),
-        };
-        if pushed && record.pull_request.as_deref().is_some_and(|url| !url.is_empty()) {
-            return None;
-        }
-        let (phase, disposition) = if pushed {
-            (
-                "branch_without_pr_receipt",
-                "Check for an existing PR, then resume through the authorized publication path; do not wait for lane CI just to look up the PR.",
-            )
-        } else if receipt.is_some_and(|r| !matches!(r.class, Divergence::Absent | Divergence::RemoteBehind)) {
-            (
-                "push_unconfirmed",
-                "Check the destination and reconcile the branch tip before retrying; do not force-push.",
-            )
-        } else {
-            (
-                "committed_no_push_recorded",
-                if crate::completed_execution(record.step)
-                    && matches!(
-                        record.acceptance_outcome.unwrap_or(record.outcome),
-                        Outcome::Done | Outcome::NothingToDo
-                    )
-                {
-                    "Use the authorized publication path for the saved task; acceptance and approval still apply."
-                } else {
-                    "Inspect the task checks or let the current execution finish before publishing."
-                },
-            )
-        };
+        let (phase, disposition) = phase(record, !owed_verdict(record))?;
         Some(Self {
             phase,
-            age_secs: record
-                .head_saved_at_ms
-                .and_then(|at| now_ms.checked_sub(at))
-                .map(|ms| ms / 1000),
+            age_secs: age_secs(record, now_ms),
             disposition,
         })
     }
+
+    /// What an accepted run that owes its publication reports: `None` unless the accepted head
+    /// has no published receipt and no recorded PR. The runner's outcome and the exit code take
+    /// this one decision, so they cannot disagree about owed publication.
+    pub fn owed(record: &Record, now_ms: u64) -> Option<String> {
+        let status = Self::read(record, now_ms)?;
+        let receipt = record
+            .publish_receipt
+            .as_ref()
+            .filter(|r| Some(r.requested.as_str()) == record.head_sha.as_deref());
+        // An accepted head whose own push is missing, refused or unconfirmed is owed its
+        // receipt; a saved receipt at the head means a push landed, and a recorded PR means
+        // the publication finished (#2310). The runner and the exit code take this one decision.
+        let owed = owed_verdict(record)
+            && !recorded_pr(record)
+            && receipt.is_none_or(|r| {
+                !matches!(
+                    r.class,
+                    crate::Divergence::Published | crate::Divergence::RemoteUnknown
+                )
+            });
+        owed.then(|| {
+            format!(
+                "publication pending: {} ({})",
+                status.phase,
+                age_text(status.age_secs)
+            )
+        })
+    }
+}
+
+/// The saved head's publication phase and next step from local evidence only. A recorded PR
+/// receipt needs a push that reported success, which an unreadable readback leaves unproven.
+fn phase(record: &Record, awaiting: bool) -> Option<(&'static str, &'static str)> {
+    use crate::Divergence;
+    let head = record.head_sha.as_deref()?;
+    if record.base_sha.as_deref()? == head {
+        return None;
+    }
+    let receipt = record.publish_receipt.as_ref().filter(|r| r.requested == head);
+    let pushed = match receipt {
+        Some(r) => r.class == Divergence::Published && r.remote.as_deref() == Some(head),
+        // A lane pass is observed through a run for this exact commit, which exists only after
+        // the lane push reported success. The readback itself can still be unknown (#2310).
+        None => record.lane.as_ref().is_some_and(|lane| lane.head == head),
+    };
+    if pushed && recorded_pr(record) {
+        return None;
+    }
+    // The publication action ran to a recorded PR, so the only gap is that the destination
+    // could not be read back; it is not waiting on a lane run that already finished (#2310).
+    if !awaiting && recorded_pr(record) {
+        return Some((
+            "published_readback_unknown",
+            "A PR is recorded for this head, but the destination could not be read back after the push. Check the PR's head before any further publication.",
+        ));
+    }
+    Some(if pushed {
+        (
+            "branch_without_pr_receipt",
+            "Check for an existing PR, then resume through the authorized publication path; do not wait for lane CI just to look up the PR.",
+        )
+    } else if receipt.is_some_and(|r| !matches!(r.class, Divergence::Absent | Divergence::RemoteBehind)) {
+        (
+            "push_unconfirmed",
+            "Check the destination and reconcile the branch tip before retrying; do not force-push.",
+        )
+    } else {
+        (
+            "committed_no_push_recorded",
+            "Use the authorized publication path for the saved task; acceptance and approval still apply.",
+        )
+    })
+}
+
+/// A PR the runner recorded for this task's head.
+fn recorded_pr(record: &Record) -> bool {
+    record.pull_request.as_deref().is_some_and(|url| !url.is_empty())
+}
+
+fn age_secs(record: &Record, now_ms: u64) -> Option<u64> {
+    record
+        .head_saved_at_ms
+        .and_then(|at| now_ms.checked_sub(at))
+        .map(|ms| ms / 1000)
+}
+
+fn age_text(age_secs: Option<u64>) -> String {
+    age_secs.map_or_else(|| "age unknown".to_owned(), |s| format!("{s}s since save"))
+}
+
+/// True when the record carries an accepted verdict, including a record whose publication is
+/// already the owed next step. An interrupted worker never qualifies.
+fn owed_verdict(record: &Record) -> bool {
+    !record
+        .worker
+        .as_ref()
+        .is_some_and(|worker| matches!(worker.outcome, crate::WorkerOutcome::Interrupted))
+        && matches!(
+            record.acceptance_outcome.unwrap_or(record.outcome),
+            Outcome::Done | Outcome::NothingToDo | Outcome::PublicationPending
+        )
 }
 
 /// A bounded projection of one saved task, with no worker receipt or private paths.
@@ -291,6 +352,110 @@ mod tests {
     use super::*;
     use crate::board::{Lease, NativeBinding};
     use crate::{blocked_record, test_dir::PrivateDir, Task};
+
+    /// A finished, accepted record at `head`: what publication still owes its receipt for.
+    fn accepted(head: &str) -> Record {
+        let task = Task {
+            id: "test".into(),
+            branch: "agent/test".into(),
+            base: "main".into(),
+            model: "fake".into(),
+            prompt: "Finish task".into(),
+            max_time: 60,
+            reviewed_pull_request: None,
+            lane_ci: false,
+        };
+        let mut record = blocked_record(&task, String::new());
+        record.outcome = Outcome::Done;
+        record.acceptance_outcome = Some(Outcome::Done);
+        record.step = Step::Finished;
+        record.base_sha = Some("a".repeat(40));
+        record.head_sha = Some(head.into());
+        record
+    }
+
+    /// A rejected push: the remote branch is behind the requested commit, nothing recorded as PR.
+    fn rejected(head: &str) -> Record {
+        let mut record = accepted(head);
+        record.outcome = Outcome::Blocked;
+        record.publish_receipt = Some(crate::PublishReceipt {
+            requested: head.into(),
+            remote: Some("c".repeat(40)),
+            class: crate::Divergence::RemoteBehind,
+        });
+        record
+    }
+
+    #[test]
+    fn a_rejected_lane_push_with_no_pr_is_reported_as_pending() {
+        let head = "b".repeat(40);
+        let mut record = rejected(&head);
+        record.lane = Some(crate::lane::LaneVerdict {
+            head: head.clone(),
+            run_id: 7,
+            conclusion: "failure".into(),
+            failed: Vec::new(),
+        });
+        assert!(PublicationStatus::owed(&record, 0).is_some());
+        assert_eq!(
+            PublicationStatus::owed(&record, 0).unwrap(),
+            "publication pending: committed_no_push_recorded (age unknown)"
+        );
+        let status = PublicationStatus::read(&record, 0).expect("reported, not hidden");
+        assert_eq!(status.phase, "committed_no_push_recorded");
+    }
+
+    #[test]
+    fn a_recorded_pr_is_published_even_when_the_push_readback_is_unknown() {
+        let head = "b".repeat(40);
+        let mut record = accepted(&head);
+        record.publish_receipt = Some(crate::PublishReceipt {
+            requested: head.clone(),
+            remote: None,
+            class: crate::Divergence::RemoteUnknown,
+        });
+        record.pull_request = Some("https://github.com/example/project/pull/1".into());
+        record.lane = Some(crate::lane::LaneVerdict {
+            head: head.clone(),
+            run_id: 1,
+            conclusion: "success".into(),
+            failed: Vec::new(),
+        });
+        // The publication finished and recorded the PR: the run owes nothing more.
+        assert!(PublicationStatus::owed(&record, 0).is_none());
+        assert!(PublicationStatus::owed(&record, 0).is_none());
+        let status = PublicationStatus::read(&record, 0).expect("reported, not hidden");
+        assert_eq!(status.phase, "published_readback_unknown");
+        assert!(status.disposition.contains("could not be read back"));
+    }
+
+    #[test]
+    fn an_accepted_head_with_no_push_receipt_is_pending_not_done() {
+        let record = accepted(&"b".repeat(40));
+        assert!(PublicationStatus::owed(&record, 0).is_some());
+        assert_eq!(
+            PublicationStatus::owed(&record, 0).unwrap(),
+            "publication pending: committed_no_push_recorded (age unknown)"
+        );
+        assert_eq!(
+            PublicationStatus::owed(&rejected(&record.head_sha.clone().unwrap()), 0).unwrap(),
+            "publication pending: committed_no_push_recorded (age unknown)"
+        );
+        let mut published = record.clone();
+        let head = record.head_sha.clone().unwrap();
+        published.publish_receipt = Some(crate::PublishReceipt {
+            requested: head.clone(),
+            remote: Some(head.clone()),
+            class: crate::Divergence::Published,
+        });
+        published.pull_request = Some("https://github.com/example/project/pull/1".into());
+        assert!(PublicationStatus::owed(&published, 0).is_none());
+        // A run still waiting on its lane run owes nothing yet: it has no accepted verdict.
+        let mut awaiting_lane = accepted(&head);
+        awaiting_lane.outcome = Outcome::Unverified;
+        awaiting_lane.acceptance_outcome = None;
+        assert!(PublicationStatus::owed(&awaiting_lane, 0).is_none());
+    }
 
     #[test]
     fn selected_native_usage_requires_the_retained_attempt_and_branch() {

@@ -241,6 +241,12 @@ pub(crate) fn run(
                         row.liveness
                     )
                     .map_err(|e| e.to_string())?;
+                    // The marker follows the outcome, so it prints even when the row has no
+                    // publication phase to show (an accepted head with nothing saved yet).
+                    if row.record.outcome == oxa_work::Outcome::PublicationPending {
+                        writeln!(out, "  {} pending publication, not done", row.record.branch)
+                            .map_err(|e| e.to_string())?;
+                    }
                     if let Some(publication) = row.publication {
                         let age = publication
                             .age_secs
@@ -493,7 +499,11 @@ pub(crate) fn run(
                 Ok(plan) => context.planned(&plan)?,
                 Err(record) => *record,
             };
-            if matches!(
+            // Accepted work still owing its publication receipt is not success for a caller
+            // that reads only the exit code (#2304); it is not a failure either.
+            if record.outcome == oxa_work::Outcome::PublicationPending && code == 0 {
+                code = 3;
+            } else if matches!(
                 record.outcome,
                 oxa_work::Outcome::Red
                     | oxa_work::Outcome::Blocked
