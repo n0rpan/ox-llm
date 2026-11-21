@@ -1843,12 +1843,14 @@ mod tests {
         // This batch: a write, a failing command, a passing check, then a second write.
         let calls = [
             write_call("w1", "checked.txt"),
-            command_call("b", "go build ./..."),
+            command_call("b", "sqlite3 db .dump"),
+            command_call("c", "cargo test"),
             write_call("w2", "later.txt"),
         ];
         let results = [
             result("w1", "write", None, false),
             result("b", "bash", Some(1), true),
+            result("c", "bash", Some(0), false),
             result("w2", "write", None, false),
         ];
         state.note_proof(&calls, &results);
