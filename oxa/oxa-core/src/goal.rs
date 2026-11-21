@@ -1,5 +1,5 @@
 //! Session-local goal controls; no worker, timer thread or external scheduler.
-use oxa_proto::{Access, Exposure, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Value};
+use oxa_proto::{Access, Exposure, Mode, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Value};
 use oxa_session::{Goal, GoalBudget, GoalStatus, SessionRef};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -173,7 +173,28 @@ impl crate::Session {
             .ok_or_else(|| OxaError::new(codes::NOT_FOUND, "The session has no goal."))?;
         match control {
             GoalControl::Pause if goal.status == GoalStatus::Pursuing => goal.pause(),
-            GoalControl::Resume if matches!(goal.status, GoalStatus::Paused | GoalStatus::Blocked) => {
+            // One recover transition for every entry point (`/goal resume`, a2a control): any
+            // goal that is not done or canceled can be resumed in the same session.
+            GoalControl::Resume
+                if matches!(
+                    goal.status,
+                    GoalStatus::Pursuing | GoalStatus::Paused | GoalStatus::Blocked
+                ) =>
+            {
+                if goal.exhausted() {
+                    return Err(OxaError::new(
+                        "goal_budget_exhausted",
+                        "The goal's budget is used up, so it cannot resume.",
+                    )
+                    .with_hint(
+                        "Set a new goal with a larger token, time or turn budget, or clear this one.",
+                    ));
+                }
+                // Already pursuing (announced on open, or left by a request that failed before
+                // delivery): nothing to change, the caller starts the continuation run.
+                if goal.status == GoalStatus::Pursuing {
+                    return Ok(revision);
+                }
                 goal.resume()?;
             }
             GoalControl::Cancel => goal.cancel()?,
@@ -337,7 +358,8 @@ impl GoalRuntime {
     }
     /// The assistant stopped without a tool call. `pause_idle` is the owner's
     /// `oxa.goal.idlePause`; the bool is true when this reply made the second idle one and
-    /// pursuit goes on (a notice, not a stop).
+    /// pursuit goes on (a notice, not a stop). The run's idle ladder (`agent_loop`) decides what
+    /// follows: a continuation, one nudge, then waits (`oxa.goal.idleBackoffSeconds`).
     pub(crate) fn stopped(&self, pause_idle: bool) -> (Goal, bool) {
         let mut state = self.lock();
         let before = state.goal.idle_stops;
@@ -349,6 +371,18 @@ impl GoalRuntime {
             && state.goal.idle_stops == 2
             && state.goal.status == GoalStatus::Pursuing;
         (state.goal.clone(), noted)
+    }
+    /// End the goal as blocked for an owner budget that chose `stop`; returns the saved goal.
+    pub(crate) fn stop_because(&self, reason: &str) -> Goal {
+        let mut state = self.lock();
+        state.goal.stop_because(reason);
+        state.goal.clone()
+    }
+    /// Pause a pursuing goal whose controls the tool selection removed; returns the saved goal.
+    pub(crate) fn pause_because(&self, reason: &str) -> Goal {
+        let mut state = self.lock();
+        state.goal.pause_because(reason);
+        state.goal.clone()
     }
     pub(crate) fn note_tools(&self) {
         self.lock().goal.idle_stops = 0;
@@ -493,9 +527,23 @@ impl Tool for Control {
     fn default_selected(&self) -> bool {
         self.spec.name == "wait"
     }
-    fn access(&self, args: &Value, _: &ToolCtx) -> Result<Vec<Access>, String> {
+    fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
         validate(&self.spec.name, args)?;
-        Ok(vec![])
+        // A wait on a GitHub probe is network access (#1919): plan denies it and ask asks once
+        // per host; workspace, auto and yolo are unchanged (the same convention as web search).
+        let mut out: Vec<Access> = Vec::new();
+        if self.spec.name == "wait" && matches!(cx.mode, Mode::Ask | Mode::Plan) {
+            if let Some(until) = args.get("until") {
+                for hook in &self.hooks {
+                    for access in hook.poll_access(until) {
+                        if !out.contains(&access) {
+                            out.push(access);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
     fn run(&self, args: &Value, cx: &ToolCtx, live: &mut dyn FnMut(&str)) -> ToolOutput {
         if let Err(e) = validate(&self.spec.name, args) {
@@ -593,7 +641,7 @@ impl Control {
                 cx.cancel,
                 &self.interrupt,
                 &self.shared.wait_wake,
-                remaining.min(if until["kind"] == "job_done" {
+                remaining.min(if matches!(kind, "job_done" | "worker_done") {
                     Duration::from_millis(250).min(self.wait.poll)
                 } else {
                     self.wait.poll
@@ -742,6 +790,9 @@ pub(crate) fn checkpoint(
     }
     Ok(())
 }
+/// The pause reason when a pursuing goal has no `goal_done` in the tool selection.
+pub(crate) const CONTROLS_MISSING: &str =
+    "goal_done is not in this session's tool selection; add goal_done to --tools or defaultTools";
 pub(crate) fn save_checkpoint(
     st: &mut crate::SessionState,
     goal: &Goal,
@@ -760,20 +811,114 @@ pub(crate) fn announce_pause(reason: &str, sink: &mut dyn oxa_proto::EventSink) 
     });
 }
 
-/// The warning for a request with unknown token usage under an owner token budget.
-pub(crate) fn announce_unknown_usage(sink: &mut dyn oxa_proto::EventSink) {
-    sink.emit(&oxa_proto::AgentEvent::Notice {
-        level: oxa_proto::Level::Warning,
-        text: "Goal: a request reported no token usage; its spend is unknown and recorded as uncertain. The token budget keeps counting known usage and does not stop the goal for it".into(),
-    });
+/// The pause or stop reason for a request with unknown token usage under a token budget.
+pub(crate) const UNKNOWN_USAGE: &str = "a request reported no token usage under the goal's token budget";
+
+/// A goal under a token budget met a request whose spend is unknown. `first` is true for the
+/// first such request. By default (`oxa.onExceed.goalUnknownUsage`) the goal pauses, because
+/// the budget can no longer be trusted; the owner can choose `stop` (blocked) or `warn` (the
+/// old behaviour: one warning, the budget keeps counting known usage). Every case shows one
+/// warning and records it.
+pub(crate) fn unknown_usage(
+    st: &mut crate::SessionState,
+    goal: &std::sync::Arc<GoalRuntime>,
+    first: bool,
+    sink: &mut dyn oxa_proto::EventSink,
+) -> Result<(), oxa_proto::OxaError> {
+    use oxa_config::{Budget, OnExceed};
+    let action = st.settings.on_exceed(Budget::GoalUnknownUsage);
+    if goal.snapshot().budget.max_tokens.is_none() {
+        return Ok(());
+    }
+    let text = match action {
+        OnExceed::Warn if first => "Goal: a request reported no token usage; its spend is unknown and recorded as uncertain. The token budget keeps counting known usage and does not stop the goal (oxa.onExceed.goalUnknownUsage is warn)".to_string(),
+        OnExceed::Warn => return Ok(()),
+        _ if !goal.pursuing() => return Ok(()),
+        OnExceed::Pause => {
+            let snapshot = goal.pause_because(UNKNOWN_USAGE);
+            save_checkpoint(st, &snapshot, sink)?;
+            format!("Goal paused: {UNKNOWN_USAGE}; /goal resume (oxa.onExceed.goalUnknownUsage)")
+        }
+        OnExceed::Stop => {
+            let snapshot = goal.stop_because(UNKNOWN_USAGE);
+            save_checkpoint(st, &snapshot, sink)?;
+            format!("Goal stopped: {UNKNOWN_USAGE} (oxa.onExceed.goalUnknownUsage is stop)")
+        }
+    };
+    record_exceeded(st, text, sink)
 }
 
-/// The notice for a second reply without an action when the owner did not ask for a pause.
+/// One warning notice and one recorded `Shown` entry for an exceeded owner budget.
+pub(crate) fn record_exceeded(
+    st: &mut crate::SessionState,
+    text: String,
+    sink: &mut dyn oxa_proto::EventSink,
+) -> Result<(), oxa_proto::OxaError> {
+    sink.emit(&oxa_proto::AgentEvent::Notice {
+        level: oxa_proto::Level::Warning,
+        text: text.clone(),
+    });
+    record_notice(st, text, sink)
+}
+
+/// Record a notice the caller already showed, as a `Shown` entry.
+pub(crate) fn record_notice(
+    st: &mut crate::SessionState,
+    text: String,
+    sink: &mut dyn oxa_proto::EventSink,
+) -> Result<(), oxa_proto::OxaError> {
+    crate::agent_loop::persist(
+        st,
+        oxa_proto::EntryBody::Shown {
+            text,
+            why: oxa_proto::shown_why::NOTICE,
+        },
+        sink,
+    )?;
+    Ok(())
+}
+
+/// The notice for a second reply without an action when the goal is not paused for it.
+pub(crate) const IDLE_NOTICE: &str = "Goal: two replies without an action; still pursuing (a goal with no other budget pauses here by default; oxa.onExceed.goalIdle chooses, /goal pause pauses now)";
+
 pub(crate) fn announce_idle(sink: &mut dyn oxa_proto::EventSink) {
     sink.emit(&oxa_proto::AgentEvent::Notice {
         level: oxa_proto::Level::Warning,
-        text: "Goal: two replies without an action; still pursuing (oxa.goal.idlePause pauses here, /goal pause pauses now)".into(),
+        text: IDLE_NOTICE.into(),
     });
+}
+
+/// What two replies without a tool call do. A goal with a budget of its own (goal token, time
+/// or turn limit, the run's `--max-tokens`, `oxa.maxTurns`) ends at that budget, so the idle
+/// reply only warns. Otherwise `oxa.onExceed.goalIdle` decides (default: pause). The older
+/// owner switch `oxa.goal.idlePause`, when set in the user file, still wins: `true` pauses,
+/// `false` only warns.
+pub(crate) fn idle_action(
+    st: &crate::SessionState,
+    goal: &GoalRuntime,
+    max_turns: u32,
+) -> oxa_config::OnExceed {
+    use oxa_config::{Budget, OnExceed};
+    if let Some(on) = st
+        .settings
+        .user_value("oxa.goal.idlePause")
+        .and_then(Value::as_bool)
+    {
+        return if on { OnExceed::Pause } else { OnExceed::Warn };
+    }
+    let run_cap = st
+        .shared
+        .gate
+        .token_budget
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_some();
+    let bounded = goal.snapshot().budget != GoalBudget::default() || run_cap || max_turns > 0;
+    if bounded {
+        OnExceed::Warn
+    } else {
+        st.settings.on_exceed(Budget::GoalIdle)
+    }
 }
 
 /// Publish the goal currently mounted in the session, including a saved pause reason.
@@ -856,16 +1001,103 @@ pub(crate) fn failure_backoff(
     if base == 0 {
         return None;
     }
-    let cap = FAILURE_BACKOFF_CAP_SECS.max(base);
-    let delay = Duration::from_secs(base.saturating_mul(1u64 << failures.min(32)).min(cap));
+    let delay = backoff_delay(base, failures);
     goal.time_allows_wait(delay).then_some(delay)
+}
+
+/// `oxa.goal.followUpMaxWaitSeconds` default: how long a follow-up waits behind a pursuing goal
+/// that keeps calling tools before a tool boundary delivers it.
+const FOLLOW_UP_MAX_WAIT_SECS: u32 = 300;
+
+/// Whether the queued follow-ups of a pursuing goal are delivered at this tool boundary (#2183).
+/// A follow-up normally waits until the run stops or a `wait` is woken, but a goal run may do
+/// neither for hours. `seen` is the first tool boundary that found the follow-up queued; once
+/// `oxa.goal.followUpMaxWaitSeconds` (user setting, `0` = keep waiting for the stop) has passed
+/// since then, it is due. Outside a pursuing goal a follow-up keeps its end-of-turn delivery.
+pub(crate) fn follow_up_due(st: &crate::SessionState, seen: &mut Option<std::time::Instant>) -> bool {
+    let pursuing = st
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.engaged() && goal.pursuing());
+    if !pursuing || !st.shared.has_follow_up() {
+        *seen = None;
+        return false;
+    }
+    let limit = st
+        .settings
+        .user_u32("oxa.goal.followUpMaxWaitSeconds", FOLLOW_UP_MAX_WAIT_SECS);
+    let since = *seen.get_or_insert_with(std::time::Instant::now);
+    if limit == 0 || since.elapsed() < Duration::from_secs(u64::from(limit)) {
+        return false;
+    }
+    *seen = None;
+    true
+}
+
+/// `base` seconds doubled `steps` times, capped at 900 s unless `base` itself is longer. The one
+/// arithmetic of the failure backoff and the idle wait.
+fn backoff_delay(base: u64, steps: u32) -> Duration {
+    let cap = FAILURE_BACKOFF_CAP_SECS.max(base);
+    Duration::from_secs(base.saturating_mul(1u64 << steps.min(32)).min(cap))
+}
+
+/// `oxa.goal.idleBackoffSeconds` default: the first wait of an idle goal.
+const IDLE_BACKOFF_SECS: u32 = 60;
+
+/// The wait before the next continuation of a pursuing goal that has had `streak` replies in a
+/// row without a tool call (the third and later wait; `0` seconds opts out), or `None`: no wait.
+/// A time budget that would run out during the wait skips it (the budget ends the goal as before).
+pub(crate) fn idle_wait(st: &crate::SessionState, goal: &GoalRuntime, streak: u32) -> Option<Duration> {
+    if streak < 3 {
+        return None;
+    }
+    let base = u64::from(
+        st.settings
+            .user_u32("oxa.goal.idleBackoffSeconds", IDLE_BACKOFF_SECS),
+    );
+    if base == 0 {
+        return None;
+    }
+    let delay = backoff_delay(base, streak - 3);
+    goal.time_allows_wait(delay).then_some(delay)
+}
+
+/// A run that ends as failed keeps its pursuing goal pursuing (a headless `--continue` still
+/// picks it up) and records why it stopped, with the error code only, never the diagnostic text:
+/// `/goal resume` and the a2a resume continue it in this session.
+pub(crate) fn record_failure(
+    st: &mut crate::SessionState,
+    error: &oxa_proto::OxaError,
+    sink: &mut dyn oxa_proto::EventSink,
+) -> Result<(), oxa_proto::OxaError> {
+    if !st
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.engaged() && goal.pursuing())
+    {
+        return Ok(());
+    }
+    let text = format!(
+        "Goal: the run failed ({}); the goal is still pursuing, /goal resume continues it",
+        error.code
+    );
+    record_notice(st, text.clone(), sink)?;
+    sink.emit(&oxa_proto::AgentEvent::Notice {
+        level: oxa_proto::Level::Warning,
+        text,
+    });
+    Ok(())
 }
 
 /// Wait `delay` without a model request. An abort ends the wait as `Aborted`; `abort_retry` ends
 /// it as `RetryStopped` and resets that token, as a retry wait does.
 pub(crate) fn wait_failure_backoff(st: &crate::SessionState, delay: Duration) -> BackoffEnd {
-    let no_wake = oxa_proto::CancelToken::new();
-    wait_cancelled(&st.shared.cancel, &st.shared.cancel_retry, &no_wake, delay);
+    wait_cancelled(
+        &st.shared.cancel,
+        &st.shared.cancel_retry,
+        &st.shared.wait_wake,
+        delay,
+    );
     if st.shared.cancel.is_cancelled() {
         BackoffEnd::Aborted
     } else if st.shared.cancel_retry.is_cancelled() {
@@ -1006,13 +1238,6 @@ impl crate::Session {
                 Ok((vec!["Goal paused.".into()], None))
             }
             GoalCommand::Resume => {
-                // A pursuing goal (announced on open, not run) continues without a transition.
-                if self.goal().is_some_and(|g| g.status == GoalStatus::Pursuing) {
-                    return Ok((
-                        vec!["Goal resumed.".into()],
-                        Some(crate::prompt::GOAL_CONTINUE.into()),
-                    ));
-                }
                 let bound = self.inner().sref.clone();
                 let revision = self.goal_revision();
                 self.control_goal(&bound, revision, GoalControl::Resume, sink)?;

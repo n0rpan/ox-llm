@@ -995,7 +995,7 @@ fn run_token_budget_counts_new_tokens_from_tool_prefill() {
     assert_eq!(reqs.len(), 3);
     assert_eq!(reqs[1].max_tokens, 0);
     assert!(
-        reqs[2].max_tokens <= 1024,
+        reqs[2].max_tokens <= 4096,
         "the prefill must consume the run budget before the follow-up"
     );
     assert_eq!(

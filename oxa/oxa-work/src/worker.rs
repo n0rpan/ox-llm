@@ -115,6 +115,9 @@ mod autonomy_tests {
             git_binary: std::path::PathBuf::from("/bin/true"),
             host_path: std::ffi::OsString::new(),
             terminate_binary: None,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             offline: false,
             runner_owns_github: false,
             worker_github: crate::WorkerGithub::default(),
@@ -212,6 +215,7 @@ pub(crate) fn run(
         .env_remove(crate::WORKTREE_TRUST_SOURCE_ENV)
         .env_remove(oxa_proto::names::ENV_UNATTENDED);
     mark_unattended(&mut command);
+    command.env("OXA_WORK_INBOX", "1");
     command.current_dir(root).args([
         "--mode=json",
         "--model",
@@ -230,7 +234,15 @@ pub(crate) fn run(
     if policy.offline {
         command.arg("--offline");
     }
-    github_access(&mut command, policy.runner_owns_github, worker_github);
+    // A lane task's work ends in a runner-driven public push that the owner approves, so the
+    // worker never receives the host GitHub credentials: a lane task always gets the runner
+    // treatment, whatever the owner's worker GitHub level.
+    let worker_github = if task.lane_ci {
+        crate::WorkerGithub::Runner
+    } else {
+        worker_github
+    };
+    github_access(&mut command, github_isolated(policy, task), worker_github);
     if let Some(id) = session {
         command.arg(format!("--continue={id}"));
     }
@@ -472,6 +484,13 @@ pub(crate) fn keep_tail(tail: &mut Vec<u8>, bytes: &[u8], cap: usize) {
     }
 }
 
+/// Whether this worker's launch strips the host's GitHub credentials: a runner-owned task
+/// (the runner alone talks to GitHub), and every lane task, whose work ends in a
+/// runner-driven public push that the owner approves.
+pub(crate) fn github_isolated(policy: &RunPolicy, task: &Task) -> bool {
+    policy.runner_owns_github || task.lane_ci
+}
+
 /// #1512 S3: a worker is unattended: no person watches it, so the OS sandbox stays on. The
 /// inherited marker is dropped first, then the worker's own is set.
 pub(crate) fn mark_unattended(command: &mut Command) {
@@ -483,6 +502,51 @@ mod tests {
     use super::*;
     use oxa_proto::Autonomy;
     use serde_json::json;
+
+    #[test]
+    fn a_lane_task_worker_launch_strips_the_host_github_credentials() {
+        let policy = RunPolicy {
+            git_binary: "/usr/bin/git".into(),
+            host_path: "/usr/bin:/bin".into(),
+            terminate_binary: None,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
+            offline: true,
+            runner_owns_github: false,
+            autonomy: oxa_proto::Autonomy::default(),
+            worker_github: Default::default(),
+            authority_now: None,
+            storage: std::env::temp_dir(),
+        };
+        let mut task = Task {
+            id: "lane-1".into(),
+            model: "fake".into(),
+            branch: "agent/lane-1".into(),
+            base: "main".into(),
+            prompt: "Synthetic lane task".into(),
+            max_time: 2700,
+            reviewed_pull_request: None,
+            lane_ci: true,
+        };
+        assert!(
+            github_isolated(&policy, &task),
+            "a lane task's worker never receives the host GitHub credentials"
+        );
+        task.lane_ci = false;
+        assert!(
+            !github_isolated(&policy, &task),
+            "a plain task keeps the normal worker environment"
+        );
+        let runner_owned = RunPolicy {
+            runner_owns_github: true,
+            ..policy
+        };
+        assert!(
+            github_isolated(&runner_owned, &task),
+            "a runner-owned task stays isolated without lane CI"
+        );
+    }
 
     #[test]
     fn oxa_work_worker_command_sets_oxa_unattended() {

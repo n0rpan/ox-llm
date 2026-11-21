@@ -155,7 +155,7 @@ impl Goal {
     }
     /// [`Goal::stopped`] with the owner's idle rule: with `pause_idle` two replies without a
     /// tool call pause the goal; without it (the default) they are only counted (`idle_stops`
-    /// reaches 2) and pursuit goes on.
+    /// reaches 2) and pursuit goes on; the caller then nudges once and waits between requests.
     pub fn stopped_with(&mut self, had_tools: bool, pause_idle: bool) -> bool {
         if self.status != GoalStatus::Pursuing {
             return false;
@@ -181,6 +181,22 @@ impl Goal {
         if self.status == GoalStatus::Pursuing {
             self.status = GoalStatus::Paused;
             self.pause_reason = None;
+        }
+    }
+    /// End a pursuing or paused goal as blocked, with a reason the owner sees (an owner budget
+    /// chose `stop` over a pause).
+    pub fn stop_because(&mut self, reason: &str) {
+        if matches!(self.status, GoalStatus::Pursuing | GoalStatus::Paused) {
+            self.status = GoalStatus::Blocked;
+            self.pause_reason = None;
+            self.evidence = Some(reason.into());
+        }
+    }
+    /// Pause with a reason the owner sees (the goal cannot go on until they act).
+    pub fn pause_because(&mut self, reason: &str) {
+        if self.status == GoalStatus::Pursuing {
+            self.status = GoalStatus::Paused;
+            self.pause_reason = Some(reason.into());
         }
     }
     pub fn resume(&mut self) -> Result<(), OxaError> {

@@ -36,8 +36,8 @@ const BASE: &[Entry] = &[
     },
     Entry {
         path: &["models"],
-        summary: "List the models the engine serves, as a table or as JSON",
-        usage: &["oxa models [--json]"],
+        summary: "List the local and cloud models this install can serve, where each runs and which one is the default",
+        usage: &["oxa models [--json] [search]"],
         example: "oxa models --json",
     },
     Entry {
@@ -102,9 +102,10 @@ const BASE: &[Entry] = &[
     },
     Entry {
         path: &["send"],
-        summary: "Queue a session follow-up for its TUI, RPC owner or headless goal run",
+        summary: "Send a session a message: a steer for its next tool boundary, or a queued follow-up",
         usage: &[
             "oxa send <session-id> \"text\"",
+            "oxa send --follow-up <session-id> \"text\"",
             "oxa send <session-id> --approve <request-id> once|session|always|deny",
             "oxa send --approvals",
         ],

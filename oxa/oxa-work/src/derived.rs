@@ -148,6 +148,32 @@ pub(crate) fn committed_requires_hosted(
     base: &str,
     head: &str,
 ) -> Result<bool, String> {
+    Ok(committed_selection(policy, root, base, head)?.requires_hosted)
+}
+
+/// The package names this exact committed change selects. The hosted lane runs the suites
+/// of exactly these crates (plus their reverse dependencies, which only widen coverage).
+pub(crate) fn committed_packages(
+    policy: &RunPolicy,
+    root: &Path,
+    base: &str,
+    head: &str,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    Ok(committed_selection(policy, root, base, head)?
+        .packages
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect())
+}
+
+/// Every path this exact committed change touches (the lane coverage rule decides which of
+/// them a lane run is evidence for).
+pub(crate) fn committed_changed_paths(
+    policy: &RunPolicy,
+    root: &Path,
+    base: &str,
+    head: &str,
+) -> Result<Vec<String>, String> {
     let diff = output(git(
         policy,
         root,
@@ -168,7 +194,56 @@ pub(crate) fn committed_requires_hosted(
     if !diff.status.success() {
         return Err("committed change inventory failed".into());
     }
-    Ok(select_changed_paths(root, &diff.stdout)?.requires_hosted)
+    let text = String::from_utf8(diff.stdout).map_err(|_| "change inventory is not UTF-8")?;
+    Ok(text
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Whether a `Cargo.toml` sits in a directory above `path`, in the checked-out head or in the
+/// base (a deleted crate leaves no manifest in the head).
+pub(crate) fn has_cargo_ancestor(policy: &RunPolicy, root: &Path, base: &str, path: &str) -> bool {
+    let mut dir = path;
+    while let Some((parent, _)) = dir.rsplit_once('/') {
+        dir = parent;
+        let manifest = format!("{dir}/Cargo.toml");
+        if root.join(&manifest).symlink_metadata().is_ok_and(|m| m.is_file()) {
+            return true;
+        }
+        let spec = format!("{base}:{manifest}");
+        if output(git(policy, root, &["cat-file", "-e", &spec])).is_ok_and(|o| o.status.success()) {
+            return true;
+        }
+    }
+    root.join("Cargo.toml")
+        .symlink_metadata()
+        .is_ok_and(|m| m.is_file())
+}
+
+fn committed_selection(policy: &RunPolicy, root: &Path, base: &str, head: &str) -> Result<Selected, String> {
+    let diff = output(git(
+        policy,
+        root,
+        &[
+            "diff",
+            "--name-only",
+            "--no-relative",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+            "-z",
+            base,
+            head,
+            "--",
+        ],
+    ))?;
+    if !diff.status.success() {
+        return Err("committed change inventory failed".into());
+    }
+    select_changed_paths(root, &diff.stdout)
 }
 
 #[cfg(test)]
@@ -569,18 +644,21 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
         let name = path.rsplit('/').next().unwrap_or(path.as_str());
         let dir = parent_dir(path);
         // Shared Cargo inputs can change the build without selecting a package.
-        if matches!(name, "rust-toolchain" | "rust-toolchain.toml")
-            || dir.split('/').any(|part| part == ".cargo")
-        {
+        if matches!(name, "rust-toolchain" | "rust-toolchain.toml") {
             selected.requires_hosted = true;
+            continue;
+        }
+        if dir.split('/').any(|part| part == ".cargo") {
+            selected.requires_hosted = true;
+            manifests.in_dir(root, dir, &mut budget)?;
             continue;
         }
         // A missing or unsupported package declaration cannot make a Rust edit verified.
         selected.requires_hosted |= name.ends_with(".rs");
         if name == "Cargo.toml" || name == "Cargo.lock" {
             selected.requires_hosted = true;
-            let manifest = manifests.at(root, dir)?;
-            if let Some(package) = manifest.package.clone() {
+            let package = manifests.at(root, dir)?.package.clone();
+            if let Some(package) = package {
                 selected
                     .packages
                     .insert((package, manifests.in_dir(root, dir, &mut budget)?));
@@ -972,6 +1050,56 @@ members = ["crates/*", "tools/pinned"]
         assert_eq!(
             selected.packages,
             BTreeSet::from([("solo".to_owned(), "solo".to_owned())])
+        );
+    }
+
+    #[test]
+    fn shared_workspace_inputs_need_hosted_tests_without_selecting_a_package() {
+        // `engine/Cargo.toml` and `engine/.cargo/` select no package, but they change every
+        // engine crate: the engine evidence gate must see them.
+        let dir = PrivateDir::new("derived-engine-inputs");
+        manifest(
+            &dir,
+            "engine/Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        );
+        manifest(&dir, "engine/.cargo/config.toml", "[build]\n");
+        manifest(
+            &dir,
+            "engine/crates/model/Cargo.toml",
+            "[package]\nname = \"model\"\n",
+        );
+        let selected = select(
+            dir.path(),
+            &[
+                "engine/Cargo.toml".to_owned(),
+                "engine/.cargo/config.toml".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(selected.requires_hosted);
+        assert!(selected.packages.is_empty());
+    }
+
+    #[test]
+    fn an_engine_crate_selects_with_the_engine_workspace_as_in_dir() {
+        // The owning workspace directory is what separates engine crates, whose suites
+        // ride the self-hosted route, from the crates a lane run actually tests.
+        let dir = PrivateDir::new("derived-engine");
+        manifest(
+            &dir,
+            "engine/Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        );
+        manifest(
+            &dir,
+            "engine/crates/model/Cargo.toml",
+            "[package]\nname = \"model\"\n",
+        );
+        let selected = select(dir.path(), &["engine/crates/model/src/main.rs".to_owned()]).unwrap();
+        assert_eq!(
+            selected.packages,
+            BTreeSet::from([("model".to_owned(), "engine".to_owned())])
         );
     }
 

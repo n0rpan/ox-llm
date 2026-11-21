@@ -56,7 +56,8 @@ pub enum Subcommand {
     Pkg(String, Vec<String>),
     /// `oxa config ..`.
     Config(Vec<String>),
-    /// `oxa models [--json]`: the words after `models`. Known words are never prompts (#1542).
+    /// `oxa models [--json] [search]`: the words after `models`. Known words are never
+    /// prompts (#1542).
     Models(Vec<String>),
     /// `oxa local add <model.gguf> ..`: the words after `local`.
     Local(Vec<String>),
@@ -282,8 +283,8 @@ const COMMANDS: &[(&str, &str)] = &[
         "Read a saved session's current progress and stall signal",
     ),
     (
-        "oxa models [--json]",
-        "List the models the engine serves, as a table or as JSON",
+        "oxa models [--json] [search]",
+        "List the local and cloud models this install can serve, as a table or as JSON",
     ),
     (
         "oxa install <source> [-l]",
@@ -304,8 +305,12 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
     (
-        "oxa send <session-id> <text|->",
-        "Queue a session follow-up; use - to read the text from stdin",
+        "oxa send [--follow-up] <session-id> <text|-> [--wait SECONDS]",
+        "Steer a session at its next tool call (--follow-up queues it instead) and print a delivery receipt; - reads stdin; --wait exits 3 if not taken in time",
+    ),
+    (
+        "oxa send <session-id> --retry <message-id> | --withdraw <message-id>",
+        "Check a sent message again without sending it twice, or remove an undelivered one",
     ),
     (
         "oxa send <session-id> --approve <request-id> once|session|always|deny",
@@ -705,11 +710,12 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
                 continue;
             }
         }
-        // These commands accept leading offline switches so their own guards
-        // can report the refusal. A prompt, another option or `--` ends that prefix.
+        // These commands accept leading offline switches so their own guards can report the
+        // refusal, and `models` so the catalog can report an offline cloud route. A prompt,
+        // another option or `--` ends that prefix.
         if !stop
             && (i == 1
-                || ((matches!(arg, "send" | "work" | "share")
+                || ((matches!(arg, "send" | "work" | "share" | "models")
                     || oxa_interactive::command_registry::parse_cli(&argv[i - 1..])
                         .is_some_and(|invocation| registry_owned(invocation.command.id)))
                     && argv[..i - 1].iter().all(|word| word == "--offline")))

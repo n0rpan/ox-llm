@@ -2,10 +2,13 @@
 use super::{checked, state, tree, CheckpointObserver, LockedTask, Outcome, Record, Result, RunPolicy, Task};
 use state::Step;
 mod landing;
+mod receipt;
 pub use landing::{
     Admission, AdmissionAcknowledgment, AdmissionReceipt, DeliveryReceipt, LandingPublisher, NoticeIntent,
     RejectedLanding, RetryIntent,
 };
+pub(crate) use receipt::push_with_receipt;
+pub use receipt::{Divergence, PublishReceipt};
 use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
     fs::File,
@@ -481,7 +484,7 @@ fn scan_patch(
     Ok(())
 }
 
-fn isolate_github_environment(command: &mut Command) {
+pub(crate) fn isolate_github_environment(command: &mut Command) {
     // The destination comes from origin. Let the CLI choose its stored
     // login for that host, independently of host-agnostic shell overrides.
     for key in [
@@ -496,7 +499,13 @@ fn isolate_github_environment(command: &mut Command) {
     }
 }
 
-fn gh(binary: &Path, policy: &RunPolicy, repo: &Path, lock: &File, args: &[&str]) -> Result<String> {
+pub(crate) fn gh(
+    binary: &Path,
+    policy: &RunPolicy,
+    repo: &Path,
+    lock: &File,
+    args: &[&str],
+) -> Result<String> {
     let mut command = Command::new(binary);
     super::isolate_git_environment(&mut command);
     isolate_github_environment(&mut command);
@@ -518,13 +527,13 @@ fn gh(binary: &Path, policy: &RunPolicy, repo: &Path, lock: &File, args: &[&str]
 fn json(text: &str) -> Result<serde_json::Value> {
     serde_json::from_str(text).map_err(|e| e.to_string())
 }
-struct Repository {
-    qualified: String,
-    host: String,
-    owner: String,
-    name: String,
+pub(crate) struct Repository {
+    pub(crate) qualified: String,
+    pub(crate) host: String,
+    pub(crate) owner: String,
+    pub(crate) name: String,
 }
-fn repository(value: &serde_json::Value) -> Result<Repository> {
+pub(crate) fn repository(value: &serde_json::Value) -> Result<Repository> {
     let identity = value["nameWithOwner"]
         .as_str()
         .ok_or("repository identity missing")?;
@@ -552,11 +561,231 @@ fn repository(value: &serde_json::Value) -> Result<Repository> {
         name: name.into(),
     })
 }
+/// Validated open pull requests whose head is this task branch.
+pub(crate) fn open_pull_requests(
+    repo: &Path,
+    gh_binary: &Path,
+    policy: &RunPolicy,
+    lock: &File,
+    repository: &Repository,
+    branch: &str,
+) -> Result<Vec<serde_json::Value>> {
+    let prs = json(&gh(
+        gh_binary,
+        policy,
+        repo,
+        lock,
+        &[
+            "pr",
+            "list",
+            "--repo",
+            &repository.qualified,
+            "--state",
+            "open",
+            "--head",
+            branch,
+            "--json",
+            "number,url,isDraft,headRepositoryOwner,isCrossRepository",
+        ],
+    )?)?;
+    let prs = prs.as_array().ok_or("invalid PR list")?.to_vec();
+    if prs.len() > 1 {
+        return Err("multiple open PRs match the task branch".into());
+    }
+    if prs.first().is_some_and(|pr| {
+        pr["headRepositoryOwner"]["login"].as_str() != Some(repository.owner.as_str())
+            || pr["isCrossRepository"].as_bool() != Some(false)
+    }) {
+        return Err("PR head repository does not match origin".into());
+    }
+    Ok(prs)
+}
+
+/// The open PR's number when it is already admitted to the merge queue.
+pub(crate) fn queued_pull_request(
+    repo: &Path,
+    gh_binary: &Path,
+    policy: &RunPolicy,
+    lock: &File,
+    repository: &Repository,
+    branch: &str,
+) -> Result<Option<u64>> {
+    let prs = open_pull_requests(repo, gh_binary, policy, lock, repository, branch)?;
+    let Some(pr) = prs.first() else {
+        return Ok(None);
+    };
+    let number = pr["number"]
+        .as_u64()
+        .filter(|number| *number != 0)
+        .ok_or("PR number missing")?;
+    let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}";
+    let data = json(&gh(
+        gh_binary,
+        policy,
+        repo,
+        lock,
+        &[
+            "api",
+            "graphql",
+            "--hostname",
+            &repository.host,
+            "-f",
+            &format!("query={query}"),
+            "-F",
+            &format!("owner={}", repository.owner),
+            "-F",
+            &format!("name={}", repository.name),
+            "-F",
+            &format!("number={number}"),
+        ],
+    )?)?;
+    let pull = &data["data"]["repository"]["pullRequest"];
+    if !pull.is_object() || pull.get("mergeQueueEntry").is_none() {
+        return Err("cannot determine whether PR is in the merge queue".into());
+    }
+    Ok((!pull["mergeQueueEntry"].is_null()).then_some(number))
+}
+
+/// Resolve the single origin destination through the same validated `gh` read.
+pub(crate) fn origin_repository(
+    repo: &Path,
+    gh_binary: &Path,
+    policy: &RunPolicy,
+    lock: &File,
+) -> Result<Repository> {
+    let remote = checked(super::git(
+        policy,
+        repo,
+        &["remote", "get-url", "--push", "--all", "origin"],
+    ))?;
+    if remote.lines().count() != 1 {
+        return Err("publishing requires one origin push URL".into());
+    }
+    repository(&json(&gh(
+        gh_binary,
+        policy,
+        repo,
+        lock,
+        &["repo", "view", &remote, "--json", "nameWithOwner,url"],
+    )?)?)
+}
+
+/// The publication content scan for a push `head` would make to `origin`: every
+/// commit the push URL's own advertised tips lack, the same scan `--publish` runs.
+/// Nothing is sent; any failure, or a missing scan, refuses the push.
+pub(crate) fn scan_push(policy: &RunPolicy, repo: &Path, head: &str) -> Result<()> {
+    let scan = policy
+        .content_scan
+        .as_deref()
+        .ok_or("publishing refused: the publication content scan is unavailable")?;
+    let remote = checked(super::git(
+        policy,
+        repo,
+        &["remote", "get-url", "--push", "--all", "origin"],
+    ))?;
+    let known = destination_tips(policy, repo, &remote)?;
+    scan_pushed(policy, repo, &pushed_revisions(head, &known), scan)
+}
+
+/// Paths under `paths` that any commit the push would add changes (reachable from `head`
+/// and from no tip the destination advertises), empty when none does. A merge is listed
+/// against each parent, so a control file that only a branch side changed still shows.
+pub(crate) fn pushed_path_changes(
+    policy: &RunPolicy,
+    repo: &Path,
+    head: &str,
+    paths: &[&str],
+) -> Result<String> {
+    let remote = checked(super::git(
+        policy,
+        repo,
+        &["remote", "get-url", "--push", "--all", "origin"],
+    ))?;
+    let known = destination_tips(policy, repo, &remote)?;
+    let mut args = vec!["log", "--format=", "--name-only", "--no-renames", "-m"];
+    args.extend(pushed_revisions(head, &known));
+    args.push("--");
+    args.extend_from_slice(paths);
+    checked(super::git(policy, repo, &args))
+}
+
+/// Push one exact accepted commit. Metadata probes deny every transport;
+/// only this explicit, confirmed publication may use normal GitHub/file transports.
+pub(crate) fn push_head(
+    policy: &RunPolicy,
+    repo: &Path,
+    head: &str,
+    branch: &str,
+    lock: &File,
+) -> Result<()> {
+    let mut push = super::git(
+        policy,
+        repo,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ssh.allow=always",
+            "-c",
+            "protocol.file.allow=always",
+            // Only the scanned commit is sent: no implicit tags or submodule pushes.
+            "-c",
+            "push.followTags=false",
+            "-c",
+            "push.recurseSubmodules=no",
+            "push",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            "origin",
+            &format!("{head}:refs/heads/{branch}"),
+        ],
+    );
+    isolate_github_environment(&mut push);
+    push.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
+    if !matches!(
+        super::command_runner_with_stdin(
+            push,
+            Some(MAX_PUBLICATION_RESPONSE_BYTES),
+            Stdio::from(lock.try_clone().map_err(|e| e.to_string())?),
+            super::COMMAND_DEADLINE,
+        ),
+        Some((0, _))
+    ) {
+        return Err("accepted commit push failed".into());
+    }
+    Ok(())
+}
+
 const BODY_BEGIN: &str = "<!-- oxa-work-acceptance -->";
 const BODY_END: &str = "<!-- /oxa-work-acceptance -->";
-fn body(task: &Task, head: &str, existing: Option<&str>) -> Result<String> {
-    let section = format!("{BODY_BEGIN}\nAccepted commit: `{head}`\nLocal acceptance: passed\nCI: not yet qualified for this commit\n{BODY_END}");
-    let default = format!("T2 — task `{}` executed by `oxa work`.\n\nWhat/why: explicitly requested task; review its changes against the base.\n\nChanges: accepted worktree retained.\n\nRemoves: inspect the diff before promotion; no deletion clearance is inferred.\n\nValidation: frozen local acceptance passed; CI qualification is separate.\n", task.id);
+fn body(
+    task: &Task,
+    head: &str,
+    lane: Option<&crate::lane::LaneVerdict>,
+    existing: Option<&str>,
+) -> Result<String> {
+    let ci = match lane {
+        Some(verdict) if verdict.head == head && verdict.passed() => {
+            format!("CI: lane run {} passed at this commit", verdict.run_id)
+        }
+        Some(verdict) => format!(
+            "CI: lane run {} concluded {} at {}",
+            verdict.run_id, verdict.conclusion, verdict.head
+        ),
+        None => "CI: not qualified for this commit".into(),
+    };
+    let section =
+        format!("{BODY_BEGIN}\nAccepted commit: `{head}`\nLocal acceptance: passed\n{ci}\n{BODY_END}");
+    let validation = if lane.is_some() {
+        "Validation: local acceptance and the lane run passed at the accepted commit."
+    } else {
+        "Validation: frozen local acceptance passed; CI qualification is separate."
+    };
+    let default = format!("T2 — task `{}` executed by `oxa work`.\n\nWhat/why: explicitly requested task; review its changes against the base.\n\nChanges: accepted worktree retained.\n\nRemoves: inspect the diff before promotion; no deletion clearance is inferred.\n\n{validation}\n", task.id);
     let original = existing.unwrap_or(&default);
     match (
         original.matches(BODY_BEGIN).count(),
@@ -614,15 +843,35 @@ fn publish_locked(
     if !super::completed_execution(value.record.step)
         || !matches!(accepted, Outcome::Done | Outcome::NothingToDo)
     {
+        // Say why nothing was published; the unsaved copy carries the note, the checkpoint
+        // stays as it was.
+        let why = format!(
+            "not published: only a finished task accepted as done can be published (this one is {accepted:?} at {:?})",
+            value.record.step
+        )
+        .to_lowercase();
+        value.record.detail = if value.record.detail.is_empty() {
+            why
+        } else {
+            format!("{}; {why}", value.record.detail)
+        };
         return Ok(value.record);
     }
     value.record.acceptance_outcome = Some(accepted);
     writer.save(&mut value, Step::Publishing, observer)?;
     let git = |repo: &Path, args: &[&str]| super::git(policy, repo, args);
     let gh = |repo: &Path, lock: &File, args: &[&str]| gh(gh_binary, policy, repo, lock, args);
+    let receipt_slot: std::cell::RefCell<Option<PublishReceipt>> = std::cell::RefCell::new(None);
     let result = (|| -> Result<(String, bool)> {
         if policy.offline {
             return Err("publishing is unavailable in offline mode".into());
+        }
+        if task.lane_ci
+            && !value.record.lane.as_ref().is_some_and(|verdict| {
+                Some(verdict.head.as_str()) == value.record.head_sha.as_deref() && verdict.passed()
+            })
+        {
+            return Err("publication requires a passing lane CI run at the saved head".into());
         }
         let tree = &value.record.worktree;
         tree::validate(policy, repo, tree, task)?;
@@ -648,66 +897,35 @@ fn publish_locked(
         // The destination's own tips are checked again after confirmation.
         scan_pushed(policy, tree, &[head.as_str(), "--not", "--remotes=origin"], scan)?;
         let remote = checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?;
-        if remote.lines().count() != 1 {
-            return Err("publishing requires one origin push URL".into());
-        }
-        let repository = repository(&json(&gh(
-            tree,
-            lock,
-            &["repo", "view", &remote, "--json", "nameWithOwner,url"],
-        )?)?)?;
+        let repository = origin_repository(tree, gh_binary, policy, lock)?;
         let name = repository.qualified.as_str();
-        let owner = repository.owner.as_str();
-        let repo_name = repository.name.as_str();
-        let prs = json(&gh(
-            tree,
-            lock,
-            &[
-                "pr",
-                "list",
-                "--repo",
-                name,
-                "--state",
-                "open",
-                "--head",
-                &task.branch,
-                "--json",
-                "number,url,isDraft,headRepositoryOwner,isCrossRepository",
-            ],
-        )?)?;
-        let prs = prs.as_array().ok_or("invalid PR list")?;
-        if prs.len() > 1 {
-            return Err("multiple open PRs match the task branch".into());
-        }
-        if prs.first().is_some_and(|pr| {
-            pr["headRepositoryOwner"]["login"].as_str() != Some(owner)
-                || pr["isCrossRepository"].as_bool() != Some(false)
-        }) {
-            return Err("PR head repository does not match origin".into());
-        }
+        let prs = open_pull_requests(tree, gh_binary, policy, lock, &repository, &task.branch)?;
         if accepted == Outcome::NothingToDo
             && prs.is_empty()
             && value.record.head_sha == value.record.base_sha
         {
             return Err("nothing to publish".into());
         }
-        let existing_body = if let Some(pr) = prs.first() {
+        let (pr_action, existing_body) = if let Some(pr) = prs.first() {
             let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
             let value = json(&gh(
                 tree,
                 lock,
                 &["pr", "view", &number, "--repo", name, "--json", "body"],
             )?)?;
-            Some(value["body"].as_str().ok_or("PR body missing")?.to_owned())
+            (
+                format!("update PR #{number}"),
+                Some(value["body"].as_str().ok_or("PR body missing")?.to_owned()),
+            )
         } else {
-            None
+            ("create a PR".into(), None)
         };
-        let text = body(task, &head, existing_body.as_deref())?;
+        let text = body(task, &head, value.record.lane.as_ref(), existing_body.as_deref())?;
         if confirm(&format!(
-            "Push accepted commit {head} as {} to origin and create/update its PR in {name} (base {base})? Type yes to publish: ",
+            "Push accepted commit {head} as {} to origin and {pr_action} in {name} (base {base})? Type yes to publish: ",
             task.branch
         )) != Some(true) {
-            return Err("publication requires confirmation through the controlling terminal".into());
+            return Err("not published: the owner did not confirm (a session answers through its owner confirm broker, a terminal through /dev/tty)".into());
         }
         if remote != checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?
             || head != checked(git(tree, &["rev-parse", "HEAD"]))?
@@ -721,75 +939,19 @@ fn publish_locked(
         scan_pushed(policy, tree, &pushed_revisions(&head, &known), scan)?;
         // Confirmation may remain open indefinitely: queue admission is checked
         // only after it returns, immediately before the push.
-        if let Some(pr) = prs.first() {
-            let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
-            let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}";
-            let data = json(&gh(
-                tree,
-                lock,
-                &[
-                    "api",
-                    "graphql",
-                    "--hostname",
-                    &repository.host,
-                    "-f",
-                    &format!("query={query}"),
-                    "-F",
-                    &format!("owner={owner}"),
-                    "-F",
-                    &format!("name={repo_name}"),
-                    "-F",
-                    &format!("number={number}"),
-                ],
-            )?)?;
-            let pull = &data["data"]["repository"]["pullRequest"];
-            if !pull.is_object() || pull.get("mergeQueueEntry").is_none() {
-                return Err("cannot determine whether PR is in the merge queue".into());
-            }
-            if !pull["mergeQueueEntry"].is_null() {
-                return Err("PR is in the merge queue; use a new task branch for follow-up work".into());
-            }
+        if let Some(number) = queued_pull_request(tree, gh_binary, policy, lock, &repository, &task.branch)? {
+            return Err(format!(
+                "PR #{number} is in the merge queue; use a new task branch for follow-up work"
+            ));
         }
-        let mut push = git(
+        receipt::push_with_receipt(
+            policy,
             repo,
-            &[
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "protocol.https.allow=always",
-                "-c",
-                "protocol.ssh.allow=always",
-                "-c",
-                "protocol.file.allow=always",
-                // Only the scanned commit is sent: no implicit tags or submodule pushes.
-                "-c",
-                "push.followTags=false",
-                "-c",
-                "push.recurseSubmodules=no",
-                "push",
-                "--no-follow-tags",
-                "--recurse-submodules=no",
-                "origin",
-                &format!("{head}:refs/heads/{}", task.branch),
-            ],
-        );
-        isolate_github_environment(&mut push);
-        push.env("GIT_TERMINAL_PROMPT", "0")
-            .env("GH_PROMPT_DISABLED", "1")
-            // Metadata probes deny every transport. Only this explicit,
-            // confirmed publication may use the normal GitHub/file transports.
-            .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
-        if !matches!(
-            super::command_runner_with_stdin(
-                push,
-                Some(MAX_PUBLICATION_RESPONSE_BYTES),
-                Stdio::from(lock.try_clone().map_err(|e| e.to_string())?),
-                super::COMMAND_DEADLINE,
-            ),
-            Some((0, _))
-        ) {
-            return Err("accepted commit push failed".into());
-        }
+            &head,
+            &task.branch,
+            lock,
+            &mut receipt_slot.borrow_mut(),
+        )?;
         let draft = false;
         let body = policy.storage.join(format!("{}.pr-body.md", task.id));
         crate::checkpoint::write_atomic(&body, text.as_bytes(), body.exists())?;
@@ -844,6 +1006,7 @@ fn publish_locked(
         let _ = std::fs::remove_file(body);
         Ok((result.trim().to_string(), draft))
     })();
+    value.record.publish_receipt = receipt_slot.into_inner();
     match result {
         Ok((url, draft)) => {
             value.record.pull_request = Some(url);
@@ -972,6 +1135,9 @@ mod scan_tests {
             git_binary: "/usr/bin/git".into(),
             host_path: std::env::var_os("PATH").unwrap(),
             terminate_binary: None,
+            gh_binary: None,
+            push_approved: false,
+            content_scan: None,
             offline: false,
             runner_owns_github: false,
             autonomy: Default::default(),

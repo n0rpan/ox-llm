@@ -460,12 +460,18 @@ fn session_loop(
             let handle = cx.handle.clone();
             let sender = tx.clone();
             let follow_up_gate = gate.clone();
-            let follow_up = move |text| {
+            // #2183: a steer is queued for the next tool boundary, a follow-up for the stop.
+            let follow_up = move |text: String, steer: bool| {
                 let mut gate = lock(&follow_up_gate);
                 if gate.closed || handle.wrap_up_requested() {
                     return false;
                 }
-                if !handle.follow_up_for(&id, text) {
+                let admitted = if steer {
+                    handle.steer_for(&id, text)
+                } else {
+                    handle.follow_up_for(&id, text)
+                };
+                if !admitted {
                     return false;
                 }
                 if !handle.request_inbox_wake() {
@@ -481,12 +487,20 @@ fn session_loop(
             #[cfg(not(target_os = "linux"))]
             let watch = {
                 let _ = control_lane;
-                oxa_session::Inbox::watch(&cx.dirs.agent_dir, &session.id, follow_up)
+                oxa_session::Inbox::watch_messages(&cx.dirs.agent_dir, &session.id, move |item| match item {
+                    oxa_session::InboxItem::Steer(text) => follow_up(text, true),
+                    oxa_session::InboxItem::FollowUp(text) => follow_up(text, false),
+                    oxa_session::InboxItem::Control(_) => false,
+                })
             };
             // `oxa.a2a.enabled: false` keeps the plain follow-up inbox; control files stay unread.
             #[cfg(target_os = "linux")]
             let watch = if !control_lane {
-                oxa_session::Inbox::watch(&cx.dirs.agent_dir, &session.id, follow_up)
+                oxa_session::Inbox::watch_messages(&cx.dirs.agent_dir, &session.id, move |item| match item {
+                    oxa_session::InboxItem::Steer(text) => follow_up(text, true),
+                    oxa_session::InboxItem::FollowUp(text) => follow_up(text, false),
+                    oxa_session::InboxItem::Control(_) => false,
+                })
             } else {
                 use oxa_session::InboxItem;
                 let control_gate = gate.clone();
@@ -496,7 +510,8 @@ fn session_loop(
                 let binding = session.clone();
                 let steering_authority = steering_authority.clone();
                 oxa_session::Inbox::watch_bound(&cx.dirs.agent_dir, session, move |item| match item {
-                    InboxItem::FollowUp(text) => follow_up(text),
+                    InboxItem::FollowUp(text) => follow_up(text, false),
+                    InboxItem::Steer(text) => follow_up(text, true),
                     InboxItem::Control(packet) => {
                         let mut gate = lock(&control_gate);
                         if gate.closed || gate.control_pending || handle.wrap_up_requested() {
@@ -593,6 +608,7 @@ fn session_loop(
             #[cfg(target_os = "linux")]
             Job::GoalControl(control) => {
                 let id = control.id().to_owned();
+                let resume = control.is_resume();
                 let mut sink = cmd_run::OutSink(cx.out.clone());
                 let receipt = oxa_proto::panic::contain(|| control.apply(&mut cx.session, &mut sink))
                     .unwrap_or_else(|_| json!({"id": id, "error": codes::INTERNAL}));
@@ -601,6 +617,24 @@ fn session_loop(
                     let mut gate = lock(&gate);
                     gate.control_pending = false;
                     gate.pending -= 1;
+                    // An applied resume on the idle session starts exactly one continuation
+                    // run, the same prompt `/goal resume` runs. A busy session refused the
+                    // transition, so no run starts then.
+                    if resume && receipt["applied"] == true && !gate.closed {
+                        let prompt = Job::Command {
+                            cmd: RpcCommand {
+                                id: None,
+                                kind: "prompt".into(),
+                                body: json!({"message": oxa_core::prompt::GOAL_CONTINUE}),
+                            },
+                            reply: false,
+                            claimed: false,
+                        };
+                        gate.pending += 1;
+                        if tx.send(prompt).is_err() {
+                            gate.pending -= 1;
+                        }
+                    }
                     write_control_receipt(&cx.out, receipt);
                     if gate.pending == 0 {
                         for response in std::mem::take(&mut gate.after_jobs) {

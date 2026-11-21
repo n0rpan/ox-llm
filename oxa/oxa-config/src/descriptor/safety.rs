@@ -1,9 +1,22 @@
 //! Safety: guards on permissions, network and the bash sandbox (design section 5, row A2d).
 
 use super::{d, Apply, Control, Descriptor, Group, Item, WebEdit};
+use crate::schema::Kind;
 
 /// The Safety entries, in display order.
 pub(super) const ENTRIES: &[Descriptor] = &[
+    d(
+        "oxa.workers.repository",
+        Group::Safety,
+        "Workers",
+        "Lead worker repository",
+        "Canonical absolute path to the explicitly trusted primary Git checkout used by a live Lead outside Git. User settings only.",
+    )
+    .key(Kind::String, "null")
+    .text()
+    .user_only(),
+    // #202: the permission mode at start; a project's value may only lower it
+    // (`Settings::default_permission_mode`).
     d(
         "permissions.defaultMode",
         Group::Safety,
@@ -11,6 +24,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Permission mode at start",
         "standard, auto, yolo or plan. A project may only lower it.",
     )
+    .key(Kind::Enum(&["standard", "auto", "yolo", "plan"]), "\"auto\"")
     .choice(&[("standard", ""), ("auto", ""), ("yolo", ""), ("plan", "")])
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
@@ -22,6 +36,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Work mode at start",
         "plan, workspace or ask.",
     )
+    .key(Kind::Enum(&["plan", "workspace", "ask"]), "\"workspace\"")
     .choice(&[("plan", ""), ("workspace", ""), ("ask", "")])
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -32,6 +47,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "New projects",
         "Ask, always trust or never trust a project not seen before.",
     )
+    .key(Kind::Enum(&["ask", "always", "never"]), "\"ask\"")
     .choice(&[("ask", ""), ("always", ""), ("never", "")])
     .user_only()
     .apply(Apply::Reload)
@@ -44,6 +60,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Start in the home folder",
         "Allow oxa to start in home, / or a parent of home.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .user_only()
     .apply(Apply::Restart)
@@ -56,6 +73,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Offline",
         "No network use by oxa.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .user_only()
     .apply(Apply::Restart)
@@ -68,6 +86,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Engines on other hosts",
         "Allow an engine that is not on this machine.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .user_only()
     .apply(Apply::Restart)
@@ -80,6 +99,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "HTTP proxy for MCP",
         "Proxy for MCP HTTP requests.",
     )
+    .key(Kind::String, "null")
     .text()
     .secret()
     .user_only()
@@ -93,6 +113,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Network in bash",
         "Network for bash in workspace and ask modes.",
     )
+    .key(Kind::Enum(&["on", "off"]), "\"on\"")
     .choice(&[("on", "bash may use the network"), ("off", "bash has no network")])
     .user_only()
     .apply(Apply::Reload)
@@ -105,11 +126,13 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Home writable in bash",
         "Make home the bash workspace when oxa starts there.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .user_only()
     .apply(Apply::Restart)
     .web(WebEdit::Confirm)
     .widens("Lets bash write across the home folder when oxa starts there."),
+    // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     d(
         "oxa.sandbox.readPaths",
         Group::Safety,
@@ -117,6 +140,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Extra readable folders",
         "More read-only paths for bash.",
     )
+    .key(Kind::StringList, "[]")
     .control(Control::List(Item::Path))
     .user_only()
     .apply(Apply::Reload)
@@ -129,6 +153,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Extra writable folders",
         "More writable paths for bash.",
     )
+    .key(Kind::StringList, "[]")
     .control(Control::List(Item::Path))
     .user_only()
     .apply(Apply::Reload)
@@ -141,6 +166,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Host sockets for bash",
         "Runtime sockets (docker, podman) bash may reach.",
     )
+    .key(Kind::StringList, "[]")
     .control(Control::List(Item::Path))
     .user_only()
     .apply(Apply::Restart)

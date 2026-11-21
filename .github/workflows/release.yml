@@ -2,7 +2,7 @@ name: release
 # Release binaries, built by GitHub's ARM64 runners from the tagged source (see the README,
 # "Download"). A pushed tag v* builds, tests and packages oxe-server (MoE), oxe-server-flash, oxi
 # and oxa (build.yml), writes SHA256SUMS, generates build provenance (actions/attest-build-provenance)
-# and creates the GitHub Release with the tag's commit message as its notes.
+# and creates the GitHub Release with the tag's commit message and changelog fragments.
 # No secrets: the job token only. Only the release job holds write permissions and the
 # "release" environment, which must be protected in the repository settings (required reviewer,
 # deployment tags v*), together with a tag ruleset that limits who may create v* tags.
@@ -72,7 +72,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: packaging/release
+          sparse-checkout: |
+            changelog.d
+            packaging/release
+            tools/ci
+      - name: Render changelog from the tagged source
+        run: python3 -I tools/ci/changelog.py changelog.d > "$RUNNER_TEMP/changelog.md"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
@@ -123,6 +128,10 @@ jobs:
           {
             echo "$changelog"
             echo
+            if [[ -s "$RUNNER_TEMP/changelog.md" ]]; then
+              cat "$RUNNER_TEMP/changelog.md"
+              echo
+            fi
             echo "## Binaries"
             echo
             echo "Built by GitHub Actions from \`$TAG\` (commit $GITHUB_SHA) in [run $GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID); nobody uploads binaries by hand."
@@ -135,7 +144,7 @@ jobs:
             echo "| \`oxe-server-flash-$TAG-linux-aarch64.tar.gz\` | \`oxe-server\` with the Flash engine (\`--engine flash\`) + \`flash-m0\` (expert sidecar) and \`flash-m3\` (selftest); ggml built in the same run from the pinned public sources |"
             echo "| \`oxi-$TAG-linux-aarch64.tar.gz\` | \`oxi\`: FLUX.2 klein image engine (experimental) |"
             echo "| \`oxa-$TAG-linux-aarch64.tar.gz\` | \`oxa\`: the coding agent (talks to the engine over its OpenAI-compatible API) |"
-            echo "| \`ox-llm-$TAG-linux-aarch64.tar.gz\` / \`ox-llm-$TAG-linux-x86_64.tar.gz\` | combined: oxa, oxe, oxe-server, licences; with \`.sbom.cdx.json\` |"
+            echo "| \`ox-llm-$TAG-linux-aarch64.tar.gz\` / \`ox-llm-$TAG-linux-x86_64.tar.gz\` | combined: oxa, oxe, oxe-server, local-ai-memlat-boot, licences and four inert MEMLAT templates; with \`.sbom.cdx.json\` |"
             echo
             echo "Verify:"
             echo

@@ -40,7 +40,10 @@ In a headless run (`-p`, `--mode json`) with the output diet on, the prompt adds
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
 | `defaultTools` setting | the list of tools on by default. Names may include `subagent`, `web_search`, `codemode` and `tool_search`, and a list can be patched with `+name` and `-name` |
 
-With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (whenever `wait` is declared, which is every session unless `oxa.tools.wait` is `false`). `wait` takes seconds, and optionally `until` `ci`, `pr_merged`, `job_done` (a background bash job id) or a GitHub read probe; a message the owner types ends it early.
+With the output diet on (the default) the rules also tell the model to run the project's own checks before it calls a task done (when `bash` is on), and to use `wait` instead of polling (whenever `wait` is declared, which is every session unless `oxa.tools.wait` is `false`). `wait` takes seconds, and optionally `until` `ci`, `pr_merged`, `job_done` (a background bash job id) or a GitHub read probe; `ci`, `pr_merged` and the read probes take an optional `"repo":"OWNER/NAME"` (otherwise the origin of the working directory; github.com only), and the GitHub kinds run `gh`, which is network access: plan mode denies them, ask mode asks once per session for `github.com`, workspace and yolo do not ask; a message the owner types ends it early.
+In an interactive session with both tools enabled, wait for a native background worker started by that session with `{"seconds":60,"reason":"Worker review","until":{"kind":"worker_done","name":"review"}}`. The wait returns the worker’s outcome (not its log), or reports that it stopped or exited without an outcome. This does not queue a follow-up or interrupt a plain wait.
+`wait` with `until` `pr_activity` waits for a review or conversation comment on a pull request you pinned at a head: `{"seconds":1800,"reason":"Review of #7","until":{"kind":"pr_activity","pr":7,"head":"<sha>"}}`. It wakes with the new reviews and comments (author, state, link, body cut to 1500 characters, at most 10 listed), and also when the head is no longer the pinned one or the PR is merged or closed. The first poll for a PR and head is the baseline: what is already there does not wake it, unless you pass `"since":"<UTC time like 2026-11-20T10:00:00Z>"`, which counts anything newer on that first poll (use it after a restart). The baseline lasts for the session, and evidence that was returned is not returned again.
+A resumed session (`--continue`, `--resume`, `/resume`) keeps `wait` and, for a goal that is pursuing, `goal_done`, without opening a new prefix epoch. If a goal is pursuing but the tool selection (`--tools`, `defaultTools`) removed `goal_done`, the goal pauses with that reason instead of repeating a continue instruction the model cannot follow; add `goal_done` to the selection, then `/goal resume`.
 
 Examples:
 
@@ -54,6 +57,17 @@ $ oxa --exclude-tools bash
 ```
 
 A read-only session: `oxa --tools read,grep,find,ls`. In plan mode the write tools are refused, and bash only runs read-only commands with no network.
+
+## Background parts and jobs
+
+A command with a part that runs detached (an `&` outside quotes, anywhere in the command, or `nohup`, `setsid`, `disown`) gets a note in its result: that part's output and exit status are not in the result, a `cd` before the `&` applies only to the backgrounded part, and what happens to the process. In the OS sandbox every process of the call ends with the call; without it (yolo, or no sandbox) it keeps running and oxa does not track it. The call is marked `detached` and never counts as a passing check. To run something you can read, wait for or stop, use `bash` with `background: true` and then `bash` with `job` (and `wait_s`, or `kill`), or `wait` with `until` `job_done`.
+
+## Before a run ends
+
+One decision runs before a run or goal ends. Each open fact gets at most one extra turn per run, then the run ends with a warning and a record; nothing blocks.
+
+- A run that changed files (a file tool, or a `bash` call that changed the work folder) and ran no passing check afterwards is asked to run the project's check, or to say in one line why none exists (`oxa.done.proveIt`, off by default). A read-only run is never asked. The `oxa_result` record carries `proved` (`true`, `false`, or `null` for a read-only run). The work-folder fingerprint that sees `bash` edits is now also taken when only this setting is on.
+- A goal that completes, or a headless run that ends, while background jobs still run is asked to wait for them or stop them (`oxa.done.waitForJobs`); a headless run's jobs stop when it ends. An interactive chat is never asked, so a dev server costs no turn. The record carries `jobs_running`.
 
 ## Repair turn
 
@@ -74,6 +88,12 @@ A model can get stuck making the same tool call again and again. When a call (an
 `oxa.toolRepeatGuard: false` turns this off.
 
 Loops that vary too much for this guard (calls that alternate, output with a timestamp), or one that keeps repeating after the warning, are not ended by it. To bound any of them, set `oxa.maxTurns` to a number of model replies: a run that reaches it ends with a `turn_limit` error. It is off by default.
+
+## CI polling
+
+A `bash` command that waits for CI by polling is not blocked. It runs and reports its own exit status (also a non-zero one: `gh pr checks` exits 8 or 1 while checks fail or are pending), and its result carries a note with the native call to use instead: `wait {"seconds":3600,"reason":"Wait for CI","until":{"kind":"ci","sha":"<head>","workflow":"<workflow>"}}`. The note fills in the 40-hex head commit and the workflow name when the command or its output names them, and leaves the placeholders otherwise. When the `wait` tool is not declared (`oxa.tools.wait` is `false`) the note says to run one blocking check instead of a loop.
+
+A polling command is a `for` / `while` / `until` loop or `watch` around `gh run`, `gh workflow` or `gh pr checks`, `gh run watch` itself, `gh pr checks --watch`, or an earlier `sleep` before the check. Quoted text is ignored, and a single `gh run view`, `gh run list`, `gh pr view` or `gh pr checks` is not polling. `oxa.bash.ciPollHint: false` turns the note off. The call is marked `ciPoll`, and the `oxa_result` record carries `ci_polls`, the number of such calls, so a session that polls from bash can be seen. The `wait` tool's description names `ci` and `pr_merged` first with one example call; the tool list changes once with it.
 
 ## Thinking on tool follow-ups
 
@@ -121,13 +141,14 @@ normal permission checks remain in force.
 
 - Shapes: `{agent, task}` for one child; `{tasks: [...]}` for several, run one after another in order; `{chain: [...]}` for steps where each step can use `{previous}`, the output of the step before.
 - Agents are Markdown files in `~/.oxa/agent/agents/` and, in a trusted project, `.oxa/agents/`. The file has a `name` and a `description` in its front matter, and its body is the child's system prompt. A project agent with the same name replaces the user agent. A `model:` in an agent file is used when that model or the session's model runs in the cloud; with a local session and a local `model:` it is ignored with a warning (one local model is loaded) and the child uses the session's model.
-- The child is a new oxa process in JSON print mode, with the same model, permission mode and tools, and no session file. It runs on its own compaction limit ([compaction.md](compaction.md)).
-- Local children run one at a time. When children of a `tasks` call run on a cloud model, up to `oxa.subagent.remoteConcurrency` (8) run at once; results still come back in call order. A call with more tasks than `oxa.subagent.maxChildren` (8) still runs, queued, and its result ends with a warning.
+- The child is a new oxa process in JSON print mode, with the same model and permission mode, and no session file.
+- **On a local model the child forks your session.** Its first request carries your frozen prefix (the system text and the tool list) and your whole conversation, with the task appended, so the engine continues the session's state instead of evicting it: the child prefills nothing of what you already have, and your next turn reuses its context (a local re-prefill costs 45-100 s at 12K tokens). Two things follow from sharing the prefix: your tool list is what the child is offered, so a tool its agent file does not list comes back as an unknown tool, and the agent's system prompt is appended to the task instead of the system prompt. A fork child's compaction point is the session's own ([compaction.md](compaction.md)). A cloud child, a cloud session and `oxa.subagent.isolated: true` keep the isolated child: its own session and prefix, the parent parked, and its own compaction limit, at the cost of that prefill. The call names that cost once when the setting is why.
 - The result is the child's final text, capped at `oxa.subagent.resultCap` (6144 bytes; scaled with the window of a cloud model unless you set it). A longer result is cut and the full text is saved to a file under the agent directory's `tmp/`.
+- Local children run one at a time. When children of a `tasks` call run on a cloud model, up to `oxa.subagent.remoteConcurrency` (8) run at once; results still come back in call order. A call with more tasks than `oxa.subagent.maxChildren` (8) still runs, queued, and its result ends with a warning.
 - Interrupting the parent stops the child: SIGTERM to its process group, then SIGKILL after 2 seconds.
 - Plan mode refuses the tool, because it runs a process.
 
-The tool is on by default when the session's model is not Flash and its context window is at least 32K. `oxa.subagent.enabled` sets it explicitly, and `oxa.subagent.smallContext: true` allows it on a smaller window. Children do not get `subagent` themselves.
+The tool is on by default when the session's model is not Flash and its context window is at least 32K. `oxa.subagent.enabled` sets it explicitly, and `oxa.subagent.smallContext: true` allows it on a smaller window. A child cannot run `subagent` itself (depth 1); a fork child's shared prefix still lists it, and calling it there comes back as an unknown tool.
 
 ## web_search
 

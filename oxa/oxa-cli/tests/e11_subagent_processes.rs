@@ -3,6 +3,10 @@
 //! requests the fake recorded: order (parent chat -> park -> child requests -> the parent's next
 //! request), the child's session hint, priority and turn kind, and the parent's cache after the
 //! children ran. Isolation: `oxa_fake::TestEnv`; never the real home.
+//!
+//! These rows run the isolated child (`oxa.subagent.isolated: true`): the park, the child's own
+//! session hint and its own prefix belong to that path. The fork on a local model is covered
+//! end to end by `oxa-parity/tests/subagent.rs::fork_child_continues_the_parents_prefix`.
 
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
 use std::process::{Command, Output};
@@ -13,7 +17,7 @@ const LIMIT: Duration = Duration::from_secs(90);
 fn setup(env: &TestEnv) {
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"oxa": {"subagent": {"enabled": true}}}"#,
+        r#"{"oxa": {"subagent": {"enabled": true, "isolated": true}}}"#,
     );
     env.write(
         "home/.oxa/agent/agents/scout.md",
@@ -183,7 +187,7 @@ fn max_tokens_charges_child_compaction_before_starting_queued_child() {
     setup(&env);
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"oxa":{"subagent":{"enabled":true,"softTokens":2000}},"compaction":{"keepRecentTokens":100}}"#,
+        r#"{"oxa":{"subagent":{"enabled":true,"isolated":true,"softTokens":2000}},"compaction":{"keepRecentTokens":100}}"#,
     );
     env.write("work/notes.txt", &"synthetic notes\n".repeat(500));
     let mut summary = ScriptTurn::text("summary of earlier work");
@@ -245,7 +249,7 @@ fn max_tokens_charges_child_compaction_before_starting_queued_child() {
         "only compaction exhausts the budget"
     );
     assert_eq!(reqs[6].session, *parent, "no queued second child");
-    assert!(reqs[5..].iter().all(|r| r.max_tokens <= 1024));
+    assert!(reqs[5..].iter().all(|r| r.max_tokens <= 4096));
     assert!(String::from_utf8_lossy(&out.stdout).contains("parent wrap-up"));
 }
 
@@ -295,7 +299,7 @@ fn max_tokens_wraps_up_child_and_parent_without_starting_queued_child() {
     assert_eq!(reqs[3].session, child);
     assert_eq!(reqs[4].session, *parent);
     for r in &reqs[3..] {
-        assert!(r.max_tokens <= 1024, "bounded final turn");
+        assert!(r.max_tokens <= 4096, "bounded final turn");
         assert!(!r.thinking);
     }
     assert!(String::from_utf8_lossy(&out.stdout).contains("parent wrap-up"));

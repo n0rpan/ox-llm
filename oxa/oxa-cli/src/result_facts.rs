@@ -21,6 +21,9 @@ struct Call {
 struct State {
     opened: bool,
     goal: Option<Value>,
+    /// The finish decision's facts: whether the last edit was proved (`None`: no edit) and how
+    /// many background jobs were still running at the end.
+    finish: Option<(Option<bool>, u32)>,
     finished: bool,
     session_id: Option<String>,
     requests: Option<u64>,
@@ -37,12 +40,17 @@ struct State {
     lookups: u64,
     /// (sha256 hex, bytes) of the frozen prefix announced for the next request.
     prefix: Option<(String, usize)>,
+    /// What ended the run early: `time`, `tokens` or `signal`.
+    limit: Option<&'static str>,
+    /// `bash` results that polled for CI (`ci_polls`); `None` until the driver reports it.
+    ci_polls: Option<u32>,
 }
 impl Default for State {
     fn default() -> Self {
         Self {
             opened: false,
             goal: None,
+            finish: None,
             finished: false,
             session_id: None,
             requests: Some(0),
@@ -58,6 +66,8 @@ impl Default for State {
             log_failed: false,
             lookups: 0,
             prefix: None,
+            limit: None,
+            ci_polls: None,
         }
     }
 }
@@ -101,6 +111,12 @@ impl ResultFacts {
             "unknown_requests":g.unknown_requests,
             })
         });
+    }
+    pub(crate) fn finish(&self, stats: oxa_core::Stats) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).finish = Some((stats.proved, stats.jobs_left));
+    }
+    pub(crate) fn ci_polls(&self, polls: u32) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).ci_polls = Some(polls);
     }
     pub(crate) fn session(&self, saved_id: Option<&str>) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -198,9 +214,18 @@ impl ResultFacts {
         if let Some(goal) = state.as_ref().and_then(|state| state.goal.as_ref()) {
             record["goal"] = goal.clone();
         }
+        if let Some(limit) = state.as_ref().and_then(|state| state.limit) {
+            record["limit"] = json!(limit);
+        }
+        if let Some((proved, jobs)) = state.as_ref().and_then(|state| state.finish) {
+            record["proved"] = json!(proved);
+            record["jobs_running"] = json!(jobs);
+        }
         record["usage_scope"] = json!("process");
         // Web searches this invocation made (FH-N5 integrity report); null when unobserved.
         record["web_lookups"] = state.as_ref().map_or(Value::Null, |state| json!(state.lookups));
+        // `bash` calls that polled for CI from a shell loop (#1540); null when unobserved.
+        record["ci_polls"] = state.as_ref().map_or(Value::Null, |state| json!(state.ci_polls));
         // Successful tool calls and generated text are not checked workspace/commit evidence.
         record["files_changed"] = Value::Null;
         record["files_changed_evidence"] = json!("unavailable");
@@ -235,6 +260,12 @@ impl ProgressObserver for ResultFacts {
             Progress::Prefix { sha256, bytes } => {
                 let hex = sha256.iter().map(|b| format!("{b:02x}")).collect::<String>();
                 self.state.lock().unwrap_or_else(|p| p.into_inner()).prefix = Some((hex, bytes));
+            }
+            Progress::WrapUp { limit } => {
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if !state.finished && state.limit.is_none() {
+                    state.limit = Some(limit);
+                }
             }
             Progress::RequestStart { kind, .. } => self.request_start(kind),
             Progress::RequestEnd { usage, .. } => self.request_end(usage),
@@ -290,6 +321,25 @@ mod tests {
         );
         assert!(record["files_changed"].is_null());
         assert_eq!(record["files_changed_evidence"], "unavailable");
+    }
+
+    #[test]
+    fn the_result_names_the_limit_that_ended_the_run() {
+        let session = oxa_session::SessionRef {
+            path: std::path::PathBuf::from("mem:s"),
+            id: "s".to_string(),
+        };
+        let plain = Arc::new(ResultFacts::default());
+        plain.session(Some("s"));
+        assert!(ResultFacts::record(RunOutcome::Done, Some(&plain))
+            .get("limit")
+            .is_none());
+        let facts = Arc::new(ResultFacts::default());
+        facts.session(Some("s"));
+        facts.notify(&session, Progress::WrapUp { limit: "time" });
+        facts.notify(&session, Progress::WrapUp { limit: "signal" });
+        let record = ResultFacts::record(RunOutcome::Interrupted, Some(&facts));
+        assert_eq!(record["limit"], "time", "the first limit stays");
     }
 
     #[test]

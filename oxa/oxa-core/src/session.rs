@@ -115,6 +115,13 @@ pub struct Stats {
     /// The current prompt/triggered operation exhausted its `done` repair rounds. Reset
     /// when new agent work is claimed; process-wide aggregation lives in the drivers.
     pub done_failed: bool,
+    /// The last run's finish decision: `Some(true)` an edit was followed by a passing check,
+    /// `Some(false)` it was not, `None` the run changed no file.
+    pub proved: Option<bool>,
+    /// Background jobs still running when the last run ended (after the finish nudge).
+    pub jobs_left: u32,
+    /// `bash` results of the current operation that carried the CI polling note (`ui.ciPoll`).
+    pub ci_polls: u32,
     /// Whether the current agent operation's last reply stopped at its output token limit.
     pub output_truncated: bool,
     /// Terminal result of the last prompt or extension-triggered run.
@@ -128,7 +135,6 @@ pub struct Session {
     pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
-    startup_limit: Option<Box<dyn Send>>,
 }
 
 /// The CLI-level choices of [`Session::open`]. `None` in [`enter`] means a switch inside a
@@ -314,11 +320,7 @@ impl Session {
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
-        let session = Session {
-            st,
-            preloaded: false,
-            startup_limit: None,
-        };
+        let session = Session { st, preloaded: false };
         session.bind_jobs_owner();
         sync_job_wake(&session.st);
         // The hook is always installed: `wake_job` asks the live setting, which a reload updates.
@@ -330,6 +332,53 @@ impl Session {
                 handle.wake_job(&job);
             }));
         Ok(session)
+    }
+
+    /// #1844 PR 2: install a fork seed as this session's head (`oxa.fork`). The session keeps
+    /// its own id, model and tool selection, but its frozen prefix and its wire become the
+    /// parent's, so the first prompt continues the parent's conversation: the engine's state is
+    /// not evicted and the parent's next turn reuses it. The parent's last assistant turn has a
+    /// tool call of its own still open, so the interrupted results are appended (as a resume
+    /// after a crash does), and the child's task follows as its first user message.
+    ///
+    /// Called by a subagent child before its first prompt (never mid-run, W1/W3).
+    pub fn adopt_fork(
+        &mut self,
+        seed: &crate::fork::ForkSeed,
+        sink: &mut dyn EventSink,
+    ) -> Result<(), OxaError> {
+        let branch = seed.branch()?;
+        let (prefix, wire) = crate::fork::replay(&branch);
+        let Some(prefix) = prefix else {
+            return Err(OxaError::new(
+                codes::INVALID,
+                "the fork seed holds no frozen prefix",
+            ));
+        };
+        let st = &mut self.st;
+        // The seed replaces the child's own prefix (one edit, not a run: W3).
+        st.prefix = prefix.clone();
+        st.transcript = oxa_session::Transcript::default();
+        crate::agent_loop::persist(st, EntryBody::Prefix(prefix), sink)?;
+        for msg in wire {
+            crate::agent_loop::append_entry(
+                st,
+                EntryBody::Msg {
+                    wire: msg,
+                    parts: Vec::new(),
+                    tool: None,
+                },
+            )?;
+        }
+        crate::resume::close_interrupted(st, sink)?;
+        crate::tune::refresh(st);
+        let enabled = st.compact.enabled;
+        st.compact = CompactPolicy {
+            enabled,
+            ..policy_for_model(&st.info, &st.settings, &st.model)
+        };
+        st.stats.context_tokens = st.transcript.context();
+        Ok(())
     }
 
     /// Run one user prompt to settlement (blocks). A line naming an extension command runs it
@@ -347,6 +396,8 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<(), OxaError> {
+        // Answers the broker gave without any pump (yolo) are recorded at the start of every turn.
+        crate::host::drain_owner_confirm_records(&mut self.st, sink);
         // pi (agent-session.ts `prompt`): a line naming an extension command runs that command
         // instead of a prompt; no run starts unless the command triggers one.
         if let Expanded::Hook { name, args } = crate::expand_input(&self.st, &text) {
@@ -493,6 +544,9 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<RunEnd>, OxaError> {
+        if self.st.goal.is_some() {
+            crate::open_epoch(&mut self.st, "goal", false, sink)?;
+        }
         let guard = self.begin_run()?;
         let ran = oxa_proto::panic::contain(|| queued_run(&mut self.st, sink, ui, true))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
@@ -576,7 +630,6 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::fork_at(&mut self.st, entry, &mut ui);
         if r.is_ok() {
-            drop(self.startup_limit.take());
             self.st.jobs.reset();
             self.bind_jobs_owner();
         }
@@ -589,7 +642,6 @@ impl Session {
         let mut ui = HeadlessUi::default();
         let r = crate::clone_current(&mut self.st, &mut ui);
         if r.is_ok() {
-            drop(self.startup_limit.take());
             self.st.jobs.reset();
             self.bind_jobs_owner();
         }
@@ -606,7 +658,6 @@ impl Session {
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
-        drop(self.startup_limit.take());
         self.bind_jobs_owner();
         self.preloaded = false;
         Ok(())
@@ -922,16 +973,10 @@ impl Session {
         &self.st
     }
 
-    /// Keep the startup limit armed until this session closes or switches files.
-    pub fn hold_startup_limit(&mut self, limit: impl Send + 'static) {
-        self.startup_limit = Some(Box::new(limit));
-    }
-
     /// Leave this session without stopping the hook sets: fire `SessionShutdown` and drop the
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
-        drop(self.startup_limit.take());
         crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
@@ -941,6 +986,7 @@ impl Session {
             &mut sink,
             ui,
         );
+        crate::host::drain_owner_confirm_records(&mut self.st, &mut sink);
         if let Some(broker) = self.st.shared.owner_confirm() {
             broker.close();
         }
@@ -1127,6 +1173,9 @@ impl Session {
         let guard = self.begin_foreground()?;
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
+        self.st.stats.proved = None;
+        self.st.stats.jobs_left = 0;
+        self.st.stats.ci_polls = 0;
         self.st.stats.output_truncated = false;
         crate::goal::begin(&self.st);
         Ok(guard)
@@ -1718,7 +1767,8 @@ fn restore_locked(
     match replayed {
         Some(prefix) => {
             st.prefix = prefix;
-            crate::tune::refresh(st);
+            // The stored prefix declares `wait` and the goal controls; bind live handlers to them.
+            crate::epoch::rebind_tools(st, sink);
             let enabled = st.compact.enabled;
             st.compact = CompactPolicy {
                 enabled,

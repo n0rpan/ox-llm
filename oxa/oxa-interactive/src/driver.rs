@@ -1027,20 +1027,28 @@ impl<'a> Loop<'a> {
             let handle = self.handle.clone();
             let cmds = self.cmds.clone();
             let session_id = info.id.clone();
-            match oxa_session::Inbox::watch(&self.opts.dirs.agent_dir, &info.id, move |text| {
-                // A clone/fork can change the worker's identity before the UI receives
-                // its Session notification. Keep even late admissions at their destination.
-                if !handle.follow_up_for(&session_id, text) {
-                    return false;
-                }
-                if !handle.request_inbox_wake() {
-                    return true;
-                }
-                cmds.send(SessionCmd::Inbox {
-                    session_id: session_id.clone(),
-                })
-                .is_ok()
-            }) {
+            let watch =
+                oxa_session::Inbox::watch_messages(&self.opts.dirs.agent_dir, &info.id, move |item| {
+                    // A clone/fork can change the worker's identity before the UI receives
+                    // its Session notification. Keep even late admissions at their destination.
+                    // #2183: a steer is queued for the next tool boundary, like typed steering.
+                    let admitted = match item {
+                        oxa_session::InboxItem::Steer(text) => handle.steer_for(&session_id, text),
+                        oxa_session::InboxItem::FollowUp(text) => handle.follow_up_for(&session_id, text),
+                        oxa_session::InboxItem::Control(_) => false,
+                    };
+                    if !admitted {
+                        return false;
+                    }
+                    if !handle.request_inbox_wake() {
+                        return true;
+                    }
+                    cmds.send(SessionCmd::Inbox {
+                        session_id: session_id.clone(),
+                    })
+                    .is_ok()
+                });
+            match watch {
                 Ok(inbox) => self.inbox = Some(inbox),
                 Err(e) => self.push_notice(Level::Warning, format!("Session inbox unavailable: {e}")),
             }
@@ -2487,10 +2495,14 @@ impl<'a> Loop<'a> {
         {
             return AppAction::None;
         }
+        if !self.abort_requested && !self.handle.is_aborting() && self.handle.select_model_during_backoff(&id)
+        {
+            return AppAction::None;
+        }
         if self.running() {
             return AppAction::Notify {
                 level: Level::Warning,
-                text: "/model needs an idle session: wait for the current run to finish.".to_string(),
+                text: "/model needs an idle session or a goal waiting to retry.".to_string(),
             };
         }
         AppAction::Session(SessionCmd::SetModel(id))
@@ -2875,7 +2887,7 @@ impl<'a> Loop<'a> {
 
     fn header_lines(&self, width: u16) -> Vec<String> {
         let info = HeaderInfo {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: oxa_proto::BUILD_VERSION.to_string(),
             resources: self.resources.clone(),
             engine_url: self.session.engine_url.clone(),
             memory_policy: self.session.memory_policy,

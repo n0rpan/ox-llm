@@ -2,12 +2,15 @@
 
 ## v0.2.1 Rust-only upgrade boundary
 
-The v0.2.1 release target (#763) installs native `oxa` and `oxe-server`, retaining
-the approved native MEMLAT utility and four inert templates, with
-native cloud/local selection: no Python runtime dependency, Python payload,
-`oxc`/diagnostics wrappers, controller daemon or service on port 8092. Packaging
-must qualify that exact artifact. See [native install and upgrade](NATIVE-INSTALL.md)
-for the owner-facing v0.2.0 upgrade procedure.
+The combined Linux tarballs and both Arch variants have exactly four commands
+in `usr/bin/`: `oxa`, `oxe`, `oxe-server` and `local-ai-memlat-boot`. Standalone
+`oxe` stays in the payload (#1394): the engine tools support other clients and
+LAN sharing without running the `oxa` agent. The payload also contains licence
+files and the four inert [MEMLAT templates](NATIVE-INSTALL.md#recovery-and-scope) under
+`usr/share/ox-llm/memlat/`. It has no Python runtime dependency, Python payload,
+`oxc`/diagnostics wrappers, controller daemon or service on port 8092. The
+v0.2.1 release target (#763) requires qualification on the exact artifacts.
+See [native install and upgrade](NATIVE-INSTALL.md) for the upgrade procedure.
 
 Keep provider keys in `~/.config/oxc/llm/cloud-secrets.json` and the compatible
 ChatGPT token in `~/.config/oxc/llm/chatgpt-auth.json`, under the same user HOME.
@@ -61,7 +64,9 @@ downloads no model.
 Each architecture produces a tarball containing a standard `usr/` tree, its exact
 source archive, `SHA256SUMS`, `SBOM.cdx.json`, `TOOLCHAIN.txt`, and
 `REPRODUCIBILITY.txt`, retained as workflow artifacts for seven days.
-The CycloneDX 1.6 SBOM inventories Cargo's locked workspace resolution (including
+The CPU artifact jobs unpack each tarball and require the four approved
+executables before running the no-Python checks against the archive. The
+CycloneDX 1.6 SBOM inventories Cargo's locked workspace resolution (including
 build/test dependencies and registry source checksums) and every shipped file's
 SHA-256. It is an inventory, not a claim of
 vulnerability clearance or a minimal runtime dependency graph.
@@ -75,15 +80,20 @@ source/toolchain/home prefixes in installed commands. No builder identity is
 inserted in package files. Repeatability is demonstrated within one workflow run;
 Fedora/Arch package mirrors and `archlinux:latest` move over time, so the saved
 toolchain versions are essential and reproducibility across dates is not promised.
+A dev push builds each architecture once; the comparison runs in the release lane
+and on the nightly `dev-build` schedule, and a single-build artifact's
+`REPRODUCIBILITY.txt` records that.
 
-The fresh x86_64 `archlinux:latest` job builds both the binary package and the
-source package, runs the source package's model-free test subset, invokes namcap,
-installs each package, checks that its payload and runtime dependencies exclude
-Python, runs the native version and help commands, validates
-`oxe --check-args`, and sends a real loopback completion through `oxe-server`'s
-stub engine. It checks package integrity, uninstalls and verifies every package
-file and package-specific directory is gone. The two Arch packages, their
-checksums and namcap logs are retained as a separate seven-day workflow artifact.
+The fresh x86_64 `archlinux:latest` source job builds the source package from the
+committed source archive in parallel with the release build, runs the source
+package's model-free test subset, invokes namcap, installs it, checks that its
+payload and runtime dependencies exclude Python, runs the native version and help
+commands, validates `oxe --check-args`, and sends a real loopback completion
+through `oxe-server`'s stub engine. It checks package integrity, uninstalls and
+verifies every package file and package-specific directory is gone. A second job
+does the same for the binary package from the built tarball, after the build. The
+Arch packages, their checksums and namcap logs are retained as seven-day workflow
+artifacts.
 Bubblewrap is invoked dynamically, so
 namcap may also report its declared runtime dependency as unused. Errors fail CI. Tests use a fresh HOME and an
 allowlisted environment with no cloud credentials. The official Arch Linux Docker

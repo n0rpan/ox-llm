@@ -1,8 +1,14 @@
 # Dev builds
 
-Every main push runs `dev-build.yml`, reusing the full two-architecture release recipe,
-including two-build reproducibility and exact-artifact no-Python tests. Only successful,
-native-only payloads are published to the rolling `dev` prerelease; it is never `latest`.
+Every main push runs `dev-build.yml`, reusing the release recipe: each architecture is built
+once, then tested on the exact artifact (no-Python proof, SBOM, checksums). The two-build
+reproducibility comparison runs on the nightly `dev-build` schedule and in the release lane,
+not on every push; a dev push's `REPRODUCIBILITY.txt` says it was built once. The model-free
+source tests are skipped only when the pushed commit already passed the merge queue and changed
+no dependency cache key (`tools/ci/queue_covered.py`); a release and a nightly run always take
+them. Only successful,
+native-only payloads are published to the rolling `dev` prerelease; it is never `latest`, and
+a nightly or dispatched run publishes nothing.
 The dev version is a pre-release of the next version: the latest stable `vX.Y.Z` tag bumped to
 `X.Y.(Z+1)`, plus `-dev.<N>+<sha7>` where N is the number of main commits since that stable tag
 (`git rev-list --count <tag>..HEAD`; from the root without a stable tag), e.g. `v0.2.2-dev.137+6955919`.
@@ -13,14 +19,20 @@ The version is computed in one place, `tools/ci/dev_version.py` (`--file-name` p
 without a stable tag the workspace version is used. `dev-update*.sh` accept the older
 `vX.Y.Z-dev.<sha7>` names, pick the highest semver (then highest N) for the `dev` release commit, and
 record the `+` form in their receipts.
+Dev binaries report that full version (`oxa --version` prints `oxa 0.2.2-dev.137+6955919`, likewise
+`oxe` and `oxe-server`). `packaging/release/build.sh` and `portable-build.sh` export it as
+`OX_BUILD_VERSION=${VERSION#v}`, the same value that names the release; a plain `cargo build` and
+every test run leave it unset and report the package version. `release-build.yml` fails when the
+extracted tarball's `--version` output differs from the release name (pull requests build as
+`v<workspace>-pr+<sha7>` so this check also runs there). The engine fingerprint `oxe-<package
+version>` that `oxa` compares for compatibility, and User-Agent values, stay on the package version.
 Archives, SBOMs and proof receipts include the package version and seven-character source
 SHA. SHA256SUMS and downloadable provenance accompany them. The workflow moves only the
 `dev` tag; normal release tags and installs are untouched. Python controller payloads fail
 publication until the canonical Rust-only packaging is present.
 
-Linux is the only supported dev-update target today. A macOS arm64 twin,
-`tools/lab/dev-update-macos.sh`, exists, but its dev asset is not published yet: the macOS build is still
-in progress (see [KNOWN-ISSUES.md](../KNOWN-ISSUES.md)).
+Linux dev assets are required for publication. The macOS arm64 twin,
+`tools/lab/dev-update-macos.sh`, uses a best-effort asset which may be absent when its native build fails.
 
 Run `tools/lab/dev-update.sh` (lab copy: `~/oxa-lab/dev-update.sh`). It requires Linux,
 Bash, GNU coreutils/tar, getent, flock, curl, jq and a recent GitHub CLI. No login or saved GitHub
@@ -36,6 +48,24 @@ No stable prefix, service or PATH is changed. The executable is at
 `~/.local/state/oxc/dev-builds/default/current/receipt.json`. The current and one
 previous build are retained.
 
+## macOS arm64 dev build
+
+`dev-build.yml` also builds `oxa` natively on `macos-15` and publishes
+`ox-llm-<file-version>-macos-arm64.tar.gz` (`usr/bin/oxa` only, staged by
+`packaging/macos/stage.sh`) to the same `dev` prerelease. It is covered by the same
+`SHA256SUMS-<file-version>` and provenance. The job is best effort: if it fails, the Linux
+assets still publish and the Mac asset is simply absent.
+
+To qualify a branch without publishing, dispatch `dev-build.yml` on that branch with
+`macos_stage_only=true`. Check that the run's head SHA matches the commit under test.
+The job extracts the archive, checks that `oxa` is arm64, runs `oxa --version`, and
+uploads that same archive as `macos-dist-arm64`. This dispatch does not create a release
+or release provenance.
+
+On an Apple Silicon Mac, with `gh` installed (`brew install gh`; used only to verify
+provenance), run `bash tools/lab/dev-update-macos.sh` from a checkout. The install is at
+`~/.local/state/oxc/dev-builds/default/bin/oxa`. There is no OS sandbox on macOS yet: oxa
+says so, and runs commands with your full user rights.
 ## Guarded promotion onto existing N0 units
 
 `tools/lab/dev-update.sh` keeps its stock behaviour: it acquires the rolling `dev`

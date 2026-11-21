@@ -9,7 +9,7 @@
 //! running job, which makes the sandbox's run loop kill the whole process group.
 //!
 //! Limits: at most [`MAX_JOBS`] jobs run at once by default (`oxa.bash.maxJobs` sets it per
-//! registry, see [`JobRegistry::with_max_jobs`]; a further start goes ahead with a warning); a
+//! registry, see [`JobRegistry::with_max_jobs`]; a further start goes ahead with a warning unless the owner set `oxa.onExceed.bashJobs` to stop, which refuses it); a
 //! finished job keeps at most [`BUFFER_CAP`] bytes of output (a ring buffer), and only the
 //! last [`MAX_FINISHED`] finished jobs stay readable.
 
@@ -196,7 +196,12 @@ pub struct JobRegistry {
     owner: Mutex<String>,
     /// How many jobs may run at once ([`MAX_JOBS`] unless the owner set `oxa.bash.maxJobs`).
     max_jobs: usize,
+    /// `oxa.onExceed.bashJobs` is not `warn`: a start at the limit is refused.
+    enforce: bool,
 }
+
+/// What a refused start begins with (see [`JobRegistry::refused`]).
+const REFUSED: &str = "Refused: ";
 
 impl Default for JobRegistry {
     fn default() -> Self {
@@ -206,6 +211,7 @@ impl Default for JobRegistry {
             on_finish: Arc::new(Mutex::new(None)),
             owner: Mutex::new(String::new()),
             max_jobs: MAX_JOBS,
+            enforce: false,
         }
     }
 }
@@ -229,7 +235,18 @@ impl JobRegistry {
         }
     }
 
-    /// The limit `oxa.bash.maxJobs` sets (a warning threshold, not a refusal).
+    /// Refuse a start at the limit instead of warning (`oxa.onExceed.bashJobs` other than `warn`).
+    pub fn enforcing(mut self, enforce: bool) -> JobRegistry {
+        self.enforce = enforce;
+        self
+    }
+
+    /// Whether `error` (from a spawn) is a refusal at the owner's job limit.
+    pub fn refused(error: &str) -> bool {
+        error.starts_with(REFUSED) && error.contains("oxa.bash.maxJobs")
+    }
+
+    /// The limit `oxa.bash.maxJobs` sets (a warning threshold unless the owner chose to enforce it).
     pub fn max_jobs(&self) -> usize {
         self.max_jobs
     }
@@ -320,6 +337,19 @@ impl JobRegistry {
         label: &str,
     ) -> Result<String, String> {
         let mut state = self.state.lock().unwrap();
+        if self.enforce {
+            let running = state
+                .jobs
+                .values()
+                .filter(|j| *j.status.lock().unwrap() == JobStatus::Running)
+                .count();
+            if running >= self.max_jobs {
+                return Err(format!(
+                    "{REFUSED}{running} background jobs are already running, the owner's limit oxa.bash.maxJobs ({}) with oxa.onExceed.bashJobs set to stop. Nothing was started; read or stop a job you no longer need with bash {{\"job\": \"<id>\", \"kill\": true}}, then try again.",
+                    self.max_jobs
+                ));
+            }
+        }
         // Forget the oldest finished jobs (ids grow with start order), so a long session does
         // not keep every job's output tail. Running jobs are never dropped.
         let mut finished: Vec<(u64, String)> = state
@@ -777,6 +807,26 @@ mod tests {
         reg.kill_all();
         assert_eq!(JobRegistry::with_max_jobs(0).max_jobs, 1);
         assert_eq!(JobRegistry::new().max_jobs, MAX_JOBS);
+    }
+
+    /// With `oxa.onExceed.bashJobs` set to stop, a start at the limit is refused with an error
+    /// that names the setting and nothing is started; a freed slot admits the next start.
+    #[test]
+    fn an_enforcing_registry_refuses_a_start_at_the_limit() {
+        let reg = JobRegistry::with_max_jobs(2).enforcing(true);
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        reg.set_sandbox(sb.clone());
+        let first = reg.spawn(spec()).unwrap();
+        reg.spawn(spec()).unwrap();
+        let error = reg.spawn(spec()).expect_err("the third start is refused");
+        assert!(JobRegistry::refused(&error), "{error}");
+        assert!(error.contains("oxa.bash.maxJobs (2)"), "{error}");
+        assert_eq!(reg.running(), 2);
+        let _ = reg.kill(&first);
+        reg.spawn(spec()).expect("a freed slot admits the next start");
+        reg.kill_all();
     }
 
     #[test]

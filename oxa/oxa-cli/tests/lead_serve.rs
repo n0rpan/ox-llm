@@ -25,7 +25,31 @@ impl Drop for Running {
         let _ = self.0.wait();
     }
 }
+thread_local! {
+    static AGENT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+/// The bearer header of the local client token the running lead wrote for its owner.
+/// A local lead publishes the token before it reports its listener; the brief wait covers a
+/// read that races the atomic replace. Every test here records the agent dir it started.
+fn bearer() -> String {
+    let dir = AGENT.with(|agent| {
+        agent
+            .borrow()
+            .clone()
+            .expect("the lead start recorded its agent dir")
+    });
+    for _ in 0..200 {
+        if let Ok(token) = std::fs::read_to_string(dir.join("lead-client-token")) {
+            return format!("Authorization: Bearer {}\r\n", token.trim());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("the running lead published no client token")
+}
 fn get(port: u16, path: &str, authority: &str, extra: &str) -> String {
+    get_raw(port, path, authority, &format!("{}{extra}", bearer()))
+}
+fn get_raw(port: u16, path: &str, authority: &str, extra: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     write!(stream, "GET {path} HTTP/1.1\r\nHost: {authority}\r\n{extra}\r\n").unwrap();
@@ -42,6 +66,7 @@ fn start_with_situation(
     sample: &std::path::Path,
     situation: Option<&std::path::Path>,
 ) -> Running {
+    AGENT.with(|agent| *agent.borrow_mut() = Some(test.agent_dir()));
     let mut invocation = command(test);
     if let Some(path) = situation {
         invocation.env("OXA_LEAD_SITUATION", path);
@@ -57,19 +82,33 @@ fn start_with_situation(
     );
     let stdout = child.0.stdout.take().unwrap();
     let (send, receive) = std::sync::mpsc::channel();
+    // Keep reading until the child exits. After the listener line a local lead prints the URL
+    // that carries the client token; a closed read end fails that write and the lead exits
+    // before it serves anything.
     std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut line);
-        let _ = send.send(line);
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if send.send(line).is_err() {
+                break;
+            }
+        }
     });
-    assert!(receive
-        .recv_timeout(Duration::from_secs(10))
-        .unwrap()
-        .contains("listening"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let line = receive
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .expect("lead serve did not report its listener");
+        if line.contains("listening") {
+            break;
+        }
+    }
     child
 }
 
 fn post(port: u16, path: &str, host: &str, origin: &str, extra: &str, body: &str) -> String {
+    post_raw(port, path, host, origin, &format!("{}{extra}", bearer()), body)
+}
+fn post_raw(port: u16, path: &str, host: &str, origin: &str, extra: &str, body: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     write!(stream, "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}\r\n{body}", body.len()).unwrap();
@@ -102,6 +141,7 @@ fn form_nonce(page: &str) -> &str {
 
 fn with_fixed_chat(run: impl FnOnce(u16, &str, &std::path::Path)) {
     let test = TestEnv::new();
+    // `start_with_situation` names the agent dir the token went to.
     std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = reservation.local_addr().unwrap().port();
@@ -131,6 +171,7 @@ fn with_fixed_chat(run: impl FnOnce(u16, &str, &std::path::Path)) {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
     drop(reservation);
+    // `start_with_situation` names the agent dir the token went to.
     let _server = start_with_situation(&test, &board, Some(&situation));
     let authority = format!("127.0.0.1:{port}");
     run(port, &authority, &test.root().join("lead.stderr"));
@@ -227,6 +268,40 @@ fn fixed_post_redirects_to_the_selected_refresh_url() {
 fn same_uid_client_cannot_read_protected_situation() {
     with_fixed_chat(|port, authority, _agent_dir| {
         assert!(get(port, "/asks", authority, "").contains("Owner asks unavailable"));
+    });
+}
+
+#[test]
+fn same_uid_client_needs_the_minted_token_for_pages_and_posts() {
+    with_fixed_chat(|port, authority, stderr| {
+        let dir = AGENT.with(|dir| dir.borrow().clone().unwrap());
+        let file = dir.join("lead-client-token");
+        assert_eq!(std::fs::metadata(&file).unwrap().mode() & 0o777, 0o600);
+        let token = std::fs::read_to_string(&file).unwrap();
+        // Without the token neither a page nor a form submission is served.
+        assert!(get_raw(port, "/", authority, "").starts_with("HTTP/1.1 401"));
+        assert!(get_raw(port, "/", authority, "Authorization: Bearer wrong\r\n").starts_with("HTTP/1.1 401"));
+        let nonce_page = get(port, "/chat", authority, "");
+        let nonce = form_nonce(&nonce_page);
+        let origin = format!("http://{authority}");
+        let body = format!("csrf={nonce}&prompt=status");
+        let denied = post_raw(port, "/chat", authority, &origin, "", &body);
+        assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
+        // The printed URL exchanges the token for a cookie and redirects without the query.
+        let opened = get_raw(port, &format!("/chat?t={token}"), authority, "");
+        assert!(opened.starts_with("HTTP/1.1 303"), "{opened}");
+        assert!(opened.contains("Location: /chat\r\n"), "{opened}");
+        assert!(opened.contains(&format!(
+            "Set-Cookie: oxa_lead={token}; HttpOnly; SameSite=Strict; Path=/"
+        )));
+        let cookie = format!("Cookie: oxa_lead={token}\r\n");
+        assert!(get_raw(port, "/chat", authority, &cookie).starts_with("HTTP/1.1 200"));
+        let accepted = post_raw(port, "/chat", authority, &origin, &cookie, &body);
+        assert!(accepted.starts_with("HTTP/1.1 303"), "{accepted}");
+        // No token bytes reach the service journal.
+        let journal = std::fs::read_to_string(stderr).unwrap();
+        assert!(!journal.contains(token.trim()), "{journal}");
+        assert!(journal.contains("reason=client_token"), "{journal}");
     });
 }
 
@@ -767,12 +842,12 @@ fn authorized_durable_asks_reach_the_protected_view_as_a_live_readback() {
     let mut child = Running(invocation.spawn().unwrap());
     let stdout = child.0.stdout.take().unwrap();
     let (send, receive) = std::sync::mpsc::channel();
+    // Drain the whole start output, as `start_with_situation` does, so the URL line finds a
+    // reader even though this test starts the service itself.
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
-            let line = line.unwrap_or_default();
-            let found = line.contains("listening");
-            let _ = send.send(line);
-            if found {
+            let Ok(line) = line else { break };
+            if send.send(line).is_err() {
                 break;
             }
         }
@@ -787,12 +862,13 @@ fn authorized_durable_asks_reach_the_protected_view_as_a_live_readback() {
         }
     }
 
+    // A proxy-mode lead mints no client token: its proof is the forwarded login.
     let login = "Tailscale-User-Login: owner@example.invalid\r\n";
-    let page = get(port, "/", authority, login);
+    let page = get_raw(port, "/", authority, login);
     assert!(page.starts_with("HTTP/1.1 200"), "{page}");
     assert!(page.contains("Checks on main are failing."), "{page}");
     assert!(page.contains("Unanswered owner decisions (1)"), "{page}");
-    let asks = get(port, "/asks", authority, login);
+    let asks = get_raw(port, "/asks", authority, login);
     assert!(asks.contains(&ask_id), "{asks}");
     assert!(asks.contains("revision"), "{asks}");
     assert!(
@@ -803,7 +879,7 @@ fn authorized_durable_asks_reach_the_protected_view_as_a_live_readback() {
     // durable asks and never claims they were observed empty.
     assert!(asks.contains("Runner asks unavailable."), "{asks}");
     // The durable ask never reaches an unauthorized peer.
-    let refused = get(
+    let refused = get_raw(
         port,
         "/",
         authority,

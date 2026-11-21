@@ -1,0 +1,3 @@
+- `oxa send` now steers: a busy session takes the message after its running tool calls, like text typed with Enter, instead of when its whole turn ends. `oxa send --follow-up` keeps the queued follow-up. The lead web page and the `worker` tool's `send` steer too, and TUI, RPC and headless goal runs all deliver a steer at the next tool boundary (#2183).
+- A follow-up no longer waits for ever behind a goal that keeps calling tools: after `oxa.goal.followUpMaxWaitSeconds` (default 300, `0` = wait for the end of the turn) it is delivered at the next tool boundary.
+- A message typed while a turn runs is sent once the session is idle, also when that turn ended in a failed request. It used to stay queued at READY until the next prompt.
