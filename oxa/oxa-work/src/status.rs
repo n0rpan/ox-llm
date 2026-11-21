@@ -363,8 +363,10 @@ mod tests {
     #[test]
     fn a_recorded_pr_is_published_even_when_the_push_readback_is_unknown() {
         let head = "b".repeat(40);
+        // A lane run that concluded while its verdict was still owed: nothing accepted yet.
         let mut record = accepted(&head);
         record.acceptance_outcome = None;
+        record.outcome = Outcome::Blocked;
         record.publish_receipt = Some(crate::PublishReceipt {
             requested: head.clone(),
             remote: None,
