@@ -18,9 +18,8 @@
 //! another session or the tool arguments never does. The publication itself is the existing
 //! [`submit_record`] path: no second implementation.
 //!
-//! Offered only in interactive sessions. Print, JSON and RPC runs keep the terminal
-//! confirmation of `oxa report-issue submit`, which refuses without a terminal or when oxa's
-//! own tools run it.
+//! Offered only in interactive sessions. `oxa report-issue submit` uses terminal confirmation
+//! when run directly; a tool child instead requests publication from its session broker.
 use super::{report_ledger, submit_record, submit_runner, LocalGate, ScrubCtx, Submission};
 use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::{

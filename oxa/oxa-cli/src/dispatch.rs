@@ -1464,6 +1464,15 @@ fn prepare(
             .with_billing(cloud_diagnostics.clone())
             .with_usage_log(usage_log),
     );
+    let ask_owner_present = mode != RunMode::Rpc || rpc_owner_present(mode, env);
+    // Do not offer the parent's GitHub authority to an RPC confirmation UI unless the host
+    // declared an owner. Yolo is already the owner's approval and never consults the UI.
+    let owner_publisher = (ask_owner_present || yolo.full()).then(|| {
+        let publisher: Arc<dyn oxa_core::owner_confirm::Publisher> = Arc::new(
+            crate::report_cmd::ReportPublisher::new(dirs, env, &user_settings, cwd),
+        );
+        publisher
+    });
     let built = Built {
         lead: a.lead,
         status,
@@ -1485,15 +1494,9 @@ fn prepare(
         mode: table_mode,
         supervised_child: child.nested(),
         fork_seed: child.fork.clone(),
-        ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
+        ask_owner_present,
         report_dialog: (mode == RunMode::Interactive).then(|| env.clone()),
-        owner_publisher: Some(Arc::new(crate::report_cmd::ReportPublisher::new(
-            dirs,
-            env,
-            // The semantic-dedupe consent is the owner's, as for the in-session tool.
-            &Settings::load(dirs, cwd, false),
-            cwd,
-        ))),
+        owner_publisher,
         hook_sets,
         yolo,
         bash_sandbox,

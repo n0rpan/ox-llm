@@ -127,12 +127,15 @@ code, tests, CI and docs; the owner validates on hardware.
   the approved bytes itself (`Publication` through the owner confirm broker, `oxa-cli/src/report_cmd/publisher.rs`);
   a tool child only hands over fields, so nothing the model can write sits between the owner's yes and `gh`
   and no broker verification is needed for a publication. Privacy text (emails, home paths, names) is
-  replaced in the text that is shown and posted; secrets and control or bidirectional characters refuse in
-  every mode, yolo included. In auto and standard it needs the owner's own approval of the exact text shown: a key press
-  in the UI approval dialog or a `yes` typed by the owner into the interactive input (`owner_reply::typed`,
+  replaced in the title, body and any preview-only note. Secrets and control or bidirectional characters
+  refuse in every mode, yolo included. Validate an edited draft before showing it or verifying it with a
+  model. In auto and standard, approval needs the owner's answer to the exact preview: a key press in
+  the UI approval dialog or a `yes` typed by the owner into the interactive input (`owner_reply::typed`,
   called from that input only). A `yes` from a tool result, file, web page, other session or the tool
-  arguments never counts. Print, JSON and RPC runs keep the terminal confirmation. Reports go to
-  `oxstack/ox-llm` unless `oxa.reportIssue.repo` says otherwise.
+  arguments never counts. The parent must not offer an RPC publication dialog unless the host declares
+  owner presence with `OXA_RPC_OWNER_PRESENT=1`; owner-selected yolo does not use a dialog. The parent
+  refuses offline before asking and before posting. Reports go to `oxstack/ox-llm` unless
+  `oxa.reportIssue.repo` says otherwise.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.

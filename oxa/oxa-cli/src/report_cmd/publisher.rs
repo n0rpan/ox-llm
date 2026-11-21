@@ -21,24 +21,36 @@ use std::path::{Path, PathBuf};
 /// yolo included. Privacy text (an email, a home path, a host or user name) is not a refusal:
 /// it is replaced, and the scrubbed title and body are what the owner sees and what is posted.
 pub(crate) fn final_text(title: &str, body: &str, ctx: &ScrubCtx) -> Result<(String, String), String> {
-    let control = |text: &str| {
-        text.chars().any(|ch| {
-            (ch.is_control() && !matches!(ch, '\n' | '\t'))
-                || matches!(
-                    ch,
-                    '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-                )
-        })
-    };
-    if control(title) || control(body) {
+    Ok((checked_text(title, ctx)?, checked_text(body, ctx)?))
+}
+
+fn checked_text(text: &str, ctx: &ScrubCtx) -> Result<String, String> {
+    if text.chars().any(|ch| {
+        (ch.is_control() && !matches!(ch, '\n' | '\t'))
+            || matches!(
+                ch,
+                '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            )
+    }) {
         return Err("the text holds control or bidirectional characters, which are never posted".into());
     }
-    let (scrubbed_title, scrubbed_body) = (scrub(title, ctx), scrub(body, ctx));
+    let scrubbed = scrub(text, ctx);
     let secrets = |text: &str| text.matches("<secret>").count();
-    if secrets(&scrubbed_title) > secrets(title) || secrets(&scrubbed_body) > secrets(body) {
+    if secrets(&scrubbed) > secrets(text) {
         return Err("the text holds a secret (a key or a credential), which is never posted".into());
     }
-    Ok((scrubbed_title, scrubbed_body))
+    Ok(scrubbed)
+}
+
+/// Check all requester-supplied text that will be rendered, including the preview-only note.
+fn prepare_text(mut publication: Publication, ctx: &ScrubCtx) -> Result<Publication, String> {
+    (publication.title, publication.body) = final_text(&publication.title, &publication.body, ctx)?;
+    publication.note = publication
+        .note
+        .as_deref()
+        .map(|note| checked_text(note, ctx))
+        .transpose()?;
+    Ok(publication)
 }
 
 /// The destination a publication may go to, refused when reporting is off, when the text names
@@ -60,21 +72,14 @@ fn destination(settings: &Settings, requested: &str) -> Result<String, String> {
     Ok(target)
 }
 
-/// The text that is posted: secrets and control characters are refused, privacy text is
-/// replaced ([`final_text`]), and the repository is the one [`destination`] picks.
+/// Prepare the text to show and the destination to post to. The note is shown but not posted.
 pub(crate) fn prepare_publication(
-    publication: Publication,
+    mut publication: Publication,
     ctx: &ScrubCtx,
     settings: &Settings,
 ) -> Result<Publication, String> {
-    let target = destination(settings, &publication.repository)?;
-    let (title, body) = final_text(&publication.title, &publication.body, ctx)?;
-    Ok(Publication {
-        repository: target,
-        title,
-        body,
-        ..publication
-    })
+    publication.repository = destination(settings, &publication.repository)?;
+    prepare_text(publication, ctx)
 }
 
 /// Hand `gh` exactly the approved bytes: the body goes through a sealed descriptor nothing else
@@ -184,17 +189,12 @@ impl PublishGate for LocalGate<'_> {
     fn approve(&mut self, publication: &Publication) -> Option<bool> {
         self.approved = None;
         self.reason = None;
-        let (title, body) = match final_text(&publication.title, &publication.body, self.ctx) {
-            Ok(text) => text,
+        let prepared = match prepare_text(publication.clone(), self.ctx) {
+            Ok(prepared) => prepared,
             Err(refusal) => {
                 self.reason = Some(refusal);
                 return Some(false);
             }
-        };
-        let prepared = Publication {
-            title,
-            body,
-            ..publication.clone()
         };
         let question = format!("{}{}", prepared.render(), self.suffix);
         let answer = (self.ask)(&question);
@@ -446,6 +446,21 @@ mod tests {
         let (code, _) = submit_as_child(&f, &env);
         assert_eq!(code, 1);
         assert!(!f.log.exists());
+    }
+
+    #[test]
+    fn the_preview_only_note_is_scrubbed_without_changing_the_post() {
+        let ctx = ScrubCtx::default();
+        let publication = Publication {
+            repository: "oxstack/ox-llm".into(),
+            issue: None,
+            title: "Engine stalls".into(),
+            body: "It stalls.".into(),
+            note: Some("Warning: contact owner@example.invalid.".into()),
+        };
+        let prepared = prepare_text(publication, &ctx).expect("safe note");
+        assert!(prepared.render().starts_with("Warning: contact <email>.\n\n"));
+        assert_eq!(prepared.body, "It stalls.", "the note is not part of the post");
     }
 
     #[test]
