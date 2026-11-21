@@ -64,8 +64,7 @@ def review_prompt():
     text = PROMPT + '\nProject guidelines:\n' + guidelines + '\n' + (skill / 'SKILL.md').read_text()
     schema = '\nOutput schema:\n' + (skill / 'findings.schema.json').read_text()
     decisions = '\nOwner decisions (not findings):\n' + owner_decisions
-    if len((text + schema).encode()) > MAX_BASE_PROMPT or len(decisions.encode()) > MAX_OWNER_DECISIONS:
-        raise Refused('Trusted review instructions exceed the bound')
+    # Owner 2026-11-21: no fixed size cap on the trusted instructions (an invented limit refused every PR once SECURITY.md grew).
     return text + decisions + schema
 
 
