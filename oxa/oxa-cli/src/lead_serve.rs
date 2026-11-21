@@ -9,7 +9,7 @@ use oxa_perm::ApprovalDesk;
 use oxa_proto::{codes, Entry, OxaError};
 use std::{
     io::Write,
-    net::{TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::{
@@ -213,6 +213,12 @@ fn identity_fact(refusal: lead_access::Refusal) -> RefusalFact {
             "not_allowed",
             "use the configured owner identity and exact authority",
         ),
+        lead_access::Refusal::ClientToken => RefusalFact {
+            status: 401,
+            stage: Stage::Identity,
+            reason: "client_token",
+            fix: "open the URL printed by oxa lead serve",
+        },
         lead_access::Refusal::ReadOnly => fact(
             "not_allowed",
             "use the configured owner identity and exact authority",
@@ -239,11 +245,18 @@ fn authorized(
     stream: &TcpStream,
     request: &crate::lead_http::Request<'_>,
     journal: &ServiceJournal,
+    token: &str,
 ) -> bool {
     let allowed = (|| {
         let peer = stream
             .peer_addr()
             .map_err(|_| lead_access::Refusal::Unauthenticated)?;
+        // The same-user peer is not proof enough on loopback: any command of this user can
+        // connect. The client must also hold the token the foreground command printed.
+        if config.mode() == Mode::Local && !lead_access::client_token_ok(token, request.client_token) {
+            request.denied.set(401);
+            return Err(lead_access::Refusal::ClientToken);
+        }
         let proof = match config.mode() {
             Mode::Local => Proof::Local(crate::lead_peer::owner_uid(stream) == Ok(uid)),
             Mode::Tailscale => Proof::Proxy(proxy::verify(config, stream, request.forwarded_login)?),
@@ -883,6 +896,31 @@ fn no_budget_warning(settings: &Settings) -> Option<&'static str> {
     )
 }
 
+/// The file the owner's own tools read the client token from: private directory, private file,
+/// replaced atomically on every start so an older token stops working.
+const TOKEN_FILE: &str = "lead-client-token";
+
+fn publish_client_token(agent_dir: &Path, token: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(agent_dir)?;
+    let temp = agent_dir.join(format!("{TOKEN_FILE}.{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&temp)?;
+    file.write_all(token.as_bytes())?;
+    file.sync_all()?;
+    std::fs::rename(&temp, agent_dir.join(TOKEN_FILE)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
 /// Called only by a registry-resolved handler; this module declares no command or flag.
 pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i32, OxaError> {
     if oxa_proto::offline() {
@@ -964,6 +1002,8 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         None
     };
     let form = source.form.clone();
+    let client_token = oxa_mcp::pkce_pair(&oxa_mcp::random_bytes()?).0;
+    let local = config.mode() == Mode::Local;
     let identity_journal = journal.clone();
     let refusal_log = journal.sink();
     let listener = TcpListener::bind(config.endpoint()).map_err(|_| invalid("cannot bind lead endpoint"))?;
@@ -973,9 +1013,26 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
             writeln!(out, "{warning}").map_err(|_| invalid("cannot report lead startup"))?;
         }
     }
+    // Published before the start line: the owner's tools act on that line.
+    if local {
+        publish_client_token(&dirs.agent_dir, &client_token)
+            .map_err(|_| invalid("cannot write the lead client token"))?;
+    }
     writeln!(out, "lead board: listening on configured loopback endpoint")
         .and_then(|()| out.flush())
         .map_err(|_| invalid("cannot report lead startup"))?;
+    if local {
+        // Stdout of the owner's own foreground command; the journal never carries the token.
+        let (ip, port) = config.endpoint();
+        writeln!(
+            out,
+            "lead board: open http://{}/?t={client_token}",
+            SocketAddr::new(ip, port)
+        )
+        .and_then(|()| out.flush())
+        .map_err(|_| invalid("cannot report lead startup"))?;
+    }
+    let served_token = client_token.clone();
     // The live route and the digest of the serving executable, computed once at start: a
     // changed digest after an update makes an open page reload itself.
     source.live = true;
@@ -991,7 +1048,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     };
     let served = crate::lead_http::serve_fixed(
         listener,
-        move |stream, request| authorized(&config, uid, stream, request, &identity_journal),
+        move |stream, request| authorized(&config, uid, stream, request, &identity_journal, &served_token),
         move |page, fragment| source.render(page, fragment),
         form,
         owner,
@@ -999,6 +1056,9 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         Some(live),
     )
     .map_err(|_| invalid("lead listener failed"));
+    if local {
+        let _ = std::fs::remove_file(dirs.agent_dir.join(TOKEN_FILE));
+    }
     // The workers the owner Lead started outlive its chat turns and stop with the Lead.
     crate::workers::tool::stop_owner_workers();
     served?;
@@ -1340,30 +1400,34 @@ mod tests {
             path: "/",
             authority: &authority,
             forwarded_login: None,
+            client_token: Some("tok"),
+            token_in_query: false,
+            denied: Default::default(),
         };
-        assert!(authorized(&config, uid, &stream, &request, &journal));
+        assert!(authorized(&config, uid, &stream, &request, &journal, "tok"));
         assert!(!authorized(
             &config,
             uid.wrapping_add(1),
             &stream,
             &request,
-            &journal
+            &journal,
+            "tok"
         ));
         request.authority = "attacker.invalid";
-        assert!(!authorized(&config, uid, &stream, &request, &journal));
+        assert!(!authorized(&config, uid, &stream, &request, &journal, "tok"));
         request.authority = &authority;
         request.forwarded_login = Some("owner@example.invalid");
-        assert!(!authorized(&config, uid, &stream, &request, &journal));
+        assert!(!authorized(&config, uid, &stream, &request, &journal, "tok"));
         request.forwarded_login = None;
         request.method = "POST";
-        assert!(!authorized(&config, uid, &stream, &request, &journal));
+        assert!(!authorized(&config, uid, &stream, &request, &journal, "tok"));
         // None of those refusals was a chat request: identity facts name the chat
         // pipeline only.
         assert!(recorded(&buffer).is_empty());
         request.path = "/chat";
         request.method = "GET";
         request.authority = "attacker.invalid";
-        assert!(!authorized(&config, uid, &stream, &request, &journal));
+        assert!(!authorized(&config, uid, &stream, &request, &journal, "tok"));
         assert_eq!(
             recorded(&buffer),
             ["lead chat refusal status=403 stage=identity reason=not_allowed fix=use the configured owner identity and exact authority"]
@@ -1376,9 +1440,26 @@ mod tests {
             uid.wrapping_add(1),
             &stream,
             &request,
-            &journal
+            &journal,
+            "tok"
         ));
         assert!(recorded(&buffer)[1].contains("reason=unverified"), "{buffer:?}");
+        // A same-user peer without the minted token, or with another one, is refused as 401 and
+        // the journal line names the fixed reason only.
+        for given in [None, Some("other")] {
+            request.client_token = given;
+            request.denied.set(403);
+            assert!(!authorized(&config, uid, &stream, &request, &journal, "tok"));
+            assert_eq!(request.denied.get(), 401);
+        }
+        let lines = recorded(&buffer);
+        assert!(
+            lines[2].contains("status=401 stage=identity reason=client_token"),
+            "{lines:?}"
+        );
+        assert!(lines
+            .iter()
+            .all(|line| !line.contains("tok=") && !line.contains("other")));
         drop(client);
     }
 
@@ -1729,8 +1810,11 @@ mod approval_answer_tests {
             path: "/approvals",
             authority: &authority,
             forwarded_login: None,
+            client_token: Some("tok"),
+            token_in_query: false,
+            denied: Default::default(),
         };
-        assert!(!authorized(&config, uid, &stream, &request, &journal));
+        assert!(!authorized(&config, uid, &stream, &request, &journal, "tok"));
         assert_eq!(
             recorded(&buffer),
             ["lead chat refusal status=403 stage=identity reason=not_allowed fix=use the configured owner identity and exact authority"]

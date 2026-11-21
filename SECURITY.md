@@ -17,6 +17,12 @@ Treat as **high** severity:
 Skill reactivation after compaction is a user-only opt-in. A project setting cannot add
 the skill reactivation instructions to later turns.
 
+Dangerous-command rules read one parsed `Effects` value per shell command (launchers unwrapped, the directory
+chain of `env -C`, files read, token-printing commands). `credential-read` and `git-hook-write` are approval
+prompts in standard mode, not a sandbox; yolo does not reach them. A saved unattended grant never covers a
+pipeline fed by anything but a literal `echo`/`printf`, or an input redirect. A `wait` probe that runs `gh`
+is network access (plan denies, ask asks once per session).
+
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.
 The native cloud gateway's default recommendations use only configured API-key providers
@@ -31,6 +37,7 @@ and nonempty values from oxa's environment or the command spec whose names conta
 execution, without changing sandbox or network policy. Output masking is not isolation.
 Unattended runs include ownerless RPC and headless runs pursuing a goal. Exec hooks
 keep their dedicated sandbox. Network-disabled model shells mask host runtime IPC.
+Where a command runs is one decision (`oxa-sandbox/src/decision.rs`, `ExecPolicy`). Exec hooks run in the sandbox: on Linux they are refused without bwrap, never run on the host instead; under yolo and off Linux they run with your rights, and `--offline` still holds. An attended interactive session with no OS sandbox requested and no usable bwrap keeps `oxa.sandbox.net: off` as a start warning only. The output of every command that runs with your rights has the host credentials scrubbed at one sink, on every path, and the GitHub CLI credential discovery for that scrub never gives `gh` the network the owner turned off.
 Local model setup refuses agent tool invocations before running engine admission or writing user
 settings.
 
@@ -107,6 +114,19 @@ launch still uses the same child permission ceiling and sandbox policy.
 
 Dangerous commands are a floor prompt in the interactive run, and an unattended run (a worker, a subagent, a headless goal: no one to ask) never waits for an answer (#1512). `oxa.approval.unattended` is the owner setting, user settings only: `auto` (the default) refuses the command under the OS sandbox and files an approval request without one, `refuse` always refuses, `request` always files a request. Refusals are returned without writing an approval record, so repeated model-controlled commands cannot grow the desk. Requests live in `<agent dir>/approvals/` (directory 0700, one record per request at 0600, written atomically under a private temporary name, never following a symlink or an agent directory owned by another user) and are answered only by the owner through `oxa send <session> --approve <id> once|session|always|deny`, authenticated through the session's owner-confirm broker (or a direct terminal confirmation), or on the lead web approvals page, never by inbox text or model output. A `once` grant is consumed by the run that retries the command; `session` grants last only for the run that filed the request, including when the persisted session is resumed. `always` is recorded in the user-only `oxa.approval.always` list: its desk record also holds only in the run that was answered, and later runs read the list, so removing a line there revokes it. A command that reads its input from a file or stdin (an input redirection, `xargs`, `read`, `--files-from`) is refused unattended like shell input, and no saved grant covers it, because the reviewed text does not fix what it acts on. A grant is bound to the canonical directory it was reviewed in, a wipe takes the desk lock, the newest 500 `refused` and 500 `pending` records are kept (older ones of that status rotate out; answered grants never do), and listings escape control, bidi and zero-width format characters. A finding that asks for a default-off switch, for an unattended run to wait indefinitely, or for the desk to take an answer from a model or a project file is answered here.
 
+## Loopback surfaces
+
+Each loopback listener that can start a model request or spend cloud budget needs a client proof beyond the same-user peer. The in-process cloud gateway has no listener.
+
+| Listener | Client proof |
+| --- | --- |
+| share (`oxa share`) | guest bearer |
+| a2a server | capability token |
+| oxe-server (started by oxa) | `OXE_API_KEY_FILE` key |
+| `oxa lead serve`, local mode | per-start client token, cookie or bearer (#193) |
+
+`oxa lead serve` mints a 256-bit token at start, prints `http://127.0.0.1:<port>/?t=<token>` once on the owner's foreground stdout (never the journal), and writes it to `<agent dir>/lead-client-token` (directory 0700, file 0600, replaced on every start, removed on clean exit). A request without it, page or POST, is refused with 401 and the fixed journal fact `reason=client_token`. Limit: under the interactive no-sandbox default, a same-user command that deliberately reads the agent directory can still obtain the token. The token stops the silent, accidental and scripted path (a `curl` to a known port) and every sandboxed or unattended run; no OS sandbox is added to close the rest.
+
 ## Sandbox standard (owner decision)
 
 - **Interactive CLI:** no OS sandbox by default, on Linux and macOS. Dangerous commands ask the owner.
@@ -152,6 +172,7 @@ Limits are owner settings that warn and record. A finding that asks for a defaul
 - **Lane coverage:** what a green lane run counts as evidence for is data in `tools/ci/lane_coverage.json`, read by the Rust guard from the trusted base commit and never from the pushed head. A missing or invalid file covers nothing. The workflow and `tools/ci` files must also match the destination's base branch from the merge base.
 - **Worker build cache:** a worker derives one writable path for itself, `<cache dir>/<hash>/cargo-target` per main repository, created 0700 and refused if a symlink or owned by another user. The settings are user-only. A held native worker runs online with runner-owned GitHub isolation (no credential, adapters or MCP, also in yolo) instead of being forced offline.
 - **Headless inbox:** persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out; project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing goal, and the managed-steering path do not mount the plain inbox watcher.
+- **GitHub updates, `oxa work` inbox and publish receipts:** an `oxa work` worker (`OXA_WORK_INBOX=1`) also watches its inbox, under the same user-only `oxa.inbox.headless` opt-out. Text the runner fetches for a worker (`oxa work` packet updates) and inbox messages are context, never an approval. The runner fetches; the worker stays GitHub-isolated. After a push the runner reads the destination back (`git ls-remote`) and records what it holds with a divergence class; it never force-pushes.
 - **Bash and subagent limits:** `oxa.bash.maxJobs` (default 16 running background jobs) and `oxa.subagent.maxChildren` (default 8 running or queued children per parent, and 8 steps per call) are read from the user file and have a minimum of 1. Above them a call warns and records by default; `oxa.onExceed` (user-only) turns that into a refusal per budget. `oxa.tools.wait` and `oxa.toolOutputCap` are user-only too. Project settings for remote concurrency remain bounded by the user's child cap. An explicit bash `timeout: 0` disables the timeout for that call, including a background job. Sandbox and permission checks still apply.
 - **Automated Go review** reads at most 200 GitHub comment pages (20,000 comments) when it checks the configured daily quota and prior same-diff receipts. If either listing is incomplete, review is deferred before quota reservation, provider authentication, or provider I/O. An incomplete history cannot authorize another token-spending review.
 - **`oxa work` acceptance:** a task with zero or skipped checks remains `Unverified` and lacks a publishable acceptance receipt. Project files and worker replies cannot change the owner-only `oxa.work.localChecks` setting, which defaults to per-package `cargo check`. Rust acceptance requires hosted test evidence for the exact head, including for changed inputs outside packages in a tree with Cargo manifests. A worker declaration can add requirements to that evidence; review their coverage against the task's acceptance criteria.

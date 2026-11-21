@@ -417,6 +417,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
         kind: EnvKind::Internal,
     },
     EnvVar {
+        name: "OXA_WORK_INBOX",
+        pi_name: None,
+        description: "oxa work sets 1 in the environment of a worker it launches: the worker watches its session inbox (`oxa send`, the lead chat, the web UI) without a pursuing goal, unless `oxa.inbox.headless` is false in the user settings",
+        supported: true,
+        kind: EnvKind::Internal,
+    },
+    EnvVar {
         name: "OXA_WORK_MODEL_DELEGATED",
         pi_name: None,
         description: "oxa work sets 1 in a worker; a restored or project-selected model then never counts as chosen by the owner, while an actual model argument is still admitted by a protected Go key",
