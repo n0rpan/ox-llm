@@ -7,6 +7,7 @@ pub use landing::{
     Admission, AdmissionAcknowledgment, AdmissionReceipt, DeliveryReceipt, LandingPublisher, NoticeIntent,
     RejectedLanding, RetryIntent,
 };
+pub(crate) use receipt::push_with_receipt;
 pub use receipt::{Divergence, PublishReceipt};
 use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
@@ -1061,7 +1062,10 @@ fn publish_locked(
                 "PR #{number} is in the merge queue; use a new task branch for follow-up work"
             ));
         }
-        push_head(
+        // The destination is read back into the saved receipt whether the push reports
+        // success or not: a push that reports success must show the pushed commit at the
+        // branch tip, and a rejected push names what the remote holds.
+        receipt::push_with_receipt(
             policy,
             token.zip(export.as_ref()),
             repo,
@@ -1069,16 +1073,8 @@ fn publish_locked(
             &task.branch,
             lock,
             &remote,
+            &mut receipt_slot.borrow_mut(),
         )?;
-        // Read the destination back into the saved receipt: a push that reports
-        // success must show the pushed commit at the branch tip.
-        receipt_slot.replace(Some(receipt::read_back(
-            policy,
-            repo,
-            &remote,
-            &task.branch,
-            &head,
-        )));
         let draft = false;
         let body = policy.storage.join(format!("{}.pr-body.md", task.id));
         crate::checkpoint::write_atomic(&body, text.as_bytes(), body.exists())?;

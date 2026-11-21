@@ -534,7 +534,9 @@ pub(crate) fn accept(
             "PR #{number} is in the merge queue; use a new task branch for follow-up lane work"
         ));
     }
-    crate::publish::push_head(
+    // The destination is read back whether the push reports success or not, as on the
+    // publication path; lane acceptance keeps no saved receipt.
+    crate::publish::push_with_receipt(
         policy,
         token.zip(export.as_ref()),
         repo,
@@ -542,6 +544,7 @@ pub(crate) fn accept(
         &task.branch,
         lock,
         &remote,
+        &mut None,
     )?;
     let started = Instant::now();
     let run = wait_with(

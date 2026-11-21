@@ -7,6 +7,7 @@
 //! commit. Nothing here ever force-pushes: both commits are kept.
 use crate::{checked, git, output, Result, RunPolicy};
 use serde::{Deserialize, Serialize};
+use std::fs::File;
 use std::path::Path;
 
 /// How the remote branch relates to the commit the runner asked to publish.
@@ -154,6 +155,42 @@ pub(crate) fn read_back(
             class: Divergence::RemoteUnknown,
         },
     }
+}
+
+/// Push `head` to `branch` and read the destination back. The receipt is stored in `slot` on
+/// success and on failure. A success that reads back another commit is an error; a rejected
+/// push says what the remote holds. No force push anywhere.
+pub(crate) fn push_with_receipt(
+    policy: &RunPolicy,
+    auth: Option<(&str, &super::committed::Export)>,
+    repo: &Path,
+    head: &str,
+    branch: &str,
+    lock: &File,
+    url: &str,
+    slot: &mut Option<PublishReceipt>,
+) -> Result<()> {
+    let pushed = super::push_head(policy, auth, repo, head, branch, lock, url);
+    // The destination is read back whether the push reported success or not, so a rejected
+    // push still names what the remote holds.
+    let receipt = read_back(policy, repo, url, branch, head);
+    let verdict = match pushed {
+        Ok(()) => match receipt.class {
+            // An unreadable remote after a successful push is recorded, not guessed.
+            Divergence::Published => Ok(()),
+            Divergence::RemoteUnknown if receipt.remote.is_none() => Ok(()),
+            _ => Err(format!("push reported success but {}", receipt.describe(branch))),
+        },
+        Err(error) => match receipt.class {
+            Divergence::Published | Divergence::RemoteUnknown if receipt.remote.is_none() => Err(error),
+            _ => Err(format!(
+                "push rejected; {}; nothing was force-pushed, both commits are kept",
+                receipt.describe(branch)
+            )),
+        },
+    };
+    *slot = Some(receipt);
+    verdict
 }
 
 #[cfg(test)]
