@@ -629,13 +629,13 @@ mod tests {
         ];
         let content = lines.iter().map(|rec| format!("{rec}\n")).collect::<String>();
         let (path, uid) = fixture(&env, content.as_bytes());
-        let sample = sample(&path, uid).unwrap();
-        assert_eq!(sample.board.observed_at, 46_800);
-        assert_eq!(sample.merges.covered_from, Some(36_000));
-        assert_eq!(sample.merges.observed_at, 46_800);
-        assert_eq!(sample.merges.main_samples, 4);
+        let read = sample(&path, uid).unwrap();
+        assert_eq!(read.board.observed_at, 46_800);
+        assert_eq!(read.merges.covered_from, Some(36_000));
+        assert_eq!(read.merges.observed_at, 46_800);
+        assert_eq!(read.merges.main_samples, 4);
         assert_eq!(
-            sample.merges.merges,
+            read.merges.merges,
             vec![
                 crate::lead_projection::Merge {
                     at: 35_500,
@@ -652,9 +652,9 @@ mod tests {
         mismatched["panels"]["main"]["target"]["oid"] = json!(head_b);
         let content = format!("{content}{mismatched}\n");
         fs::write(&path, &content).unwrap();
-        let sample = sample(&path, uid).unwrap();
-        assert_eq!(sample.merges.merges.len(), 2);
-        assert_eq!(sample.merges.main_samples, 5);
+        let read = sample(&path, uid).unwrap();
+        assert_eq!(read.merges.merges.len(), 2);
+        assert_eq!(read.merges.main_samples, 5);
     }
 
     #[test]
@@ -665,18 +665,18 @@ mod tests {
         // An older malformed record never refuses the board the latest record carries.
         let content = [b"broken older record\n".as_slice(), reader].concat();
         let (path, uid) = fixture(&env, &content);
-        let sample = sample(&path, uid).unwrap();
-        assert_eq!(sample.board.observed_at, 20);
-        assert_eq!(sample.merges.covered_from, Some(20));
-        assert_eq!(sample.merges.main_samples, 1);
-        assert!(sample.merges.merges.is_empty());
+        let read = sample(&path, uid).unwrap();
+        assert_eq!(read.board.observed_at, 20);
+        assert_eq!(read.merges.covered_from, Some(20));
+        assert_eq!(read.merges.main_samples, 1);
+        assert!(read.merges.merges.is_empty());
         // Publication rows are journal replays: no merge history from them.
         let publication = br#"{"schema_version":1,"observed_at":30,"board":{"observed_at":30,"entries":[]},"landing_publication":{"step":"delivered"},"landing_main":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 "#;
-        fs::write(&path, [reader, publication].concat()).unwrap();
-        let sample = sample(&path, uid).unwrap();
-        assert_eq!(sample.board.observed_at, 20);
-        assert_eq!(sample.merges.main_samples, 1);
+        fs::write(&path, [reader.as_slice(), publication.as_slice()].concat()).unwrap();
+        let read = sample(&path, uid).unwrap();
+        assert_eq!(read.board.observed_at, 20);
+        assert_eq!(read.merges.main_samples, 1);
     }
 
     #[test]

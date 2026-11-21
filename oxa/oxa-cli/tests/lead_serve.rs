@@ -1488,7 +1488,7 @@ fn projection_decode_stays_bounded_on_a_full_sample_tail() {
         log.len()
     );
     assert_eq!(sample.merges.merges.len(), count as usize);
-    assert_eq!(work.throughput.observed, count); // every merge falls inside the 12 h window
+    assert_eq!(work.throughput.observed, count as u32); // every merge falls inside the 12 h window
     assert!(
         elapsed < std::time::Duration::from_millis(250),
         "projection cost regressed: {elapsed:?}"
