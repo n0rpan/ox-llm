@@ -327,11 +327,44 @@ fn entry_item(entry: &Entry, ctx: &ScrubCtx) -> Option<Item> {
 }
 
 /// Every entry of the session, in file order, at most one row each.
-pub(crate) fn thread_items(entries: &[Entry], ctx: &ScrubCtx) -> Vec<Item> {
+pub(crate) fn thread_items(entries: &[Entry], ctx: &ScrubCtx, validated_reply: bool) -> Vec<Item> {
     entries
         .iter()
+        .filter(|entry| !(validated_reply && reply_envelope(entry)))
         .filter_map(|entry| entry_item(entry, ctx))
         .collect()
+}
+
+/// A lead assistant entry that is the chat contract's JSON answer rather than prose: the
+/// dedicated chat shows the validated reply instead, never this envelope.
+fn reply_envelope(entry: &Entry) -> bool {
+    let EntryBody::Msg { wire, .. } = &entry.body else {
+        return false;
+    };
+    if wire.role != Role::Assistant {
+        return false;
+    }
+    let text = wire.content.as_deref().unwrap_or("").trim_start();
+    text.starts_with("```json") || text.starts_with('{')
+}
+
+/// The validated reply as the thread's newest lead bubble, carrying this process's fact
+/// chips and action card.
+pub(crate) fn reply_row(text: &str, ts: u64) -> Item {
+    Item {
+        id: String::new(),
+        ts,
+        kind: ItemKind::Lead,
+        body: md::render(text),
+        detail: String::new(),
+        name: String::new(),
+        failed: false,
+    }
+}
+
+/// Whether a rendered row already shows this text, so a reply never appears twice.
+pub(crate) fn shows(rows: &[Item], html: &str) -> bool {
+    rows.iter().any(|row| row.body.contains(html))
 }
 
 /// A row that stands alone instead of folding: a bubble or a note. Every step folds.

@@ -833,6 +833,7 @@ impl Source {
             Some(OwnerSession::Dedicated(binding)) => Some(binding),
             _ => None,
         };
+        let short_id = dedicated.map(|binding| binding.session_id().chars().take(8).collect::<String>());
         let entries = dedicated.and_then(|binding| match binding.read_entries() {
             Ok(entries) => Some(entries),
             Err(_) => None,
@@ -872,9 +873,7 @@ impl Source {
                     proposal: latest.as_ref().and_then(|latest| latest.proposal.as_ref()),
                     confirmed: latest.as_ref().is_some_and(|latest| latest.confirmed),
                     entries: entries.as_deref(),
-                    short_id: dedicated
-                        .map(|binding| binding.session_id().chars().take(8).collect::<String>())
-                        .as_deref(),
+                    short_id: short_id.as_deref(),
                 }),
             board: good.map(|g| &g.board),
             situation: observation.as_ref().and_then(|o| o.situation.as_ref()),
