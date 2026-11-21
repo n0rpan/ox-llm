@@ -3,7 +3,6 @@
 
     desk_contract.py            lint the tree; prints every problem and exits 1 when there is one
     desk_contract.py version    print the one version oxa and the desktop share
-    desk_contract.py timing JOB append the job's duration and runner wait to the job summary
 
 The lint keeps the desktop one product with oxa (build plan, sections 1.1 and 2.1):
 
@@ -13,14 +12,10 @@ The lint keeps the desktop one product with oxa (build plan, sections 1.1 and 2.
   the views (the binary's `main.rs` is the oxa shim and the one exception);
 - no path under oxa/desk/ names macos or darwin (such a path selects the 90-minute macOS build).
 """
-import datetime
-import json
-import os
 from pathlib import Path
 import re
 import sys
 import tomllib
-import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 OXA = ROOT / 'oxa'
@@ -112,46 +107,10 @@ def lint():
     return 1 if found else 0
 
 
-def timing(job):
-    """Best effort: a missing answer from the API is written down, it never fails the job."""
-    def when(text):
-        return datetime.datetime.fromisoformat(text.replace('Z', '+00:00'))
-
-    now = datetime.datetime.now(datetime.timezone.utc)
-    try:
-        env = os.environ
-        url = (f"{env['GITHUB_API_URL']}/repos/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}"
-               f"/attempts/{env.get('GITHUB_RUN_ATTEMPT', '1')}/jobs?per_page=100")
-        if not url.startswith('https://'):
-            raise ValueError('unexpected API address')
-        headers = {'Accept': 'application/vnd.github+json'}
-        if env.get('GH_TOKEN'):  # empty on a PR from a fork: the workflow gives that run no token
-            headers['Authorization'] = f"Bearer {env['GH_TOKEN']}"
-        request = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(request, timeout=20) as response:
-            jobs = json.load(response)['jobs']
-        mine = [entry for entry in jobs if entry.get('runner_name') == env['RUNNER_NAME']
-                and entry.get('status') == 'in_progress' and entry['name'].endswith(job)]
-        if len(mine) != 1:
-            raise ValueError(f'{len(mine)} running jobs named {job!r} on this runner')
-        created, started = when(mine[0]['created_at']), when(mine[0]['started_at'])
-        line = (f'{job}: {(now - started).total_seconds():.0f} s so far, '
-                f'after {(started - created).total_seconds():.0f} s waiting for a runner')
-    except Exception as error:  # noqa: BLE001 - a summary line, never a reason to fail the job
-        line = f'{job}: duration and runner wait unknown ({type(error).__name__}: {error})'
-    print(line)
-    if os.environ.get('GITHUB_STEP_SUMMARY'):
-        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-            summary.write(line + '\n')
-    return 0
-
-
 def main(argv):
     if argv == ['version']:
         print(toml(OXA / 'Cargo.toml')['workspace']['package']['version'])
         return 0
-    if len(argv) == 2 and argv[0] == 'timing':
-        return timing(argv[1])
     if argv:
         print(__doc__, file=sys.stderr)
         return 2

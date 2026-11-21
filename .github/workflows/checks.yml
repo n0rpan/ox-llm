@@ -28,7 +28,8 @@ name: checks
 # The desktop app (`desk`, desk.yml) is a nested workspace, oxa/desk/, that no job above compiles.
 # Its paths (oxa/desk/, desk.yml, tools/ci/desk_contract.py) select the `desk` output and nothing
 # else, so a desk-only PR runs the scans, rustfmt and the two desk jobs. `changelog.d/desk-*.md`
-# selects nothing. "Everything changed" and the full runs on main include `desk`.
+# selects nothing. "Everything changed" and the full runs on main include `desk`; the main-push
+# dedupe skips it only when the queue run at that commit ran it.
 # The `gate` job aggregates every job below; it fails when any job failed or was cancelled, when
 # the classifier or the scans did not succeed, or when a classifier output is not literally
 # 'true'/'false', so a skip caused by a failed or missing classifier cannot pass.
@@ -80,6 +81,7 @@ jobs:
       contents: read
     outputs:
       covered: ${{ steps.covered.outputs.covered }}
+      desk_covered: ${{ steps.covered.outputs.desk_covered }}
       full: ${{ steps.paths.outputs.full }}
       docs: ${{ steps.paths.outputs.docs }}
       engine: ${{ steps.paths.outputs.engine }}
@@ -103,7 +105,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PUSH_BEFORE: ${{ github.event.before }}
-        run: python3 -I tools/ci/queue_covered.py
+        run: python3 -I tools/ci/queue_covered.py --job desk
       - name: CI tooling tests
         run: python3 -I -m unittest discover -s tools/ci/tests
       - name: Validate pending changelog fragments
@@ -154,8 +156,11 @@ jobs:
   desk:
     # The desktop app's own workspace (desk.yml: `desk check` and `desk test`, hosted ARM). Runs
     # when the classifier sets `desk`; a skip passes the gate, so no other PR waits for it.
+    # A deduped main push skips it only when the queue run really ran it (`desk_covered`): the
+    # queue classifies its own change, so a shared-crate change does not select `desk` there, and
+    # then the main push is the run that compiles the desktop against it.
     needs: changes
-    if: needs.changes.outputs.covered != 'true' && needs.changes.outputs.desk == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: (needs.changes.outputs.covered != 'true' || needs.changes.outputs.desk_covered != 'true') && needs.changes.outputs.desk == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     permissions:
       # Read-only: each desk job reads its own start time for its summary line.
       actions: read

@@ -218,6 +218,28 @@ class MainPushDedupe(unittest.TestCase):
         # The scans stay unconditional, deduped or not.
         self.assertNotIn(self.GUARD, job_block(self.checks, 'scans'))
 
+    def test_the_desk_job_is_deduped_only_when_the_queue_ran_it(self):
+        # The queue does not select `desk` for a shared-crate change; main then has to run it.
+        changes = job_block(self.checks, 'changes')
+        self.assertIn('desk_covered: ${{ steps.covered.outputs.desk_covered }}', changes)
+        self.assertIn('tools/ci/queue_covered.py --job desk', changes)
+        self.assertIn(f"if: ({self.GUARD} || needs.changes.outputs.desk_covered != 'true') && ",
+                      job_block(self.checks, 'desk'))
+
+
+class DeskToken(unittest.TestCase):
+    def test_no_step_gives_the_token_to_checked_out_code_on_a_fork_pull_request(self):
+        # desk.yml runs scripts from the checkout; on a PR from a fork those are the fork's files.
+        own = ("(github.event_name != 'pull_request' || "
+               "github.event.pull_request.head.repo.full_name == github.repository) && github.token || ''")
+        desk = (WORKFLOWS / 'desk.yml').read_text()
+        lines = [line for line in desk.splitlines() if re.search(r'github\.token|secrets\.\w', line)]
+        self.assertEqual(len(lines), 2, lines)
+        for line in lines:
+            self.assertEqual(line.strip(), 'GH_TOKEN: ${{ ' + own + ' }}')
+        self.assertNotIn('persist-credentials: true', desk)
+        self.assertEqual(desk.count('persist-credentials: false'), desk.count('actions/checkout@'))
+
 
 class RetiredControllerJobs(unittest.TestCase):
     def test_python_controller_jobs_are_gone_and_the_gate_does_not_wait_for_them(self):
