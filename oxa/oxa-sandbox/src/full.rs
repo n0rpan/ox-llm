@@ -12,7 +12,7 @@ use crate::{
     run_unsandboxed_capture, run_unsandboxed_stdin, ExecDecision, ExecPolicy, ExecRole, Layout, NetSandbox,
 };
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
