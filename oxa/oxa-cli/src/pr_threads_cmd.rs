@@ -25,6 +25,7 @@ const BODY_CHARS: usize = 32_000;
 /// The one fixed query. Owner, name, number and cursor are GraphQL variables, never interpolated.
 const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){number state url headRefOid reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{id isResolved isOutdated path line originalLine startLine originalStartLine comments(first:100){pageInfo{hasNextPage}nodes{id databaseId body createdAt url author{login} commit{oid} originalCommit{oid}}}}}}}}";
 
+#[derive(Debug)]
 struct Comment {
     database_id: Option<u64>,
     id: Option<String>,
@@ -38,6 +39,7 @@ struct Comment {
     body_cut: bool,
 }
 
+#[derive(Debug)]
 struct Thread {
     id: Option<String>,
     resolved: bool,
@@ -53,6 +55,7 @@ struct Thread {
     comments: Vec<Comment>,
 }
 
+#[derive(Debug)]
 struct Report {
     repo: String,
     pr: u64,
@@ -617,7 +620,7 @@ mod tests {
         );
         let r = f.collect(7).unwrap();
         assert!(r.incomplete);
-        assert!(r.incomplete_reason.unwrap().contains("200"));
+        assert!(r.incomplete_reason.as_deref().unwrap().contains("200"));
         assert_eq!(r.threads.len(), 2);
         let calls = f.calls().unwrap();
         assert!(calls.contains("after=Y3Vyc29yOnYyOpHOAA"), "{calls}");
