@@ -2,6 +2,7 @@
 #![cfg(target_os = "linux")]
 
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
+use oxa_session::{FsStore, SessionStore};
 use serde_json::Value;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -202,6 +203,14 @@ fn terminal_capture_compares_adjacent_requests_without_changing_the_wire_or_expo
                     assert!(!payload.contains(private));
                 }
             }
+            assert!(!String::from_utf8_lossy(&after.body).contains("common_leading_messages"));
         }
+    }
+    let store = FsStore::new(env.agent_dir().join("sessions"));
+    let sessions = store.list(None);
+    assert!(!sessions.is_empty());
+    for session in sessions {
+        let saved = std::fs::read_to_string(session.sref.path).unwrap();
+        assert!(!saved.contains("common_leading_messages"));
     }
 }
