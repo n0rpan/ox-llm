@@ -805,7 +805,7 @@ impl Source {
             Ok(entries) => Some(entries),
             Err(_) => None,
         });
-        let view = crate::lead_page::View {
+        let mut view = crate::lead_page::View {
             sessions: owner
                 .zip(rows.as_deref())
                 .map(|(owner, rows)| crate::lead_page::SessionListView {
