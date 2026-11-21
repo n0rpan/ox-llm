@@ -80,6 +80,17 @@ pub(super) const ENTRIES: &[Descriptor] = &[
     )
     .key(Kind::Number, "60")
     .hidden(),
+    // #2183: how long a follow-up waits behind a pursuing goal that keeps calling tools; `0` =
+    // until the run stops.
+    d(
+        "oxa.goal.followUpMaxWaitSeconds",
+        Group::Advanced,
+        "",
+        "oxa.goal.followUpMaxWaitSeconds",
+        "",
+    )
+    .key(Kind::Number, "300")
+    .hidden(),
     // An idle goal (replies without a tool call): the first wait after the nudge; `0` opts out.
     d(
         "oxa.goal.idleBackoffSeconds",

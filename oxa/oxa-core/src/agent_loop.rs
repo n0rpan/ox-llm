@@ -160,6 +160,8 @@ fn run_inner(
     // Consecutive transient failures of one logical request. This state lives inside the run so
     // recovery preserves done checks, the turn limit and the request idempotency key.
     let mut goal_failures: u32 = 0;
+    // #2183: when a tool boundary of a pursuing goal first saw a follow-up that is still queued.
+    let mut follow_up_seen: Option<std::time::Instant> = None;
     // Replies in a row without a tool call while a goal is pursued: the first continues, the
     // second adds one nudge, the third and later wait before the next request. Run-local.
     let mut idle_streak: u32 = 0;
@@ -186,6 +188,24 @@ fn run_inner(
             return Ok(RunEnd::Failed(e));
         }
         if !wrapping_up {
+            // Time awareness: one short note at 70% and one at 90% of `--max-time`. It is a user
+            // message at a turn boundary, so the frozen prefix does not change.
+            let note = (crate::Handle {
+                shared: st.shared.clone(),
+            })
+            .take_time_note();
+            if let Some(note) = note {
+                let tail = if note.percent >= 90 {
+                    "; commit what works now"
+                } else {
+                    ""
+                };
+                let text = format!(
+                    "[time: {}% of this run's time limit used, about {} min left{tail}]",
+                    note.percent, note.minutes_left
+                );
+                push_user(st, text, sink, ui, run_msgs)?;
+            }
             let reason = match st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) {
                 1 => Some(crate::WrapUpReason::TimeLimit),
                 2 => Some(crate::WrapUpReason::Signal),
@@ -194,6 +214,12 @@ fn run_inner(
             };
             if let Some(reason) = reason {
                 wrapping_up = true;
+                crate::progress::notify(
+                    st,
+                    crate::Progress::WrapUp {
+                        limit: reason.limit(),
+                    },
+                );
                 push_user(st, crate::prompt::WRAP_UP.to_string(), sink, ui, run_msgs)?;
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Info,
@@ -227,7 +253,7 @@ fn run_inner(
         crate::think::before_reply(st, ui);
         let mut opts = RequestOpts {
             kind: TurnKind::Chat,
-            max_tokens: wrapping_up.then_some(1024),
+            max_tokens: wrapping_up.then(|| wrap_up_tokens(st)),
             thinking: wrapping_up.then_some(false),
             background: false,
             snapshot_keep: false,
@@ -395,7 +421,7 @@ fn run_inner(
                         let deadline = std::time::Instant::now() + delay;
                         loop {
                             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                            let has_input = !crate::queue::lock(&shared.queue).steering.is_empty();
+                            let has_input = shared.has_steering();
                             let ended = crate::goal::wait_failure_backoff(
                                 st,
                                 if has_input {
@@ -771,6 +797,7 @@ fn run_inner(
             st.stats.ci_polls += results.iter().filter(|r| r.ui["ciPoll"] == true).count() as u32;
             done.note_proof(&calls, &results);
             done.note_bash(st, &results);
+            crate::exec::note_stored_images(st, &results, sink)?;
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;
@@ -904,6 +931,14 @@ fn run_inner(
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
+            // #2183: a pursuing goal can call tools without ever stopping or waiting, so a
+            // follow-up is not left behind such a turn for ever: one that has waited
+            // `oxa.goal.followUpMaxWaitSeconds` is delivered at this tool boundary.
+            if crate::goal::follow_up_due(st, &mut follow_up_seen) {
+                for text in drain_follow_ups(st, sink) {
+                    push_user(st, text, sink, ui, run_msgs)?;
+                }
+            }
             // A wait that input woke hands that input to the model now: a follow-up is
             // otherwise only drained when the run stops, after the model has answered
             // the wait result without it.
@@ -1607,4 +1642,17 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Output cap of the wrap-up turn: the owner's `oxa.run.wrapUpTokens`, else the model's own
+/// output limit, at most 4096 (room to commit and report).
+fn wrap_up_tokens(st: &SessionState) -> u32 {
+    let own = st.settings.user_u32("oxa.run.wrapUpTokens", 0);
+    if own > 0 {
+        return own;
+    }
+    match st.info.max_output {
+        0 => 4096,
+        limit => limit.min(4096),
+    }
 }

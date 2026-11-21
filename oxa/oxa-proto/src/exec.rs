@@ -126,6 +126,12 @@ pub trait Sandbox: Send + Sync {
     fn for_session(&self) -> Option<std::sync::Arc<dyn Sandbox>> {
         None
     }
+    /// Whether the commands of this sandbox run with the user's own rights (no OS sandbox: they
+    /// can read the host's credentials), so the output sink must scrub them. Default `false`;
+    /// `oxa_sandbox::Unsandboxed` answers `true` and wrappers delegate.
+    fn host_rights(&self) -> bool {
+        false
+    }
     /// The exact `bwrap` argv (without the leading `bwrap`) for `s`. Pure; golden-tested.
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String>;
     /// Run `s`, streaming output chunks to `live`. Cancel and timeout kill the process group.

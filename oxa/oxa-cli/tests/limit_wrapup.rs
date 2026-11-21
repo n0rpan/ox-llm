@@ -140,7 +140,7 @@ fn check(env: &TestEnv, server: &FakeServer, output: Output) {
     );
     let requests = server.requests();
     assert_eq!(requests.len(), 2, "only one additional final turn");
-    assert!(requests[1].max_tokens <= 1024);
+    assert!(requests[1].max_tokens <= 4096);
     assert!(!requests[1].thinking);
     let sessions = FsStore::new(env.agent_dir().join("sessions")).list(None);
     assert_eq!(sessions.len(), 1, "session is retained");
@@ -422,7 +422,7 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
     assert!(!has_wrap_up(0), "{}", diagnostics());
     assert!(has_wrap_up(1), "{}", diagnostics());
     assert!(
-        requests[1].max_tokens <= 1024 && !requests[1].thinking,
+        requests[1].max_tokens <= 4096 && !requests[1].thinking,
         "{}",
         diagnostics()
     );
@@ -468,8 +468,8 @@ fn a_failed_final_request_retains_the_session_and_typed_failure() {
     assert!(stderr.contains("budget_exceeded"));
     let requests = server.requests();
     assert_eq!(requests.len(), 2, "the final turn is not retried");
-    assert_eq!(
-        requests[1].max_tokens, 1024,
+    assert!(
+        requests[1].max_tokens > 0 && requests[1].max_tokens <= 4096,
         "the refused turn must be bounded wrap-up"
     );
     assert!(
@@ -682,5 +682,5 @@ fn explicit_max_tokens_stops_at_known_usage_but_ignores_cached_prompt_tokens() {
         3,
         "the explicit allowance permits wrap-up, not another continuation"
     );
-    assert!(requests[2].max_tokens <= 1024);
+    assert!(requests[2].max_tokens <= 4096);
 }

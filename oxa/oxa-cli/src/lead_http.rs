@@ -118,8 +118,24 @@ pub fn serve(
     authorize: impl Fn(&TcpStream, &Request<'_>) -> bool + Send + Sync + 'static,
     render: impl Fn(Page, bool) -> String + Send + Sync + 'static,
 ) -> std::io::Result<()> {
-    serve_fixed(listener, authorize, render, None, None, None)
+    serve_fixed(listener, authorize, render, None, None, None, None)
 }
+
+/// The authenticated live route `/events/live` (#1366): a change fingerprint the
+/// caller derives from one observation, and the digest of the serving executable so a
+/// replaced binary makes the page reload. Without it the route does not exist and the
+/// page keeps its polling fallback.
+pub(crate) struct Live {
+    pub fingerprint: Box<dyn Fn() -> u64 + Send + Sync>,
+    pub running_sha256: Option<String>,
+    /// How often the fingerprint is compared (one second in service).
+    pub poll: Duration,
+}
+
+/// A live stream ends after this long; the client's normal rotation reconnects.
+const LIVE_LIFETIME: Duration = Duration::from_secs(300);
+const LIVE_KEEP_ALIVE: Duration = Duration::from_secs(15);
+const LIVE_WRITE: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct FixedForm {
@@ -129,7 +145,16 @@ pub(crate) struct FixedForm {
 
 pub(crate) enum OwnerSubmission {
     Message(String),
+    /// A message from the attached-session form, with the full id of the session the page was
+    /// rendered for. The service refuses it when the page's target has since changed.
+    AttachedMessage {
+        session: String,
+        text: String,
+    },
     Confirm(String),
+    /// The owner's choice of a running session to attach the page to (`Some(id)`), or back to
+    /// the start-up target (`None`). The id is only a lookup key into the live session list.
+    Attach(Option<String>),
     /// The owner's answer to one approval request. It never enters the chat turn.
     Approve {
         id: String,
@@ -152,7 +177,9 @@ pub(crate) fn serve_fixed(
     form: Option<FixedForm>,
     owner: Option<OwnerForm>,
     refusals: Option<RefusalLog>,
+    live: Option<Live>,
 ) -> std::io::Result<()> {
+    let live = live.map(Arc::new);
     if !listener.local_addr()?.ip().is_loopback() {
         return Err(std::io::ErrorKind::PermissionDenied.into());
     }
@@ -168,6 +195,7 @@ pub(crate) fn serve_fixed(
         let form = form.clone();
         let owner = owner.clone();
         let refusals = refusals.clone();
+        let live = live.clone();
         std::thread::spawn(move || {
             let _slot = slot;
             let _ = connection_fixed(
@@ -177,6 +205,7 @@ pub(crate) fn serve_fixed(
                 form.as_ref(),
                 owner.as_ref(),
                 refusals.as_ref(),
+                live.as_deref(),
             );
         });
     }
@@ -190,6 +219,26 @@ pub struct Request<'a> {
     /// The single raw Host authority. This is input to policy, never expected/proven authority.
     pub authority: &'a str,
     pub forwarded_login: Option<&'a str>,
+    /// The per-client token the request carries (`?t=`, bearer or cookie), when well-formed.
+    /// Input to policy only; the transport never judges it.
+    pub client_token: Option<&'a str>,
+    /// The token came in the `?t=` query: a valid one is exchanged for a cookie by redirect.
+    pub token_in_query: bool,
+    /// Set by the authorization closure to 401 when the refusal is the client token.
+    pub denied: std::cell::Cell<u16>,
+}
+
+/// Cookie that carries the lead client token after the first `?t=` visit.
+pub(crate) const TOKEN_COOKIE: &str = "oxa_lead";
+
+/// A client token is the base64url text the server minted: nothing else is carried or echoed.
+fn token_text(value: &str) -> Option<&str> {
+    (!value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+    .then_some(value)
 }
 
 /// Handle one accepted connection, authorizing before any fact read or page rendering.
@@ -200,7 +249,7 @@ pub fn connection(
     authorize: impl FnOnce(&TcpStream, &Request<'_>) -> bool,
     render: impl FnOnce(Page, bool) -> String,
 ) -> std::io::Result<()> {
-    connection_fixed(stream, authorize, render, None, None, None)
+    connection_fixed(stream, authorize, render, None, None, None, None)
 }
 
 fn connection_fixed(
@@ -210,6 +259,7 @@ fn connection_fixed(
     form: Option<&FixedForm>,
     owner: Option<&OwnerForm>,
     refusals: Option<&RefusalLog>,
+    live: Option<&Live>,
 ) -> std::io::Result<()> {
     let start = Instant::now();
     let bytes: Vec<u8>;
@@ -229,6 +279,7 @@ fn connection_fixed(
         Err(HeadError::TooLarge) => Err("431 Request Header Fields Too Large"),
         Err(_) => Err("400 Bad Request"),
     };
+    let mut set_cookie = String::new();
     let allowed = parsed
         .inspect_err(|status| {
             // Framing failures precede identity and any fact read: one fixed
@@ -264,7 +315,17 @@ fn connection_fixed(
             }
             // An identity refusal is reported by the caller's own authorization closure.
             if !authorize(&stream, &r) {
-                return Err("403 Forbidden");
+                return Err(if r.denied.get() == 401 {
+                    "401 Unauthorized"
+                } else {
+                    "403 Forbidden"
+                });
+            }
+            // The owner opened the printed URL: keep the token in a cookie, off the address bar.
+            if let (true, Some(token)) = (r.method == "GET" && r.token_in_query, r.client_token) {
+                set_cookie =
+                    format!("Set-Cookie: {TOKEN_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/\r\n");
+                return Ok((r.path, Some(r.path.to_string())));
             }
             let page = if post {
                 let scheme = form.map_or("https", |form| form.scheme);
@@ -383,8 +444,14 @@ fn connection_fixed(
             };
             Ok((r.path, page))
         });
+    // The live stream starts only after the same authorization as every other path.
+    if let (Ok((path, None)), Some(live)) = (&allowed, live) {
+        if *path == "/events/live" {
+            return stream_live(&mut stream, live, form.is_some() || owner.is_some());
+        }
+    }
     let location = match &allowed {
-        Ok((_, Some(target))) => format!("Location: {target}\r\n"),
+        Ok((_, Some(target))) => format!("Location: {target}\r\n{set_cookie}"),
         _ => String::new(),
     };
     let (status, kind, body) = match allowed {
@@ -414,6 +481,40 @@ fn connection_fixed(
         &[headers.as_bytes(), body.as_bytes()],
         Duration::from_secs(5),
     )
+}
+
+/// `text/event-stream` with no length: `retry` and one `lead-update` at once, another
+/// whenever the fingerprint changes, a keep-alive comment while quiet, and an end after
+/// [`LIVE_LIFETIME`]. Each write has its own deadline, so a stalled reader frees its slot.
+fn stream_live(stream: &mut TcpStream, live: &Live, has_form: bool) -> std::io::Result<()> {
+    let form_action = if has_form { "'self'" } else { "'none'" };
+    let referrer = if has_form { "same-origin" } else { "no-referrer" };
+    let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}\r\nReferrer-Policy: {referrer}\r\n\r\n");
+    let update = format!(
+        "event: lead-update\ndata: {{\"running_sha256\":{}}}\n\n",
+        live.running_sha256
+            .as_deref()
+            .map_or_else(|| "null".to_owned(), |digest| format!("\"{digest}\""))
+    );
+    write_response(
+        stream,
+        &[headers.as_bytes(), b"retry: 5000\n", update.as_bytes()],
+        LIVE_WRITE,
+    )?;
+    let (began, mut quiet, mut last) = (Instant::now(), Instant::now(), (live.fingerprint)());
+    while began.elapsed() < LIVE_LIFETIME {
+        std::thread::sleep(live.poll);
+        let now = (live.fingerprint)();
+        if now != last {
+            last = now;
+            quiet = Instant::now();
+            write_response(stream, &[update.as_bytes()], LIVE_WRITE)?;
+        } else if quiet.elapsed() >= LIVE_KEEP_ALIVE {
+            quiet = Instant::now();
+            write_response(stream, &[b": keep-alive\n\n"], LIVE_WRITE)?;
+        }
+    }
+    Ok(())
 }
 
 fn write_response(stream: &mut TcpStream, parts: &[&[u8]], budget: Duration) -> std::io::Result<()> {
@@ -448,6 +549,8 @@ struct Fields<'a> {
     origin: Option<&'a str>,
     fetch_site: Option<&'a str>,
     kind: Option<&'a str>,
+    bearer: Option<&'a str>,
+    cookie: Option<&'a str>,
     length: usize,
 }
 
@@ -472,22 +575,37 @@ fn fixed_target(bytes: &[u8], expected: &str) -> Result<String, Rejected> {
 }
 
 fn owner_submission(bytes: &[u8], expected: &str) -> Result<OwnerSubmission, Rejected> {
-    let (mut csrf, mut input) = (None, None);
+    let (mut csrf, mut input, mut session) = (None, None, None);
     for field in std::str::from_utf8(bytes).map_err(|_| Rejected::Body)?.split('&') {
         let (key, value) = field.split_once('=').ok_or(Rejected::Body)?;
         match key {
             "csrf" if csrf.replace(value).is_none() => {}
-            "message" | "proposal_id" if input.replace((key, value)).is_none() => {}
+            "session" if session.replace(value).is_none() => {}
+            "message" | "proposal_id" | "attach" if input.replace((key, value)).is_none() => {}
             _ => return Err(Rejected::Body),
         }
     }
     if csrf != Some(expected) {
         return Err(Rejected::Csrf);
     }
-    match input.ok_or(Rejected::Body)? {
-        ("message", value) => decode_message(value)
-            .map(OwnerSubmission::Message)
-            .ok_or(Rejected::Body),
+    let input = input.ok_or(Rejected::Body)?;
+    if session.is_some() && input.0 != "message" {
+        return Err(Rejected::Body);
+    }
+    match input {
+        ("message", value) => {
+            let text = decode_message(value).ok_or(Rejected::Body)?;
+            match session {
+                None => Ok(OwnerSubmission::Message(text)),
+                Some(id) if id.len() <= 128 && crate::args::valid_session_id(id) => {
+                    Ok(OwnerSubmission::AttachedMessage {
+                        session: id.to_owned(),
+                        text,
+                    })
+                }
+                Some(_) => Err(Rejected::Body),
+            }
+        }
         ("proposal_id", value)
             if value.len() == 43
                 && value
@@ -495,6 +613,10 @@ fn owner_submission(bytes: &[u8], expected: &str) -> Result<OwnerSubmission, Rej
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')) =>
         {
             Ok(OwnerSubmission::Confirm(value.to_owned()))
+        }
+        ("attach", "") => Ok(OwnerSubmission::Attach(None)),
+        ("attach", value) if value.len() <= 128 && crate::args::valid_session_id(value) => {
+            Ok(OwnerSubmission::Attach(Some(value.to_owned())))
         }
         _ => Err(Rejected::Body),
     }
@@ -589,6 +711,8 @@ fn scan<'a>(headers: &Headers<'a>) -> Result<Scanned<'a>, &'static str> {
             || name.eq_ignore_ascii_case("origin") && fields.origin.replace(value).is_some()
             || name.eq_ignore_ascii_case("content-type") && fields.kind.replace(value).is_some()
             || name.eq_ignore_ascii_case("sec-fetch-site") && fields.fetch_site.replace(value).is_some()
+            || name.eq_ignore_ascii_case("authorization") && fields.bearer.replace(value).is_some()
+            || name.eq_ignore_ascii_case("cookie") && fields.cookie.replace(value).is_some()
         {
             return Err("400 Bad Request");
         }
@@ -627,12 +751,32 @@ fn request(bytes: &[u8], fixed: bool, owner: bool) -> Result<(Request<'_>, Field
     {
         return Err(BAD);
     }
+    // A `?t=<token>` query is the one query this layer takes off the path; the page router
+    // never sees it.
+    let (path, query) = match first.target.split_once("?t=") {
+        Some((path, token)) if first.method == "GET" => (path, token_text(token)),
+        _ => (first.target, None),
+    };
+    let bearer = fields
+        .bearer
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(token_text);
+    let cookie = fields.cookie.and_then(|value| {
+        value
+            .split(';')
+            .filter_map(|pair| pair.trim().split_once('='))
+            .find_map(|(name, value)| (name == TOKEN_COOKIE).then_some(value))
+            .and_then(token_text)
+    });
     Ok((
         Request {
             method: first.method,
-            path: first.target,
+            path,
             authority: authority.filter(|s| !s.is_empty()).ok_or(BAD)?,
             forwarded_login: login,
+            client_token: query.or(bearer).or(cookie),
+            token_in_query: query.is_some(),
+            denied: std::cell::Cell::new(403),
         },
         fields,
     ))
@@ -727,6 +871,7 @@ mod tests {
                     None,
                     Some(&owner),
                     Some(&refusals),
+                    None,
                 )
                 .unwrap();
             });
@@ -869,6 +1014,7 @@ mod tests {
                     None,
                     Some(&owner),
                     Some(&refusals),
+                    None,
                 )
                 .unwrap();
             });
@@ -982,6 +1128,74 @@ mod tests {
         }
     }
 
+    fn live_client(allowed: bool, live: Live) -> TcpStream {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        std::thread::spawn(move || {
+            let _ = connection_fixed(
+                server,
+                move |_, _| allowed,
+                |_, _| panic!("the live route renders nothing"),
+                None,
+                None,
+                None,
+                Some(&live),
+            );
+        });
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client
+            .write_all(b"GET /events/live HTTP/1.1\r\nHost: example.invalid\r\n\r\n")
+            .unwrap();
+        client
+    }
+
+    fn read_updates(client: &mut TcpStream, want: usize) -> String {
+        let (mut text, mut buffer) = (String::new(), [0u8; 1024]);
+        while text.matches("event: lead-update").count() < want {
+            let read = client.read(&mut buffer).unwrap();
+            assert!(read > 0, "stream ended early: {text}");
+            text.push_str(&String::from_utf8_lossy(&buffer[..read]));
+        }
+        text
+    }
+
+    #[test]
+    fn live_route_is_authorized_first_and_streams_changes_and_recovers_after_disconnect() {
+        use std::sync::atomic::AtomicU64;
+        let (reads, value) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicU64::new(1)));
+        let live = || {
+            let (reads, value) = (reads.clone(), value.clone());
+            Live {
+                fingerprint: Box::new(move || {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    value.load(Ordering::SeqCst)
+                }),
+                running_sha256: Some("a".repeat(64)),
+                poll: Duration::from_millis(20),
+            }
+        };
+        // Unauthorized: refused before the fingerprint is ever read.
+        let mut refused = live_client(false, live());
+        let mut reply = String::new();
+        refused.read_to_string(&mut reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        // Authorized: the first update at once, a second only after the fingerprint changes.
+        let mut client = live_client(true, live());
+        let first = read_updates(&mut client, 1);
+        assert!(first.contains("Content-Type: text/event-stream"), "{first}");
+        assert!(!first.contains("Content-Length"), "{first}");
+        assert!(first.contains("retry: 5000"), "{first}");
+        assert!(first.contains(&format!("data: {{\"running_sha256\":\"{}\"}}", "a".repeat(64))));
+        value.store(2, Ordering::SeqCst);
+        read_updates(&mut client, 1);
+        // A client that went away gets a fresh stream with an event on reconnect.
+        drop(client);
+        let mut again = live_client(true, live());
+        read_updates(&mut again, 1);
+    }
+
     #[test]
     fn slow_reader_cannot_reset_the_total_response_write_budget() {
         use std::sync::atomic::AtomicBool;
@@ -1050,6 +1264,7 @@ mod approval_transport_tests {
                 None,
                 Some(&owner),
                 Some(&refusals),
+                None,
             )
             .unwrap();
         });
@@ -1147,6 +1362,7 @@ mod approval_transport_tests {
                 None,
                 None,
                 Some(&refusals),
+                None,
             )
             .unwrap();
         });
@@ -1161,5 +1377,51 @@ mod approval_transport_tests {
         handler.join().unwrap();
         assert!(reply.starts_with("HTTP/1.1 405"), "{reply}");
         assert_eq!(facts.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn owner_attach_field_is_exclusive_and_takes_only_session_ids() {
+        let parse = |body: &str| owner_submission(body.as_bytes(), "nonce");
+        assert!(matches!(
+            parse("csrf=nonce&attach=abc-123.x_y"),
+            Ok(OwnerSubmission::Attach(Some(id))) if id == "abc-123.x_y"
+        ));
+        assert!(matches!(
+            parse("csrf=nonce&attach="),
+            Ok(OwnerSubmission::Attach(None))
+        ));
+        for body in [
+            "csrf=nonce&attach=..%2Fx",
+            "csrf=nonce&attach=a/b",
+            "csrf=nonce&attach=-x",
+            "csrf=nonce&attach=a&message=b",
+            "csrf=nonce&attach=a&attach=b",
+        ] {
+            assert!(matches!(parse(body), Err(Rejected::Body)), "{body}");
+        }
+        assert!(matches!(parse("csrf=wrong&attach=a"), Err(Rejected::Csrf)));
+    }
+
+    #[test]
+    fn owner_message_may_name_its_session_and_nothing_else_may() {
+        let parse = |body: &str| owner_submission(body.as_bytes(), "nonce");
+        assert!(matches!(
+            parse("csrf=nonce&session=abc-123&message=hi"),
+            Ok(OwnerSubmission::AttachedMessage { session, text }) if session == "abc-123" && text == "hi"
+        ));
+        assert!(matches!(
+            parse("csrf=nonce&message=hi"),
+            Ok(OwnerSubmission::Message(text)) if text == "hi"
+        ));
+        for body in [
+            "csrf=nonce&session=..%2Fx&message=hi",
+            "csrf=nonce&session=&message=hi",
+            "csrf=nonce&session=a&session=a&message=hi",
+            "csrf=nonce&session=a&attach=a",
+            "csrf=nonce&session=a&proposal_id=x",
+            "csrf=nonce&session=a",
+        ] {
+            assert!(matches!(parse(body), Err(Rejected::Body)), "{body}");
+        }
     }
 }

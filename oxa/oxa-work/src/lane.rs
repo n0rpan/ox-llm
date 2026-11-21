@@ -513,7 +513,7 @@ pub(crate) fn accept(
             "PR #{number} is in the merge queue; use a new task branch for follow-up lane work"
         ));
     }
-    crate::publish::push_head(policy, repo, head, &task.branch, lock)?;
+    crate::publish::push_with_receipt(policy, repo, head, &task.branch, lock, &mut None)?;
     let started = Instant::now();
     let run = wait_with(
         || {

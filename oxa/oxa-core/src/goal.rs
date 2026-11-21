@@ -1,5 +1,5 @@
 //! Session-local goal controls; no worker, timer thread or external scheduler.
-use oxa_proto::{Access, Exposure, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Value};
+use oxa_proto::{Access, Exposure, Mode, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Value};
 use oxa_session::{Goal, GoalBudget, GoalStatus, SessionRef};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -527,9 +527,23 @@ impl Tool for Control {
     fn default_selected(&self) -> bool {
         self.spec.name == "wait"
     }
-    fn access(&self, args: &Value, _: &ToolCtx) -> Result<Vec<Access>, String> {
+    fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
         validate(&self.spec.name, args)?;
-        Ok(vec![])
+        // A wait on a GitHub probe is network access (#1919): plan denies it and ask asks once
+        // per host; workspace, auto and yolo are unchanged (the same convention as web search).
+        let mut out: Vec<Access> = Vec::new();
+        if self.spec.name == "wait" && matches!(cx.mode, Mode::Ask | Mode::Plan) {
+            if let Some(until) = args.get("until") {
+                for hook in &self.hooks {
+                    for access in hook.poll_access(until) {
+                        if !out.contains(&access) {
+                            out.push(access);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
     fn run(&self, args: &Value, cx: &ToolCtx, live: &mut dyn FnMut(&str)) -> ToolOutput {
         if let Err(e) = validate(&self.spec.name, args) {
@@ -627,7 +641,7 @@ impl Control {
                 cx.cancel,
                 &self.interrupt,
                 &self.shared.wait_wake,
-                remaining.min(if until["kind"] == "job_done" {
+                remaining.min(if matches!(kind, "job_done" | "worker_done") {
                     Duration::from_millis(250).min(self.wait.poll)
                 } else {
                     self.wait.poll
@@ -989,6 +1003,35 @@ pub(crate) fn failure_backoff(
     }
     let delay = backoff_delay(base, failures);
     goal.time_allows_wait(delay).then_some(delay)
+}
+
+/// `oxa.goal.followUpMaxWaitSeconds` default: how long a follow-up waits behind a pursuing goal
+/// that keeps calling tools before a tool boundary delivers it.
+const FOLLOW_UP_MAX_WAIT_SECS: u32 = 300;
+
+/// Whether the queued follow-ups of a pursuing goal are delivered at this tool boundary (#2183).
+/// A follow-up normally waits until the run stops or a `wait` is woken, but a goal run may do
+/// neither for hours. `seen` is the first tool boundary that found the follow-up queued; once
+/// `oxa.goal.followUpMaxWaitSeconds` (user setting, `0` = keep waiting for the stop) has passed
+/// since then, it is due. Outside a pursuing goal a follow-up keeps its end-of-turn delivery.
+pub(crate) fn follow_up_due(st: &crate::SessionState, seen: &mut Option<std::time::Instant>) -> bool {
+    let pursuing = st
+        .goal
+        .as_ref()
+        .is_some_and(|goal| goal.engaged() && goal.pursuing());
+    if !pursuing || !st.shared.has_follow_up() {
+        *seen = None;
+        return false;
+    }
+    let limit = st
+        .settings
+        .user_u32("oxa.goal.followUpMaxWaitSeconds", FOLLOW_UP_MAX_WAIT_SECS);
+    let since = *seen.get_or_insert_with(std::time::Instant::now);
+    if limit == 0 || since.elapsed() < Duration::from_secs(u64::from(limit)) {
+        return false;
+    }
+    *seen = None;
+    true
 }
 
 /// `base` seconds doubled `steps` times, capped at 900 s unless `base` itself is longer. The one

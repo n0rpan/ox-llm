@@ -391,29 +391,52 @@ fn an_agent_process_can_use_the_owner_confirm_broker() {
     lane_task(&env);
     let path = configure(&env);
     env.write("home/lane-pass", "");
-    let broker_dir = env.home().join("confirm-broker");
-    let broker = oxa_core::owner_confirm::OwnerConfirm::start(
-        &broker_dir,
-        oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Yolo),
+    // A broker in the test harness would be rejected: it must be in the actual oxa
+    // ancestor, or pinned outside the sandbox. Let a real session launch the agent child.
+    let worker = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
+    let record_path = env.tmp().join("broker-lane-record.json");
+    // Host bash can clear XDG and test settings. Restore the isolated fixture environment
+    // without replacing the broker socket or agent markers exported by the session.
+    let child_env = env
+        .envs(&worker.url())
+        .into_iter()
+        .filter(|(key, _)| key != "PATH")
+        .chain(std::iter::once(("PATH".into(), path.clone())))
+        .map(|(key, value)| format!("{key}={}", oxa_proto::sh_quote(&value)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command = serde_json::json!({"command": format!(
+        "{child_env} exec {} work ../tasks.json > {}",
+        oxa_proto::sh_quote(env!("CARGO_BIN_EXE_oxa")),
+        oxa_proto::sh_quote(&record_path.to_string_lossy()),
+    )});
+    let owner = oxa_fake::FakeServer::start(
+        vec![
+            ScriptTurn::tool("lane", "bash", &command.to_string()),
+            ScriptTurn::text("done"),
+        ],
+        oxa_fake::FakeOpts::default(),
     )
     .unwrap();
-    let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
-        .args(["work", "../tasks.json"])
+        .args(["--yolo", "--no-session", "--mode", "json", "Run the lane task"])
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(env.envs(&owner.url()))
         .env("PATH", path)
-        .env("OXA_CODING_AGENT", "1")
-        .env(oxa_core::owner_confirm::SOCK_ENV, broker.sock_path())
         .output()
         .unwrap();
-    let record: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&out.stderr)));
-    assert_eq!(record["outcome"], "done", "{record}");
-    let approvals = broker.take_records();
-    assert_eq!(approvals.len(), 1);
-    assert_eq!(approvals[0].verdict, oxa_core::owner_confirm::Verdict::Yes);
+    let events = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{events}\n{stderr}");
+    let record: serde_json::Value = serde_json::from_slice(&fs::read(&record_path).unwrap_or_default())
+        .unwrap_or_else(|error| panic!("{error}: {events}\n{stderr}"));
+    assert_eq!(record["outcome"], "done", "{record}\n{events}\n{stderr}");
+    assert_eq!(
+        events.matches("owner confirm yes (yolo)").count(),
+        1,
+        "{events}\n{stderr}"
+    );
 }
 
 #[test]

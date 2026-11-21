@@ -25,6 +25,9 @@ pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt, now: u6
         let _ = write!(html, "<p>Snapshot observations unavailable for this prompt. This question needs a {needed} observation; none reached this page.</p>");
     }
     html.push_str("<p class=muted>From the snapshot · 0 tokens</p></article></div></section>");
+    if let Some(list) = &view.sessions {
+        super::session::render_list(html, list, now);
+    }
     if let Some(attached) = &view.attached {
         super::session::render(html, attached);
     } else if let Some(owner) = &view.owner_chat {
@@ -63,6 +66,10 @@ pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt, now: u6
             html.push_str("</article>");
         }
         html.push_str("</section>");
+    } else if view.sessions.is_some() {
+        html.push_str(
+            "<p>No session is attached. Choose a running session above to view it and send messages.</p>",
+        );
     } else {
         html.push_str("<p>Messaging unavailable. This page supports snapshot questions only.</p>");
     }

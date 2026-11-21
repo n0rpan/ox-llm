@@ -115,6 +115,8 @@ fn idle_worker(board: &Board, now: u64) -> Option<String> {
 /// asks stays the caller's job against the goal store's revision.
 #[derive(Default)]
 struct Stuck {
+    /// Workers whose process is gone or stopped: never an assignee.
+    gone: BTreeSet<String>,
     signals: Vec<String>,
     report: Vec<Value>,
     escalations: Vec<OpenGoalAsk>,
@@ -125,11 +127,25 @@ impl Stuck {
         self.signals.is_empty()
     }
 
+    /// A candidate whose binding is Dead or Stopped is not an owner: the signal says so and
+    /// the row gets none, so the existing no-worker escalation fires (#1382).
+    fn live_assignee(&mut self, candidate: Option<String>) -> Option<String> {
+        let name = candidate?;
+        if !self.gone.contains(&name) {
+            return Some(name);
+        }
+        let signal = format!("worker_gone:{name}");
+        if !self.signals.contains(&signal) {
+            self.signals.push(signal);
+        }
+        None
+    }
+
     /// An idle worker takes a red main when one exists; otherwise the owner is
     /// the assignee of last resort and the pass escalates (#1451).
     fn main_red(&mut self, board: &Board, revision: u64, now: u64) {
         self.signals.push("main_red".into());
-        match idle_worker(board, now) {
+        match self.live_assignee(idle_worker(board, now)) {
             Some(worker) => self.report.push(serde_json::json!({
                 "subject": "main",
                 "reason": "required checks on main failed",
@@ -159,7 +175,7 @@ impl Stuck {
             .collect();
         for entry in blocking {
             let assignee = if entry.action == Action::FixRequiredCi {
-                match assignee(board, entry, now) {
+                match self.live_assignee(assignee(board, entry, now)) {
                     Some(worker) => Some(worker),
                     None => {
                         self.escalations.push(OpenGoalAsk {
@@ -258,7 +274,10 @@ impl Stuck {
     /// at its exact head is also escalated: it is the owner's to dequeue, and
     /// the signal ending on a later pass is the recorded outcome (#1673).
     fn review_held(&mut self, obs: &Observation, revision: u64) {
+        // Outdated-only threads do not hold landing (the landing plan holds on
+        // `current > 0`); an incomplete page stays reported, never as zero.
         let mut held = obs.thread_holds();
+        held.retain(|h| h.hold.current > 0 || h.hold.incomplete);
         if held.is_empty() {
             return;
         }
@@ -273,16 +292,18 @@ impl Stuck {
         self.signals.push("review_held".into());
         let (now, budget) = (obs.now_ms / 1000, REPORT_ROWS.saturating_sub(self.report.len()));
         for h in held.iter().take(budget) {
-            let owner = obs
+            let candidate = obs
                 .board
                 .entries
                 .iter()
                 .find(|entry| entry.number == h.number)
                 .and_then(|entry| assignee(&obs.board, entry, now));
+            let owner = self.live_assignee(candidate);
             self.report.push(serde_json::json!({
                 "pr": h.number,
                 "head": h.head,
                 "reason": "unresolved review threads",
+                "held": true,
                 "threads": h.hold.unresolved,
                 "current": h.hold.current,
                 "oldest_thread_age_secs": (h.hold.oldest_at > 0).then(|| now.saturating_sub(h.hold.oldest_at)),
@@ -291,14 +312,14 @@ impl Stuck {
                 "assignee": owner,
             }));
         }
-        for h in held.iter().filter(|h| h.queued) {
+        for h in held.iter().filter(|h| h.queued && h.hold.current > 0) {
             self.signals.push(format!("queued_findings:{}", h.number));
             self.escalations.push(OpenGoalAsk {
                 id: format!("lead:stuck:queued-findings:{}", h.number),
                 revision,
                 question: format!(
-                    "PR #{} is in the merge queue at {} with {} unresolved review threads ({} current). Dequeue it so the findings are addressed.",
-                    h.number, h.head, h.hold.unresolved, h.hold.current
+                    "PR #{} is in the merge queue at {} with {} current unresolved review threads. Dequeue it so the findings are addressed.",
+                    h.number, h.head, h.hold.current
                 ),
             });
         }
@@ -310,7 +331,10 @@ impl Stuck {
 /// record never manufactures an escalation. A standing ask is its own action, so
 /// it is reported through `asks` and never re-escalated here.
 fn stuck_signals(obs: &Observation, revision: u64) -> Stuck {
-    let mut stuck = Stuck::default();
+    let mut stuck = Stuck {
+        gone: obs.gone_workers().into_iter().map(str::to_owned).collect(),
+        ..Stuck::default()
+    };
     if obs.fresh() {
         let (board, alarms, now) = (&obs.board, &obs.alarms, obs.now_ms / 1000);
         if alarms.main_red == Some(true) {
@@ -358,8 +382,13 @@ fn tick(binding: &LeadOwnerBinding, obs: &Observation) -> Result<Value, OxaError
         // Signals with neither a report row that has an owner nor an escalation
         // (a stall whose only rows are ready PRs) leave the pass free to propose
         // the next Board action instead of ending in a silent assignment (#2088).
-        let acted =
-            !stuck.escalations.is_empty() || stuck.report.iter().any(|row| row["assignee"].is_string());
+        // A review_held row is information, not an assignment: it never ends the
+        // pass, or the proposal loop starves on the normal lab state.
+        let acted = !stuck.escalations.is_empty()
+            || stuck
+                .report
+                .iter()
+                .any(|row| row["held"] != true && row["assignee"].is_string());
         let attach = |mut value: Value| {
             if !stuck.empty() {
                 value["stuck"] = serde_json::json!({
@@ -500,7 +529,11 @@ pub(crate) fn run(
     let mut previous = None;
     loop {
         let (binding, uid) = binding(dirs, cwd, env)?;
-        let obs = Observation::read(board_path, situation_path, uid, oxa_proto::time::now_ms());
+        let obs = Observation::read(board_path, situation_path, uid, oxa_proto::time::now_ms()).with_workers(
+            &dirs.agent_dir,
+            &dirs.sessions_dir,
+            binding.session_id(),
+        );
         let mut state = match tick(&binding, &obs) {
             Ok(state) => state,
             Err(error) if !once && error.code == codes::BUSY => {
