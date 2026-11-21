@@ -1,0 +1,214 @@
+name: desk
+# The desktop app (oxa-desk): the nested workspace oxa/desk/, which no other job compiles.
+# - Pull requests, the merge queue and main: checks.yml calls this workflow as its `desk` job when
+#   the classifier sets `desk` (tools/ci/paths.py: oxa/desk/**, this file, tools/ci/desk_contract.py,
+#   and whatever counts as "everything changed"). The `gate` aggregate covers it; it is not a
+#   required check of its own, because a path-filtered required check would hang every other PR.
+#   A change to shared oxa crates alone does not set `desk` on its PR or in the queue: the run on
+#   main, after the merge, is the first that compiles the desktop against it.
+# - Manual dispatch: `mode` picks the same jobs; `lock` writes oxa/desk/Cargo.lock.
+# Modes: `pr` is the whole job set (rustfmt, the contract lint, clippy with warnings denied, the
+# tests, the `oxa-desk --version` comparison). `queue-check` only compiles (`cargo check`): it is for
+# queued changes to the oxa crates the desktop depends on, so main cannot break it silently.
+# The lock file: oxa/desk/Cargo.lock is never written by hand and never on a developer machine.
+# When it is missing or stale, `desk check` writes it (seeded from oxa/Cargo.lock when missing, so
+# shared crates keep oxa's versions), uploads it as the artifact `desk-cargo-lock` and fails; the
+# architect commits that file. A dispatch with `lock` does the same on request and goes on.
+# Speed: both jobs restore a cache keyed by the desk manifests, the lock file and the compiler
+# (tools/ci/rust_cache_key.py); only main saves, as in checks.yml. Each job writes its duration and
+# its wait for a runner to the job summary (tools/ci/lane_queue.py). Target: 6 minutes warm, 15 cold.
+# Hosted ARM runners, actions pinned by SHA, read-only token, no secrets.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: pr (everything) or queue-check (cargo check only)
+        type: string
+        default: pr
+      lock:
+        description: Write oxa/desk/Cargo.lock and upload it as the artifact desk-cargo-lock
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: pr (everything) or queue-check (cargo check only)
+        type: choice
+        options: [pr, queue-check]
+        default: pr
+      lock:
+        description: Write oxa/desk/Cargo.lock and upload it as the artifact desk-cargo-lock
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desk-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'merge_group' }}
+
+env:
+  RUSTUP_TOOLCHAIN: "1.99.1"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  MANIFEST: oxa/desk/Cargo.toml
+
+jobs:
+  check:
+    name: desk check
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      # Read-only: this job's own start time, for the summary line.
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rustup is preinstalled on the hosted image)
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --component rustfmt --no-self-update
+      - name: Compiler and source cache key
+        id: rust-key
+        run: python3 -I tools/ci/rust_cache_key.py --variant desk-check oxa/desk
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/desk/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        # As in checks.yml: a restored target/ may hold the oxa and desk crates built from older
+        # sources. Touching the tracked sources rebuilds them; third-party crates stay cached.
+        run: find oxa -path '*/target' -prune -o -type f -exec touch -c {} +
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Lock file is current
+        id: lock
+        env:
+          WRITE: ${{ inputs.lock }}
+        run: |
+          if [ "$WRITE" != true ] && cargo metadata --locked --manifest-path "$MANIFEST" --format-version 1 > /dev/null; then
+            echo "state=current" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Missing: start from oxa's lock file, so every crate oxa already pins keeps that version.
+          # Cargo drops what the desk workspace does not use and adds what only it needs.
+          [ -f oxa/desk/Cargo.lock ] || cp oxa/Cargo.lock oxa/desk/Cargo.lock
+          cargo metadata --manifest-path "$MANIFEST" --format-version 1 > /dev/null
+          echo "state=written" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.lock.outputs.state == 'written'
+        with:
+          name: desk-cargo-lock
+          path: oxa/desk/Cargo.lock
+          if-no-files-found: error
+          retention-days: 7
+      - name: A stale lock file fails the job
+        if: steps.lock.outputs.state == 'written' && !inputs.lock
+        run: |
+          echo "::error::oxa/desk/Cargo.lock is missing or stale. Commit the artifact desk-cargo-lock of this run."
+          exit 1
+      - name: rustfmt
+        run: cargo fmt --manifest-path "$MANIFEST" -p oxa-desk-core -p oxa-desk -p oxa-desk-probe -- --check
+      - name: Desk contract
+        run: python3 -I tools/ci/desk_contract.py
+      - name: clippy (all targets, warnings denied)
+        if: inputs.mode != 'queue-check'
+        run: cargo clippy --locked --manifest-path "$MANIFEST" --workspace --all-targets -- -D warnings
+      - name: cargo check (queue-check)
+        if: inputs.mode == 'queue-check'
+        run: cargo check --locked --manifest-path "$MANIFEST" --workspace --all-targets
+      - name: Duration and runner wait
+        if: always()
+        env:
+          # The script comes from the checkout. On a PR from a fork that is the fork's file, and a queue
+          # entry may carry one too: both get no token and ask the public API without one.
+          GH_TOKEN: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
+        run: python3 -I tools/ci/lane_queue.py --line --job-name "desk check"
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see checks.yml).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/desk/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
+
+  test:
+    name: desk test
+    # Not in queue-check mode (compile only), and not on a lock dispatch: the new lock file exists
+    # only in the other job until it is committed.
+    if: inputs.mode != 'queue-check' && !inputs.lock
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      # Read-only: this job's own start time, for the summary line.
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rustup is preinstalled on the hosted image)
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Compiler and source cache key
+        id: rust-key
+        run: python3 -I tools/ci/rust_cache_key.py --variant desk-test oxa/desk
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/desk/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        run: find oxa -path '*/target' -prune -o -type f -exec touch -c {} +
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pinned nextest
+        run: tools/ci/install_nextest.sh "$RUNNER_TEMP/nextest"
+      - name: Tests
+        run: cargo nextest run --locked --manifest-path "$MANIFEST" --workspace
+      - name: oxa-desk is an oxa (same --version line; only a --desk- flag leaves the oxa path)
+        run: |
+          cargo build --locked --manifest-path "$MANIFEST" -p oxa-desk
+          desk="$PWD/oxa/desk/target/debug/oxa-desk"
+          home=$(mktemp -d)
+          want="oxa $(python3 -I tools/ci/desk_contract.py version)"
+          got=$(env -i PATH="$PATH" HOME="$home" "$desk" --version)
+          echo "oxa-desk --version: $got" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$got" != "$want" ]; then
+            echo "::error::oxa-desk --version printed '$got'; oxa prints '$want'"
+            exit 1
+          fi
+          # There is no window yet: asking for one must fail, not start an oxa session.
+          if env -i PATH="$PATH" HOME="$home" "$desk" --desk-smoke < /dev/null; then
+            echo "::error::oxa-desk --desk-smoke succeeded although no window exists"
+            exit 1
+          fi
+      - name: Duration and runner wait
+        if: always()
+        env:
+          # The script comes from the checkout. On a PR from a fork that is the fork's file, and a queue
+          # entry may carry one too: both get no token and ask the public API without one.
+          GH_TOKEN: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
+        run: python3 -I tools/ci/lane_queue.py --line --job-name "desk test"
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see checks.yml).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/desk/target
+          key: ${{ steps.rust-key.outputs.prefix }}main

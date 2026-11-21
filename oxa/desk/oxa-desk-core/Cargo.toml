@@ -1,0 +1,18 @@
+# Architect-owned (see ../Cargo.toml). Need a dependency? Report `needs-dep`.
+[package]
+name = "oxa-desk-core"
+description = "oxa-desk store and view models: everything the desktop knows about oxa, with no GPUI type"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "oxa_desk_core"
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,50 @@
+# oxa-desk: the desktop app. A workspace of its own, nested in oxa/, with its own Cargo.lock:
+# the desk crates are not members of the oxa workspace, so GPU code never enters oxa/Cargo.lock,
+# the oxa jobs never compile it and a headless box never builds it. Built and tested by
+# .github/workflows/desk.yml only.
+# Architect-owned, like every manifest and the lock file below this directory: only wave-0 PRs
+# change them (AGENTS.md, "Desktop app slices"). A slice that needs a dependency reports `needs-dep`.
+# tools/ci/desk_contract.py checks what must stay equal to oxa/Cargo.toml: the version, the lints,
+# the profiles and the version of every crate both lock files hold.
+[workspace]
+resolver = "2"
+members = ["oxa-desk-core", "oxa-desk", "oxa-desk-probe"]
+
+[workspace.package]
+version = "0.2.1"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+oxa-desk-core = { path = "oxa-desk-core" }
+# The oxa crates, by path inside oxa/ (the product isolation scan allows nothing else). oxa-cli is
+# built with the features of the release `oxa` binary (its defaults).
+oxa-cli = { path = "../oxa-cli" }
+oxa-config = { path = "../oxa-config" }
+oxa-proto = { path = "../oxa-proto" }
+oxa-web = { path = "../oxa-web" }
+oxc-local = { path = "../oxc-local" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+
+# Profiles: copies of oxa/Cargo.toml (a nested workspace does not inherit them). `oxa-desk` is an
+# oxa, so it is built the way oxa is, panic = "unwind" included (contained panics, A1/A2).
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 4
+panic = "unwind"
+strip = true
+
+[profile.ci]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
+incremental = false

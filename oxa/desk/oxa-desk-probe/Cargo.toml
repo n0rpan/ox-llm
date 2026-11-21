@@ -1,0 +1,18 @@
+# Architect-owned (see ../Cargo.toml). Need a dependency? Report `needs-dep`.
+[package]
+name = "oxa-desk-probe"
+description = "Measurement harness of the desktop app (the prototype gate and the CI budget). Never shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "oxa-desk-probe"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

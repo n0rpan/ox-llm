@@ -1,0 +1,30 @@
+# Architect-owned (see ../Cargo.toml). Need a dependency? Report `needs-dep`.
+[package]
+name = "oxa-desk"
+description = "The oxa desktop app: the oxa binary plus a window"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "oxa_desk"
+path = "src/lib.rs"
+
+[[bin]]
+name = "oxa-desk"
+path = "src/main.rs"
+
+[dependencies]
+oxa-desk-core.workspace = true
+# The shim: the crates `oxa-cli/src/main.rs` calls. Named in `src/main.rs` only; the views reach
+# oxa through oxa-desk-core (tools/ci/desk_contract.py).
+oxa-cli.workspace = true
+oxa-config.workspace = true
+oxa-proto.workspace = true
+oxa-web.workspace = true
+oxc-local.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,1 @@
+- Desktop app (`oxa-desk`): the empty crates exist in their own workspace (`oxa/desk/`) with their own CI job. `oxa-desk` already runs every `oxa` command; it has no window yet and is not part of any release. The `oxa` build and its lock file are unchanged.
