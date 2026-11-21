@@ -68,6 +68,19 @@ A shell alias makes yolo quick to start:
 $ alias yoxa='oxa --yolo'
 ```
 
+### Dangerous-command rules
+
+Before a command runs in standard or auto mode, oxa reads what it does: the program after launchers (`command`, `env`, `exec`, `nice`), the directory chain of `env -C`, the files it writes and reads, and whether it prints a login token. The built-in rules are approval prompts, not a sandbox, and yolo never asks.
+
+Two of them cover what a plain write rule missed (#1680):
+
+- `credential-read` asks for any command that names a path on the deny-list (`~/.ssh`, `~/.config/gh/hosts.yml`, the agent directory), prints a token (`gh auth token`, `gh auth status --show-token`, `git credential fill`, `secret-tool lookup`, `security find-generic-password`, `gcloud auth print-access-token`, `aws configure export-credentials`, `op read`) or reads another process's environment (`/proc/<pid>/environ`, `curl -d @file`, `tar`, `base64` alike). Add your own token-printing commands with `+cmd:<words>` in `oxa.approval.dangerous`.
+- `git-hook-write` asks for a write to a git hook, `.git/config`, `config.worktree`, `commondir`, the `.git` pointer file of a worktree, or `git config` (`-c`) setting `core.hooksPath`, `core.sshCommand` or `core.gitProxy`.
+
+Other classifications tightened by #1680: a recursive delete (`rm -rf`, `find -delete`) of a directory that holds a credential or agent path is a `credential-write`; `mv` checks the effective `<dir>/<name>`; attached downloader options (`-oFILE`, `-PDIR`, `-OFILE`) are write targets; device aliases such as `/dev/disk/by-id/...` are disk writes; a command name with a glob (`/bin/r?`) is `eval-dynamic`; SQL in a heredoc body or here-string is `sql-drop`.
+
+A saved unattended approval never covers a command whose input can change after you answered: an input redirect, `xargs`, or a pipeline fed by anything but a literal `echo`/`printf` (`cat keys | tee -a ~/.ssh/authorized_keys`).
+
 ## The bash sandbox
 
 On Linux, unattended non-yolo bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled for those runs and oxa says so at start-up. Interactive CLI bash runs without an OS sandbox by design and relies on dangerous-command approval plus the in-process guards; a missing or unusable `bwrap` does not disable model bash for an attended interactive session unless the owner requested the OS sandbox. Oxa warns at start-up; plan commands and non-yolo project hooks still require `bwrap`. Yolo never uses `bwrap`, including for workers, subagents, headless sessions and other unattended work it starts. This includes ownerless RPC and headless runs that start or resume a pursuing goal. An interactive run can opt into it with `--sandbox` or `oxa.sandbox.interactive`. Exec hooks keep their dedicated sandbox and no-network policy except under yolo. Host bash uses a cleared environment with toolchain variables. Network-disabled model bash also masks host runtime IPC.
