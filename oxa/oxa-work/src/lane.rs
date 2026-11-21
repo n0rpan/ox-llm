@@ -516,7 +516,7 @@ pub(crate) fn accept(
     proof.verify(policy, head, base)?;
     let remote = crate::publish::origin_push_url(policy, repo)?;
     protected_controls_unchanged(policy, repo, base, head, &remote)?;
-    base_branch_controls_unchanged(policy, repo, &task.base, head, &remote)?;
+    base_branch_controls_unchanged(policy, repo, &task.base, head)?;
     let token = crate::policy_token(policy, repo)?;
     let token = token.as_deref();
     let repository = crate::publish::origin_repository(repo, gh, policy, token, lock, &remote)?;
