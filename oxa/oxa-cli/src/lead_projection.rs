@@ -295,7 +295,7 @@ pub fn render(html: &mut String, view: &View<'_>, now: u64) {
     };
     let _ = write!(
         html,
-        "<p class=muted>{} observed main merges in 12 h · {last_merge} · two merges between samples count once</p>",
+        "<p class=muted>{} observed main merges in 12 h (last bar: the hour in progress) · {last_merge} · two merges between samples count once</p>",
         throughput.observed
     );
     if throughput.main_samples == 0 {

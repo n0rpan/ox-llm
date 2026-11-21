@@ -67,7 +67,8 @@ service already reads. It adds no GitHub call, no timer and no per-tab work: the
 projection is a pure function of the sampled records, computed once per observation.
 
 - **Throughput.** Twelve hourly bars of verified main merges, oldest first, with the
-  current (partial) hour last, and a dashed line at the owner's target. The headline
+  current (partial) hour last — the card names that bar as the hour in progress — and
+  a dashed line at the owner's target. The headline
   compares the last full hour against `oxa.lead.target.merges_per_hour` (user settings
   only, default 10; restart the service after changing it). The merge history comes
   from the log itself: each sample records the main head, and a head advance whose
@@ -87,8 +88,10 @@ projection is a pure function of the sampled records, computed once per observat
   counts locally accepted work the runner situation has not published as a PR.
 - **Each count degrades on its own.** A source the sample does not carry shows `–`
   with one line below the group naming what is missing and why; an observed empty
-  source is a real zero. A transient board read failure keeps the whole card with the
-  last good sample, like the rest of the page.
+  source is a real zero. When any PR's body or label evidence in a sample is
+  truncated, the whole `Restricts:` signal stays unobserved (`–`), never a zero the
+  truncated page could contradict. A transient board read failure keeps the whole
+  card with the last good sample, like the rest of the page.
 
 ## Attach to a running session
 

@@ -101,7 +101,7 @@ ul.sessions{list-style:none;margin:8px 0;padding:0;display:grid;gap:8px}.session
 .home-decisions,.home-overview,.ask-cards>article{min-width:0}
 .home-work{border:1px solid var(--line);border-radius:var(--r);padding:14px;background:var(--surface);box-shadow:var(--shadow);margin-top:12px}
 .home-work>summary{min-height:44px;font-weight:600}.ask-cards{display:grid;gap:12px}.ask-cards>article{margin:0}
-/* Throughput and stuck work (#2346): one card, twelve hourly bars, four count tiles. */
+/* Throughput and stuck work: one card, twelve hourly bars, four count tiles. */
 .work{padding:14px;margin-top:12px}
 .work h2{margin-top:16px}.work h2:first-child{margin-top:0}
 .work-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:6px 0 2px}

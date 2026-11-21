@@ -55,6 +55,9 @@ pub(crate) struct Reader<'a> {
     /// PRs held by a `Restricts:` line without `owner-accepted`, derived from the
     /// body and labels the same snapshot already fetches (#2346). No extra read.
     restricts_held: Vec<u64>,
+    /// Some row's body or labels were truncated, so the hold signal of the whole
+    /// snapshot is unobserved: an absent flag must never read as "none held".
+    restricts_truncated: bool,
 }
 
 /// The message of a read the reserve deferred; callers treat it as a recorded skip.
@@ -167,6 +170,18 @@ impl<'a> Reader<'a> {
             probed: Cell::new(false),
             deferred: RefCell::new(Vec::new()),
             restricts_held: Vec::new(),
+            restricts_truncated: false,
+        }
+    }
+
+    /// The recorded Restricts signal of the last snapshot: `None` when any row's
+    /// evidence was truncated, so a page that cannot see a hold never reports zero.
+    fn restricts_signal(&mut self) -> Option<Vec<u64>> {
+        if self.restricts_truncated {
+            self.restricts_held.clear();
+            None
+        } else {
+            Some(std::mem::take(&mut self.restricts_held))
         }
     }
 
@@ -609,6 +624,34 @@ pub(crate) fn restricts_hold(body: &str, labels: &[&str]) -> bool {
     restricts && !labels.contains(&"owner-accepted")
 }
 
+/// One row's Restricts evidence. `Truncated` means the row cannot prove whether
+/// the owner accepted: the sample's whole signal then stays unobserved (`None`),
+/// never an observed zero that a truncated page could contradict.
+pub(crate) enum RestrictsEvidence {
+    Held,
+    Clear,
+    Truncated,
+}
+
+pub(crate) fn restricts_evidence(body: Option<&str>, labels: &Value) -> RestrictsEvidence {
+    let Some(body) = body else {
+        return RestrictsEvidence::Truncated;
+    };
+    let nodes = labels["nodes"].as_array();
+    let complete = labels["totalCount"].as_u64() == Some(nodes.map_or(0, |nodes| nodes.len()) as u64);
+    if !complete {
+        return RestrictsEvidence::Truncated;
+    }
+    let names: Vec<&str> = nodes
+        .map(|nodes| nodes.iter().filter_map(|l| l["name"].as_str()).collect())
+        .unwrap_or_default();
+    if restricts_hold(body, &names) {
+        RestrictsEvidence::Held
+    } else {
+        RestrictsEvidence::Clear
+    }
+}
+
 /// The required check contexts of one base ref: its classic protection plus active
 /// repository and organization rulesets. Shared by the PR snapshot and the main
 /// panels projection.
@@ -737,20 +780,13 @@ impl Reader<'_> {
                     _ => return Err(SnapshotError::from("invalid PR state")),
                 }
                 // The Restricts hold is a display signal from facts this query
-                // already carries; truncated labels cannot prove the absence of
-                // owner-accepted, so such a row is simply not flagged.
-                if let (Some(body), Some(number)) = (row["body"].as_str(), pr["number"].as_u64()) {
-                    let labels = &row["labels"];
-                    let names = labels["nodes"].as_array();
-                    let complete =
-                        labels["totalCount"].as_u64() == Some(names.map_or(0, |nodes| nodes.len()) as u64);
-                    if complete {
-                        let names: Vec<&str> = names
-                            .map(|nodes| nodes.iter().filter_map(|l| l["name"].as_str()).collect())
-                            .unwrap_or_default();
-                        if restricts_hold(body, &names) {
-                            self.restricts_held.push(number);
-                        }
+                // already carries. Truncated body or label evidence leaves the
+                // whole signal unobserved: an absent flag is not "none held".
+                if let Some(number) = pr["number"].as_u64() {
+                    match restricts_evidence(row["body"].as_str(), &row["labels"]) {
+                        RestrictsEvidence::Held => self.restricts_held.push(number),
+                        RestrictsEvidence::Truncated => self.restricts_truncated = true,
+                        RestrictsEvidence::Clear => {}
                     }
                 }
                 if let Some(connection) = over_page_limit(row, reviews) {
@@ -872,6 +908,7 @@ impl GitHub for Reader<'_> {
         self.deadline.set(Instant::now() + Duration::from_secs(120));
         self.bytes.set(0);
         self.restricts_held.clear();
+        self.restricts_truncated = false;
         if let Some(quota) = &mut self.app_quota {
             *quota.get_mut() = GitHubQuotas::default();
         }
@@ -1065,7 +1102,7 @@ pub(crate) fn run(
                 (None, None)
             };
             reader.time_left().map_err(QueryError::message)?;
-            let restricts_held = std::mem::take(&mut reader.restricts_held);
+            let restricts_held = reader.restricts_signal();
             Ok(oxa_work::shadow::LandingSample {
                 board,
                 reviews,
@@ -1074,7 +1111,7 @@ pub(crate) fn run(
                 landing_main,
                 panels,
                 runs,
-                restricts_held: Some(restricts_held),
+                restricts_held,
                 app_quota: reader
                     .app_quota
                     .as_ref()
@@ -1089,7 +1126,8 @@ pub(crate) fn run(
 
 #[cfg(test)]
 mod restricts_tests {
-    use super::restricts_hold;
+    use super::{restricts_evidence, restricts_hold, Reader, RestrictsEvidence};
+    use serde_json::json;
 
     #[test]
     fn a_restricts_line_holds_until_the_owner_accepts() {
@@ -1104,6 +1142,118 @@ mod restricts_tests {
         assert!(!restricts_hold("See the Restricts: rule in AGENTS.md\n", &[]));
         assert!(!restricts_hold("", &[]));
         assert!(!restricts_hold("No restrictions here.\n", &["owner-accepted"]));
+    }
+
+    #[test]
+    fn truncated_evidence_stays_unobserved_instead_of_reading_as_clear() {
+        let held_body = "Restricts: a new refusal — reason — drawback\n";
+        let complete = json!({"totalCount": 1, "nodes": [{"name": "lead-web"}]});
+        assert!(matches!(
+            restricts_evidence(Some(held_body), &complete),
+            RestrictsEvidence::Held
+        ));
+        let accepted = json!({"totalCount": 2, "nodes": [{"name": "lead-web"}, {"name": "owner-accepted"}]});
+        assert!(matches!(
+            restricts_evidence(Some(held_body), &accepted),
+            RestrictsEvidence::Clear
+        ));
+        assert!(matches!(
+            restricts_evidence(Some("Plain body.\n"), &complete),
+            RestrictsEvidence::Clear
+        ));
+        // Labels beyond the fetched page cannot prove owner-accepted is absent.
+        let truncated = json!({"totalCount": 2, "nodes": [{"name": "lead-web"}]});
+        assert!(matches!(
+            restricts_evidence(Some(held_body), &truncated),
+            RestrictsEvidence::Truncated
+        ));
+        // A missing body or label connection is the same unobserved state.
+        assert!(matches!(
+            restricts_evidence(None, &complete),
+            RestrictsEvidence::Truncated
+        ));
+        assert!(matches!(
+            restricts_evidence(Some(held_body), &json!({})),
+            RestrictsEvidence::Truncated
+        ));
+    }
+
+    /// One scripted gh reply serves the listing, the detail page and the
+    /// verification listing: one open PR whose labels exceed their page.
+    fn reader_with_reply(reply: serde_json::Value) -> (oxa_fake::TestEnv, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let test = oxa_fake::TestEnv::new();
+        let gh = test.write(
+            "work/gh",
+            "#!/bin/sh\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n'\ncat \"$0.reply\"\n",
+        );
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o700)).unwrap();
+        test.write("work/gh.reply", &reply.to_string());
+        (test, gh)
+    }
+
+    fn pr_reply(labels: serde_json::Value) -> serde_json::Value {
+        let head = "a".repeat(40);
+        json!({"data": {"repository": {
+            "pullRequests": {"totalCount": 1, "nodes": [{"number": 7, "headRefOid": head}],
+                             "pageInfo": {"hasNextPage": false, "endCursor": "last"}},
+            "mergeQueue": null,
+            "p7": {
+                "number": 7, "headRefOid": head, "baseRefName": "main", "state": "OPEN",
+                "body": "Restricts: a new refusal — reason — drawback\n",
+                "isDraft": false, "reviewDecision": "REVIEW_REQUIRED",
+                "mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED",
+                "baseRef": {"refUpdateRule": null, "rules": {"totalCount": 0, "nodes": []}},
+                "labels": labels,
+                "files": {"totalCount": 0, "pageInfo": {"hasNextPage": false}, "nodes": []},
+                "reviewThreads": {"totalCount": 0, "nodes": []},
+                "latestOpinionatedReviews": {"totalCount": 0, "nodes": []},
+                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"totalCount": 0, "nodes": []}}}}]}
+            }
+        }}})
+    }
+
+    #[test]
+    fn a_truncated_snapshot_publishes_no_restricts_signal_not_an_empty_one() {
+        // Before the fix the Reader published Some([]) here: a real zero the
+        // truncated page could contradict. The signal must stay unobserved.
+        let (_test, gh) = reader_with_reply(pr_reply(
+            json!({"totalCount": 2, "nodes": [{"name": "lead-web"}]}),
+        ));
+        let mut reader = Reader::new(
+            &gh,
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            "example/repo",
+            "synthetic-app-token",
+        );
+        let snapshot = reader.snapshot().unwrap();
+        // The row's evidence is incomplete, and the hold signal stays unobserved.
+        assert_eq!(snapshot.incomplete.len(), 1);
+        assert_eq!(reader.restricts_signal(), None);
+
+        // Complete evidence keeps the real states: held, and observed-empty.
+        let (_test, gh) = reader_with_reply(pr_reply(
+            json!({"totalCount": 1, "nodes": [{"name": "lead-web"}]}),
+        ));
+        let mut reader = Reader::new(
+            &gh,
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            "example/repo",
+            "synthetic-app-token",
+        );
+        reader.snapshot().unwrap();
+        assert_eq!(reader.restricts_signal(), Some(vec![7]));
+        let (_test, gh) = reader_with_reply(pr_reply(
+            json!({"totalCount": 2, "nodes": [{"name": "lead-web"}, {"name": "owner-accepted"}]}),
+        ));
+        let mut reader = Reader::new(
+            &gh,
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            "example/repo",
+            "synthetic-app-token",
+        );
+        reader.snapshot().unwrap();
+        assert_eq!(reader.restricts_signal(), Some(vec![]));
     }
 }
 
