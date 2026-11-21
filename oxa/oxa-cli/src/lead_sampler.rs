@@ -5,19 +5,19 @@
 //! every attempt (no two samples ever run at once), a Retry asks for one sooner, and the last
 //! attempt's state, cause and next attempt time are available to the page.
 //!
-//! Interface, kept standalone so the observer and the page read it without owning it:
-//! - [`Sampler::start`] starts the thread and returns the handle, or `None` when no sample is
-//!   configured (no trusted `gh`, no board file, offline, no App token source).
+//! The sample itself is `work_board::sample_once`, the sample `oxa work board --shadow` writes:
+//!
+//! - [`Sampler::start`] starts the thread and returns the handle, or `None` when there is no
+//!   board log, repository or trusted `gh`, or offline mode is on.
 //! - [`Sampler::status`] is the immutable snapshot the render reads.
 //! - [`Sampler::retry`] asks for a sample now.
+//! - [`Sampler::page_load`] samples once after an idle period.
 //!
-//! The sample itself is `work_board::sample_once`, the same sample `oxa work board --shadow`
-//! writes. A
-//! fresh App token is taken per sample and never stored: a configured `oxa.github.tokenCommand`
-//! (the owner's mint command) runs through the same vetted helper path as the runner's, and
-//! `GH_TOKEN` in the service's own environment is accepted like `oxa work board` accepts it.
-//! Without either, the sampler is off, the external timer keeps the board fresh, and the page
-//! says so.
+//! A fresh App token is taken per sample and never stored: a configured
+//! `oxa.github.tokenCommand` (the owner's mint command) runs through the same vetted helper path
+//! as the runner's, and `GH_TOKEN` in the service's own environment is accepted like
+//! `oxa work board` accepts it. Without either, every attempt fails with a fixed cause and the
+//! external timer keeps the board fresh; the page says so.
 
 use crate::netguard;
 use crate::work_board;
@@ -47,8 +47,8 @@ pub(crate) fn interval(settings: &Settings) -> Duration {
     )
 }
 
-/// The last attempt, and whether one is running. Every field is a fixed text or a
-/// whole-second time: no path, token or raw error byte reaches the page.
+/// The last attempt, and whether one is running. Every field is fixed text or a whole-second
+/// time: no path, token or raw error byte reaches the page.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Status {
     /// Seconds between two samples.
@@ -82,20 +82,11 @@ struct Shared {
     last_request: Option<Instant>,
 }
 
-/// The serving process's sampler. The page holds an `Arc` of it too, so a Retry and the
-/// request path reach the one thread that owns every attempt.
+/// The serving process's sampler. The page holds an `Arc` of it too, so a Retry and the request
+/// path reach the one thread that owns every attempt.
 pub(crate) struct Sampler {
     shared: Arc<Mutex<Shared>>,
     stop: Arc<AtomicBool>,
-}
-
-impl Clone for Sampler {
-    fn clone(&self) -> Self {
-        Self {
-            shared: self.shared.clone(),
-            stop: self.stop.clone(),
-        }
-    }
 }
 
 impl Sampler {
@@ -107,7 +98,7 @@ impl Sampler {
         let board = std::env::var_os("OXA_LEAD_BOARD_LOG").map(PathBuf::from)?;
         let repo = repository(dirs, cwd)?;
         let settings = Settings::load(dirs, cwd, false);
-        // Without a trusted `gh` nothing can sample; the page then says `no trusted gh`.
+        // Without a trusted `gh` nothing can sample; the page then says so.
         let gh = netguard::trusted_executable_for(
             "gh",
             Some(&std::ffi::OsString::from(env.get("PATH").unwrap_or_default())),
@@ -146,14 +137,8 @@ impl Sampler {
         lock(&self.shared).status.clone()
     }
 
-    /// Whether this lead samples at all. `None` (`Sampler::start` without a token source) means
-    /// the external timer owns the board and there is nothing here to ask for a sample.
-    pub(crate) fn is_none(&self) -> bool {
-        false
-    }
-
-    /// A sample now: a running attempt finishes, then one starts at once. This also drops the
-    /// back-off of a failing sample.
+    /// A sample now: a running attempt finishes, then one starts at once. A Retry also drops
+    /// the back-off of a failing sample.
     pub(crate) fn retry(&self) {
         lock(&self.shared).woke = true;
     }
@@ -240,31 +225,25 @@ struct Token {
 
 impl Token {
     fn of(dirs: &Dirs, cwd: &Path, env: &Env, settings: &Settings) -> Self {
+        // No command is resolved from a project file: `github_token_command` reads the user layer.
         let argv = netguard::github_token_command(settings);
-        // Under test isolation no command is resolved and no ambient credential is used.
-        if std::env::var_os(oxa_proto::names::ENV_TEST_ISOLATION).is_some() {
-            return Self::default();
-        }
+        let command = netguard::token_program(&argv, cwd, &dirs.home);
         Self {
-            command: netguard::token_program(&argv, cwd, &dirs.home),
+            command,
             inherited: env.get("GH_TOKEN").filter(|s| !s.is_empty()).map(str::to_owned),
         }
-    }
-
-    fn configured(&self) -> bool {
-        self.command.is_some() || self.inherited.is_some()
     }
 
     fn fresh(&self) -> Result<String, &'static str> {
         if let Some(argv) = &self.command {
             let program = oxa_work::trusted_token_program(argv, None, None, &[], None)
-                .ok_or("the GitHub App token command is not a trusted helper")?;
+                .ok_or("the GitHub App token command failed")?;
             return oxa_work::token_from_command(program, oxa_work::COMMAND_DEADLINE)
                 .ok_or("the GitHub App token command failed");
         }
         self.inherited
             .clone()
-            .ok_or("no GitHub App token source is configured")
+            .ok_or("no GitHub App token source: set oxa.github.tokenCommand, or keep the external timer")
     }
 }
 
@@ -332,11 +311,6 @@ impl Job {
     fn attempt(&self) -> Result<u64, String> {
         if !work_board::sampler_trusted(&self.cwd, &self.dirs) {
             return Err("the serving project is not trusted, so no sample ran; approve the project".into());
-        }
-        if !self.token.configured() {
-            return Err(
-                "no GitHub App token source: set oxa.github.tokenCommand, or keep the external timer".into(),
-            );
         }
         let token = self.token.fresh().map_err(work_board::sample_cause)?;
         let gh = self.gh.as_deref().ok_or("no trusted gh executable")?;

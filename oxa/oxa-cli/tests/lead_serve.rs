@@ -1587,10 +1587,11 @@ fn sampler_line(page: &str) -> String {
         .split("id=connection")
         .nth(1)
         .expect("the top bar names the sample");
-    // The attributes after the id are whatever the header renders; the text follows them.
+    // The attributes after the id are whatever the header renders; the text follows them and
+    // ends at the element's close, before the theme toggle.
     start
         .split_once('>')
-        .map(|(_, text)| text)
+        .and_then(|(_, text)| text.split("</span>").next())
         .unwrap_or_default()
         .trim()
         .to_owned()

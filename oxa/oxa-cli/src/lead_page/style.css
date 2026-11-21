@@ -150,10 +150,6 @@ a.row:hover,a.tile:hover,.pages a:hover,.stale-notice a:hover,.top>a:hover,.filt
   .work-tiles{grid-template-columns:repeat(4,minmax(0,1fr))}
   .asks-layout .ask-cards{grid-template-columns:repeat(2,minmax(0,1fr))}  .filters{margin:0 0 12px;padding:2px 0}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto;transition:none!important}}
-/* The sample line in the top bar (#2262): small and muted, the one place the page says how
-   fresh its board is, and the Retry beside it. The dot stays; this only adds the words. */
-.sampler { font-size: var(--t-xs); font-weight: 500; color: var(--muted); }
-.sampler a { color: var(--accent); }
-/* The sample line in the top bar (#2262): small and muted, the one place the page says how
-   fresh its board is, with its Retry. The dot and the theme toggle stay. */
+/* The sample line in the top bar: small and muted, the one place the page says how fresh its
+   board is, with its Retry. The dot and the theme toggle stay. */
 .sampler{font-size:var(--t-xs);font-weight:500;color:var(--muted)}.sampler a{color:var(--accent)}
