@@ -100,16 +100,20 @@ impl StreamRedactor {
     /// Take the token set as it is now. The set only grows (a replaced token stays), so the
     /// hold-back only widens and the bytes already emitted stay decided on full data.
     fn refresh<S: AsRef<str>>(&mut self, tokens: &[S]) {
+        let bytes: Vec<&[u8]> = tokens.iter().map(|t| t.as_ref().as_bytes()).collect();
+        self.refresh_bytes(&bytes);
+    }
+
+    /// [`Self::refresh`] for the same sets the mask works on.
+    fn refresh_bytes<S: AsRef<[u8]>>(&mut self, tokens: &[S]) {
         let same = self.tokens.len() == tokens.len()
-            && tokens
-                .iter()
-                .all(|t| self.tokens.iter().any(|x| x == t.as_ref().as_bytes()));
+            && tokens.iter().all(|t| self.tokens.iter().any(|x| x == t.as_ref()));
         if same {
             return;
         }
         self.tokens = tokens
             .iter()
-            .map(|t| t.as_ref().as_bytes().to_vec())
+            .map(|t| t.as_ref().to_vec())
             .filter(|t| !t.is_empty())
             .collect();
         self.tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
@@ -422,7 +426,7 @@ impl NetSandbox {
             .map(|t| t.as_bytes().to_vec())
             .collect();
         all.sort_by_key(|t| std::cmp::Reverse(t.len()));
-        let mut sr = StreamRedactor::many(&view);
+        let mut sr = StreamRedactor::from_bytes(&view);
         let mut r = run(&mut |b: &[u8]| {
             // A session copy may register a token (or a refresh) while this command runs.
             let next = Self::host_secret_views(controls, env).0;
@@ -434,14 +438,14 @@ impl NetSandbox {
                         .map(|t| t.as_bytes().to_vec()),
                 );
                 all.sort_by_key(|t| std::cmp::Reverse(t.len()));
-                sr.refresh(&all);
+                sr.refresh_bytes(&all);
             }
             let o = sr.push(b);
             if !o.is_empty() {
                 live(&o);
             }
         });
-        sr.refresh(&all);
+        sr.refresh_bytes(&all);
         let tail = sr.finish();
         if !tail.is_empty() {
             live(&tail);
