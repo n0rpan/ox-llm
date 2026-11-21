@@ -259,19 +259,24 @@ fn later_repeat_notices_stay_short_and_count_the_attempt() {
     assert_eq!(res.len(), (LIMIT + 5) as usize, "{res:#?}");
     let notes = &res[LIMIT as usize..];
     assert_eq!(notes.len(), 5, "{notes:#?}");
-    // The first notice: the full suggestion, written once, with the attempt that reached the limit.
+    // The first notice: the full suggestion, written once, with the attempt that reached the
+    // limit — the third identical result plus this call.
     assert!(is_notice(&notes[0]), "{}", notes[0]);
     assert!(
         notes[0].contains("Change your approach and continue the task"),
         "{}",
         notes[0]
     );
-    assert!(notes[0].contains(&format!("(Attempt {LIMIT}.)")), "{}", notes[0]);
+    assert!(
+        notes[0].contains(&format!("(Attempt {}.)", LIMIT + 1)),
+        "{}",
+        notes[0]
+    );
     // Later notices: the same unchanged result, the next attempt number, no second suggestion.
     for (i, note) in notes[1..].iter().enumerate() {
         assert!(is_notice(note), "{note}");
         assert!(
-            note.contains(&format!("attempt {} of this call", LIMIT + 1 + i as u32)),
+            note.contains(&format!("attempt {} of this call", LIMIT + 2 + i as u32)),
             "{note}"
         );
         assert!(!note.contains("Change your approach"), "{note}");
