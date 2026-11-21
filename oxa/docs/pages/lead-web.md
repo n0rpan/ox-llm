@@ -257,10 +257,15 @@ have.
 
 Pages, fragments and assets are gzipped (`flate2`, level 6) when the request's
 `Accept-Encoding` allows it and the result is smaller; the raw bytes are served
-otherwise, and a body that would grow is never compressed. Home is about 1.7 KB on the
-wire and the two assets about 6.4 KB together, against roughly 22 KB uncompressed.
-The compression happens per response for a page and once at start for an asset. The
-one-shot `/events` route and the live stream are not compressed.
+otherwise, and a body that would grow is never compressed. The compression happens
+per response for a page and once at start for an asset. The one-shot `/events` route
+and the live stream are not compressed.
+
+Sizes measured against a running `oxa lead serve` on an owner machine with the
+healthy fixture frame (`curl -s -o /dev/null -w '%{size_download}'`): Home is 5,421
+bytes raw and 1,661 bytes with `Accept-Encoding: gzip`; the stylesheet 16,350 raw and
+4,439 gzip; the script 5,581 raw and 1,955 gzip. A repeat visit fetches the document
+only, so it carries about 1.7 KB instead of 27 KB.
 
 ## Synthetic fixture frames
 
