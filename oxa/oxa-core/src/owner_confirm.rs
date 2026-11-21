@@ -28,7 +28,9 @@
 //! session's own `Ui::secret` dialog: never by a typed message, never by yolo (there is no
 //! password to invent), and an unattended run answers `none`. It is served only while an
 //! attended, unsandboxed privileged bash call is in flight ([`OwnerConfirm::open_askpass_window`])
-//! and only to a peer that is the askpass helper run by a setuid `sudo` ([`peer_is_sudo_askpass`]).
+//! and only to a peer that is the askpass helper run by a setuid `sudo`, writing to the pipe sudo
+//! reads ([`peer_is_sudo_askpass`]): a wrapper that keeps the helper's pid and redirects its
+//! stdout, or a pipe this session reads, is answered `none`.
 //! The secret is held only until it is written to the asking process's socket; it is never put in
 //! a [`Record`] or in `Debug` output.
 use oxa_proto::{DialogCancel, Ui, YoloSwitch};
@@ -416,47 +418,136 @@ impl Drop for AskpassWindow {
     }
 }
 
+/// The facts [`peer_is_sudo_askpass`] decides on, read from `/proc`. Split out so the decision can
+/// be tested with the facts a wrapper script around the helper produces.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AskpassPeer {
+    /// The uids the kernel reports for the socket.
+    peer_uid: u32,
+    me: u32,
+    own_exe: PathBuf,
+    peer_exe: PathBuf,
+    parent_comm: String,
+    parent_real_uid: u32,
+    parent_effective_uid: u32,
+    /// `pipe:[<inode>]` when the peer's stdout is an anonymous pipe. A redirected stdout names a
+    /// path, a device or a named FIFO instead, so a wrapper that runs `exec > file` and then execs
+    /// the helper is never written to.
+    stdout: Option<String>,
+    /// The owner's own processes that hold the peer's stdout open, other than the peer itself.
+    /// Sudo's read end belongs to the setuid process and is not listed here; a read end this
+    /// session set up (a tool command capturing the pipe) is.
+    stdout_holders: Vec<u32>,
+}
+
+#[cfg(target_os = "linux")]
+impl AskpassPeer {
+    /// `true` for this oxa executable (the askpass helper symlink) whose parent is a genuine
+    /// setuid `sudo` (real uid ours, effective uid root) and whose stdout is the pipe sudo reads:
+    /// an anonymous pipe with no reader of ours. A model-run command, a raw client of the socket,
+    /// and a wrapper around the helper are all refused.
+    fn trusted(&self) -> bool {
+        self.peer_uid == self.me
+            && self.own_exe == self.peer_exe
+            && self.parent_comm.trim() == "sudo"
+            && self.parent_real_uid == self.me
+            && self.parent_effective_uid == 0
+            && self.stdout.is_some()
+            && self.stdout_holders.is_empty()
+    }
+}
+
 /// `true` when the peer of `stream` is this oxa executable (the askpass helper symlink) whose
-/// parent is a genuine setuid `sudo`: real uid is ours, effective uid is root. A model-run
+/// parent is a genuine setuid `sudo` and whose stdout is the pipe sudo reads. A model-run
 /// command, or a raw client of the socket, is neither. Linux only; elsewhere `false`.
 #[cfg(target_os = "linux")]
 fn peer_is_sudo_askpass(stream: &UnixStream) -> bool {
-    let Some((peer, peer_uid, me)) = oxa_sandbox::peer_pid_uid(stream) else {
-        return false;
-    };
-    if peer_uid != me {
-        return false;
-    }
-    let exe_of = |pid: u32| {
-        std::fs::read_link(format!("/proc/{pid}/exe"))
-            .ok()
-            .map(|p| PathBuf::from(p.to_string_lossy().trim_end_matches(" (deleted)")))
-    };
-    let (Some(own), Some(theirs)) = (exe_of(std::process::id()), exe_of(peer)) else {
-        return false;
-    };
-    if own != theirs {
-        return false;
-    }
-    let Some(parent) = proc_stat_ppid(peer) else {
-        return false;
-    };
-    let Ok(comm) = std::fs::read_to_string(format!("/proc/{parent}/comm")) else {
-        return false;
-    };
-    if comm.trim() != "sudo" {
-        return false;
-    }
-    let Ok(status) = std::fs::read_to_string(format!("/proc/{parent}/status")) else {
-        return false;
-    };
+    askpass_peer(stream).is_some_and(|p| p.trusted())
+}
+
+/// Reads the [`AskpassPeer`] facts for `stream`'s peer. `None` when any of them cannot be read.
+#[cfg(target_os = "linux")]
+fn askpass_peer(stream: &UnixStream) -> Option<AskpassPeer> {
+    let (peer, peer_uid, me) = oxa_sandbox::peer_pid_uid(stream)?;
+    let own_exe = exe_of(std::process::id())?;
+    let peer_exe = exe_of(peer)?;
+    let parent = proc_stat_ppid(peer)?;
+    let parent_comm = std::fs::read_to_string(format!("/proc/{parent}/comm")).ok()?;
+    let status = std::fs::read_to_string(format!("/proc/{parent}/status")).ok()?;
     let ids: Vec<u32> = status
         .lines()
         .find_map(|l| l.strip_prefix("Uid:"))
         .map(|rest| rest.split_whitespace().filter_map(|v| v.parse().ok()).collect())
         .unwrap_or_default();
-    // Real uid the owner's, effective uid root: a setuid binary, not a process the model made.
-    ids.len() >= 2 && ids[0] == me && ids[1] == 0
+    if ids.len() < 2 {
+        return None;
+    }
+    let stdout = pipe_key(peer, 1);
+    let stdout_holders = stdout
+        .clone()
+        .map(|key| pipe_holders(&key, peer))
+        .unwrap_or_default();
+    Some(AskpassPeer {
+        peer_uid,
+        me,
+        own_exe,
+        peer_exe,
+        parent_comm,
+        parent_real_uid: ids[0],
+        parent_effective_uid: ids[1],
+        stdout,
+        stdout_holders,
+    })
+}
+
+/// The executable `pid` runs, without the ` (deleted)` suffix.
+#[cfg(target_os = "linux")]
+fn exe_of(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|p| PathBuf::from(p.to_string_lossy().trim_end_matches(" (deleted)")))
+}
+
+/// `pipe:[<inode>]`, the link target of an anonymous pipe's fd. A regular file, a tty or a named
+/// FIFO names its path instead.
+#[cfg(target_os = "linux")]
+fn pipe_key(pid: u32, fd: u32) -> Option<String> {
+    let target = std::fs::read_link(format!("/proc/{pid}/fd/{fd}")).ok()?;
+    let text = target.to_string_lossy().into_owned();
+    text.starts_with("pipe:[").then_some(text)
+}
+
+/// The owner's own processes that hold `key` open, other than `except` (the peer itself).
+#[cfg(target_os = "linux")]
+fn pipe_holders(key: &str, except: u32) -> Vec<u32> {
+    let mut holders = Vec::new();
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return holders;
+    };
+    for entry in procs.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == except {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            continue;
+        };
+        let mut mine = false;
+        for fd in fds.flatten() {
+            if std::fs::read_link(fd.path()).is_ok_and(|t| t == std::path::Path::new(key)) {
+                mine = true;
+                break;
+            }
+        }
+        if mine {
+            holders.push(pid);
+        }
+    }
+    holders.sort_unstable();
+    holders
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1184,6 +1275,67 @@ mod tests {
         assert!(lock(&b.state).pending.is_empty(), "no dialog was queued");
         b.close();
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Keeping the helper's pid, parent and executable is not enough: a wrapper script that runs
+    /// `exec > file` and then execs the helper would take the password. The stdout facts refuse it.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_wrapper_that_keeps_the_helpers_pid_is_not_the_askpass_peer() {
+        let genuine = AskpassPeer {
+            peer_uid: 1000,
+            me: 1000,
+            own_exe: PathBuf::from("/usr/bin/oxa"),
+            peer_exe: PathBuf::from("/usr/bin/oxa"),
+            parent_comm: "sudo\n".into(),
+            parent_real_uid: 1000,
+            parent_effective_uid: 0,
+            stdout: Some("pipe:[77]".into()),
+            stdout_holders: Vec::new(),
+        };
+        assert!(genuine.trusted(), "the helper sudo starts is served");
+        let mut redirected = genuine.clone();
+        redirected.stdout = None;
+        assert!(!redirected.trusted(), "`exec > file` must be refused");
+        let mut captured = genuine.clone();
+        captured.stdout_holders = vec![1];
+        assert!(!captured.trusted(), "a pipe this session reads must be refused");
+    }
+
+    /// The same refusal against real processes: a redirected stdout is not a pipe, and a pipe read
+    /// by a process of ours names that holder in `/proc`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn only_a_stdout_that_nothing_of_ours_reads_counts_as_sudos_pipe() {
+        let mut redirected = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exec sleep 30")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn");
+        assert_eq!(pipe_key(redirected.id(), 1), None, "a file is not a pipe");
+        let mut captured = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exec sleep 30")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let key = pipe_key(captured.id(), 1).expect("a piped stdout is a pipe");
+        assert_eq!(
+            pipe_holders(&key, captured.id()),
+            vec![std::process::id()],
+            "the test reads the pipe, so the peer is not written to"
+        );
+        // Nothing of ours holds the read end any more: the state sudo leaves.
+        drop(captured.stdout.take());
+        assert!(
+            pipe_holders(&key, captured.id()).is_empty(),
+            "the read end is not ours, so the check accepts the peer"
+        );
+        let _ = redirected.kill();
+        let _ = captured.kill();
+        let _ = redirected.wait();
+        let _ = captured.wait();
     }
 
     #[test]

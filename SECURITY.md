@@ -31,7 +31,7 @@ refused for unattended replay. An interactive session grant and the owner's `alw
 exact-text keys by the owner's own choice. `oxa.approval.rootActions` (user settings only, never a
 project file, never given to a worker, subagent or headless run) names `sudo` commands oxa does not
 ask about; sudo itself still decides whether a password is needed, and the password is typed into an
-oxa dialog and goes owner -> broker -> askpass helper -> sudo, never to the model, transcript or logs.
+oxa dialog and goes owner -> broker -> askpass helper -> sudo, never to the model, transcript or logs. The dialog opens only for the helper a setuid `sudo` starts, and only when its stdout is the pipe sudo reads: a wrapper around the helper and a pipe this session reads are answered `none`.
 
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.
