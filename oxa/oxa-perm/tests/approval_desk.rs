@@ -766,3 +766,44 @@ fn no_desk_keeps_the_ui_path() {
     assert_eq!(p.decide(Mode::Workspace, &exec(DANGEROUS), &cwd), Decision::Ask);
     assert!(p.danger_unattended(&exec(DANGEROUS), &cwd).is_none());
 }
+
+/// #2097: a pipeline fed by a command the owner never saw (`cat targets | tee ...`) acts on data
+/// that can change after the answer, so it is refused unattended and its record cannot be
+/// answered; a literal producer fixes the data in the reviewed text and still files a request.
+#[test]
+fn unattended_replay_refuses_a_pipeline_fed_by_a_file() {
+    use oxa_perm::PathGuard;
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let guard = PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp());
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false).with_guard(guard);
+
+    let fed = "cat targets | tee -a ~/.ssh/authorized_keys";
+    let refusal = p.danger_unattended(&exec(fed), &cwd).expect("refusal");
+    assert!(
+        refusal.contains("cannot be verified for unattended replay"),
+        "{refusal}"
+    );
+    assert!(desk.pending().expect("pending").is_empty());
+    let old = desk
+        .record(
+            "s1",
+            &cwd,
+            fed,
+            &[DangerHit {
+                rule: "credential-write".into(),
+                reason: "write".into(),
+                segment: "tee -a ~/.ssh/authorized_keys".into(),
+            }],
+            "pending",
+        )
+        .expect("old request");
+    assert!(desk.answer(&old, "once").is_err());
+    assert!(desk.answer(&old, "deny").is_ok());
+
+    let literal = "echo literal | tee -a ~/.ssh/authorized_keys";
+    let text = p.danger_unattended(&exec(literal), &cwd).expect("request text");
+    assert!(!text.contains("cannot be verified"), "{text}");
+    assert_eq!(desk.pending().expect("pending").len(), 1);
+}

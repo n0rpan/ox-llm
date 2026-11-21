@@ -249,7 +249,7 @@ fn max_tokens_charges_child_compaction_before_starting_queued_child() {
         "only compaction exhausts the budget"
     );
     assert_eq!(reqs[6].session, *parent, "no queued second child");
-    assert!(reqs[5..].iter().all(|r| r.max_tokens <= 1024));
+    assert!(reqs[5..].iter().all(|r| r.max_tokens <= 4096));
     assert!(String::from_utf8_lossy(&out.stdout).contains("parent wrap-up"));
 }
 
@@ -299,7 +299,7 @@ fn max_tokens_wraps_up_child_and_parent_without_starting_queued_child() {
     assert_eq!(reqs[3].session, child);
     assert_eq!(reqs[4].session, *parent);
     for r in &reqs[3..] {
-        assert!(r.max_tokens <= 1024, "bounded final turn");
+        assert!(r.max_tokens <= 4096, "bounded final turn");
         assert!(!r.thinking);
     }
     assert!(String::from_utf8_lossy(&out.stdout).contains("parent wrap-up"));

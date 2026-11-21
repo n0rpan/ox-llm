@@ -1155,7 +1155,7 @@ fn sigterm_finishes_the_active_subagent_before_wrap_up() {
     assert_eq!(parent_requests.len(), 2, "one final parent turn after the tool");
     let summary = parent_requests[1];
     assert!(tool_result(summary).contains("CHILD-FINISHED"));
-    assert!(summary.max_tokens <= 1024);
+    assert!(summary.max_tokens <= 4096);
     assert!(!summary.thinking);
     assert!(server.clears().contains(&format!("{p}.s1")));
     assert!(

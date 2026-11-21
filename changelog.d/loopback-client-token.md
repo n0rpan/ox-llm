@@ -1,0 +1,1 @@
+- `oxa lead serve` in local mode now needs a per-start client token for every page and POST. Open the URL it prints; a same-user process without the token gets 401 and cannot start a Lead turn (#193).
