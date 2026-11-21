@@ -1,0 +1,1 @@
+- Desktop app (`oxa-desk`): `oxa_cli::run_with` starts an interactive session for a front end other than the terminal, through the same start path as `oxa`. The terminal app is unchanged.

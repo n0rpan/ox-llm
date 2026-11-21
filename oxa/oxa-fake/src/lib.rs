@@ -13,6 +13,9 @@
 //! * [`check_all`] (B15): the invariant rules over recorded requests, each with a negative
 //!   control. [`golden`]: pinned request hashes.
 //! * [`TestEnv`]: an isolated directory tree for one test (P56). Implemented in W0.
+//! * [`fixtures`]: named `AgentEvent` sequences (chat, a tool run with a diff, streaming bash,
+//!   compaction, retry, error, worker cards, a secret ask). The terminal UI and the desktop app
+//!   render the same sequences in their tests, so the two front ends cannot drift apart.
 //!
 //! ## The fake's cache model (shared by both engines)
 //! One token = one byte of [`cache_bytes`]. The engine remembers, per session id, the bytes of
@@ -46,6 +49,7 @@
 //! Script format: `docs/fake-script.md`.
 
 mod check;
+pub mod fixtures;
 pub mod golden;
 mod record;
 mod script;

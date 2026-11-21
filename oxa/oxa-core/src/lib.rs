@@ -41,6 +41,7 @@ mod exec;
 mod fire;
 pub mod fork;
 pub mod goal;
+pub mod guard_advice;
 mod host;
 pub mod loopguard;
 mod navigate;

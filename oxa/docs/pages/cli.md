@@ -162,6 +162,8 @@ Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price, and 
 
 `oxa config` lists the settings as oxa resolves them.
 
+`oxa desk` is reserved for the desktop app, which is not shipped yet. Until it ships, `oxa desk` is refused as a usage error and is not sent to the model as a message; quote the word (`oxa "desk ..."`) to start a message with it. Every command in oxa's command registry also states whether the desktop app will offer it: the usage, models, status and work status reports are marked for the desktop, and each other command carries the reason it is not.
+
 ### Prompt-cache report
 
 Run `oxa cache <session-id|path>` for a table, or add `--json` for a versioned `oxa_cache` object. The command reads a saved local or cloud session without contacting a model, changing the session, or adding anything to prompts. An id may be abbreviated if unique; use the `.jsonl` path if the session is outside your current session directory.

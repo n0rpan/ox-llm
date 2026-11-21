@@ -1,0 +1,1 @@
+- Desktop app (`oxa-desk`), groundwork: a front end can run a session worker that blocks between commands instead of waking four times a second (`WorkerStop::without_idle_tick`). Host requests, a wrap-up and the stop signal still wake it. The terminal `oxa` keeps its idle tick and behaves as before.
