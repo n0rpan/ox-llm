@@ -727,7 +727,7 @@ impl BashTool {
                 // background tail before returning control to the caller.
                 let _ = self.jobs.bound_output(id);
                 let mut text = format!(
-                    "Command still running after {} (wall time); it was not stopped. It continues as background job {id}. Wait for it with bash {{\"job\": \"{id}\", \"wait_s\": 60}}, read its output with bash {{\"job\": \"{id}\"}}, or stop it with bash {{\"job\": \"{id}\", \"kill\": true}}.",
+                    "Command still running after {} (wall time); it was not stopped. It continues as background job {id}. Wait for it with bash {{\"job\": \"{id}\", \"wait_s\": 60}}, read its output with bash {{\"job\": \"{id}\"}}, or stop it with bash {{\"job\": \"{id}\", \"kill\": true}}. The job id is not a shell command; use the `job` argument shown above, not `command`.",
                     fmt_wall(started.elapsed())
                 );
                 if let Some(read) = last_read.filter(|r| !r.output.is_empty()) {
@@ -2501,6 +2501,73 @@ mod poll_tests {
             &mut |_| {},
         );
         assert!(read.text.contains("killed"), "unexpected kill result");
+    }
+
+    /// #2294: the timeout handoff keeps the job recoverable by naming the typed job
+    /// interface and saying the handle is not a shell command. Shell dispatch is unchanged:
+    /// a handle written as a `command` is still an exec call, and the typed `job` form reads
+    /// the job.
+    #[test]
+    fn timeout_handoff_names_the_typed_job_read() {
+        let jobs = Arc::new(JobRegistry::new());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
+            .with_sandbox(Arc::new(Slow { ms: 60_000 }));
+        let (handoff, _) = job_call(&tool, json!({"command": "sleep 99", "timeout": 1}));
+        assert_eq!(handoff.ui["movedToBackground"], json!(true));
+        assert_eq!(handoff.ui["job"], json!("job-1"));
+        // The handoff names the typed read, wait and stop forms, and says the handle is
+        // not a shell command.
+        assert!(
+            handoff.text.contains("bash {\"job\": \"job-1\"}"),
+            "{}",
+            handoff.text
+        );
+        assert!(handoff.text.contains("\"wait_s\": 60"), "{}", handoff.text);
+        assert!(handoff.text.contains("\"kill\": true"), "{}", handoff.text);
+        assert!(handoff.text.contains("not a shell command"), "{}", handoff.text);
+
+        let sb = Slow { ms: 0 };
+        let cancel = CancelToken::new();
+        let cx = ToolCtx {
+            checked: &[],
+            cwd: Path::new("/work"),
+            spill_dir: Path::new("/work"),
+            sandbox: &sb,
+            mode: Mode::Workspace,
+            cancel: &cancel,
+            env: &[],
+            tune: Default::default(),
+            hidden: None,
+        };
+
+        // Shell dispatch is unchanged: the handle written as a command still declares exec
+        // access and runs, and a command that merely mentions a handle runs too.
+        assert_eq!(
+            tool.access(&json!({"command": "job-1"}), &cx).unwrap(),
+            vec![Access::Exec {
+                command: "job-1".to_string(),
+                net: false
+            }]
+        );
+        let fast = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone())
+            .with_sandbox(Arc::new(Slow { ms: 0 }));
+        let (as_command, _) = job_call(&fast, json!({"command": "job-1"}));
+        assert_eq!(as_command.ui["exit"], json!(0));
+        assert!(as_command.ui.get("job").is_none(), "{}", as_command.ui);
+        let (echo, _) = job_call(&fast, json!({"command": "echo job-1"}));
+        assert_eq!(echo.ui["exit"], json!(0));
+        assert!(echo.ui.get("job").is_none(), "{}", echo.ui);
+
+        // The typed form the handoff names reads the job without running a shell.
+        let (read, streamed) = job_call(&tool, json!({"job": "job-1"}));
+        assert!(!read.is_error, "{}", read.text);
+        assert!(read.text.contains("Job job-1: running"), "{}", read.text);
+        assert_eq!(read.ui["job"], json!("job-1"));
+        assert!(streamed.is_empty(), "{streamed}");
+        assert_eq!(jobs.running(), 1);
+
+        let _ = tool.run(&json!({"job": "job-1", "kill": true}), &cx, &mut |_| {});
+        assert_eq!(jobs.running(), 0);
     }
 
     #[test]
