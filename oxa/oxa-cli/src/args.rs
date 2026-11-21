@@ -1149,6 +1149,14 @@ fn present_flags<'a>(flags: &[(bool, &'a str)]) -> Vec<&'a str> {
         .collect()
 }
 
+/// A registry command that `COMMANDS` already names is printed from that table once.
+fn listed_in_commands(path: &[&str]) -> bool {
+    path.len() == 1
+        && COMMANDS
+            .iter()
+            .any(|(left, _)| left.split_whitespace().nth(1) == Some(path[0]))
+}
+
 /// The `--help` text (cli.md's flag list with `oxa` names), followed by extension flags.
 pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
     let mut out = String::new();
@@ -1159,7 +1167,7 @@ pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
         out.push_str(&format!("  {left:<36}{desc}\n"));
     }
     for entry in oxa_interactive::command_registry::entries(oxa_interactive::command_registry::Surface::Cli)
-        .filter(|entry| registry_owned(entry.id))
+        .filter(|entry| registry_owned(entry.id) && !listed_in_commands(entry.path))
     {
         out.push_str(&format!("  oxa {:<32}{}\n", entry.path.join(" "), entry.summary));
     }
