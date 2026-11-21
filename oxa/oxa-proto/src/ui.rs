@@ -1,4 +1,4 @@
-use crate::{Access, Answer, KeyId, Value};
+use crate::{Access, Answer, KeyId, SecretAsk, SecretValue, Value};
 
 /// Severity of a notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -121,6 +121,15 @@ pub trait Ui: Send {
     /// a typed chat message or yolo.
     fn secret(&mut self, _title: &str, _body: &str) -> Option<String> {
         None
+    }
+    /// [`Ui::secret`] with what oxa knows about the request (the exact command, the asking
+    /// process and the tool that started it) and an answer that is zeroed when dropped. The
+    /// password broker calls this one. A UI that shows the context, or that can hand over its
+    /// own buffer, implements it; the default asks through [`Ui::secret`] and takes over that
+    /// string's buffer. The same rules hold: never logged, recorded or displayed, never answered
+    /// by a model, a typed chat message or yolo.
+    fn secret_ask(&mut self, ask: &SecretAsk<'_>) -> Option<SecretValue> {
+        self.secret(ask.title, ask.prompt).map(SecretValue::from_string)
     }
     /// [`Ui::confirm`] that `cancel` can dismiss: only this dialog is dismissed, and a cancel
     /// that came before the dialog was registered is never lost (the answer is `None`).

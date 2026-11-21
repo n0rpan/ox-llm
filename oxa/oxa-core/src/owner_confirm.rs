@@ -25,14 +25,16 @@
 //!
 //! A second kind carries a password prompt (sudo's askpass helper): `{"v":2,"kind":"secret",
 //! "prompt":..}` in, `{"secret":..}` or `{"answer":"none",..}` out. It is answered only by the
-//! session's own `Ui::secret` dialog: never by a typed message, never by yolo (there is no
+//! session's own `Ui::secret_ask` dialog: never by a typed message, never by yolo (there is no
 //! password to invent), and an unattended run answers `none`. It is served only while an
-//! attended, unsandboxed direct sudo call is in flight.
+//! attended, unsandboxed direct sudo call is in flight. The dialog is told the exact command and
+//! the pid of the sudo process the broker launched for it, so it can show what asks.
 //! At most one request from the exact sudo child launched for that call can open a dialog.
 //! The helper must be the running oxa executable and write to the pipe sudo reads.
-//! The secret is held only until it is written to the asking process's socket; it is never put in
-//! a [`Record`] or in `Debug` output.
-use oxa_proto::{DialogCancel, Ui, YoloSwitch};
+//! The secret is one [`SecretValue`] from the dialog to the write into the asking process's
+//! socket: it is written from its own buffer, with no second copy, and zeroed when dropped. It is
+//! never put in a [`Record`] or in `Debug` output.
+use oxa_proto::{DialogCancel, SecretAsk, SecretValue, Ui, YoloSwitch};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -382,6 +384,52 @@ pub fn ask_secret(sock: &Path, prompt: &str) -> Option<String> {
 /// The askpass helper's name in the broker directory (a symlink to the running executable).
 pub const ASKPASS_NAME: &str = "oxa-askpass";
 
+/// The title of the password dialog. oxa's own text; the prompt below it is the process's.
+const SECRET_TITLE: &str = "Password requested by a process of this session";
+/// The only tool whose call opens a password window (see `exec::askpass_env`).
+const SECRET_TOOL: &str = "bash";
+
+/// What the broker knows about the process a password prompt came from: the command of the
+/// call that launched it and the pid of that sudo process. Not secret.
+#[derive(Clone, Default)]
+struct SecretOrigin {
+    command: String,
+    pid: u32,
+}
+
+/// `\u00XX` for every control byte, so the reply writer never formats a secret byte at run time.
+static CONTROL_ESCAPES: [[u8; 6]; 32] = {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut table = [[0u8; 6]; 32];
+    let mut i = 0;
+    while i < 32 {
+        table[i] = [b'\\', b'u', b'0', b'0', HEX[i >> 4], HEX[i & 15]];
+        i += 1;
+    }
+    table
+};
+
+/// Write the one-line reply `{"secret":"<value>"}` straight from the value's own buffer: the
+/// JSON escapes are constants and the runs between them are written in place, so no formatted
+/// or escaped copy of the secret exists in this process. `secret` must be UTF-8.
+fn write_secret_reply(out: &mut impl Write, secret: &[u8]) -> std::io::Result<()> {
+    out.write_all(b"{\"secret\":\"")?;
+    let mut start = 0;
+    for (i, byte) in secret.iter().enumerate() {
+        let escape: &[u8] = match *byte {
+            b'"' => b"\\\"",
+            b'\\' => b"\\\\",
+            c if c < 0x20 => &CONTROL_ESCAPES[usize::from(c)],
+            _ => continue,
+        };
+        out.write_all(&secret[start..i])?;
+        out.write_all(escape)?;
+        start = i + 1;
+    }
+    out.write_all(&secret[start..])?;
+    out.write_all(b"\"}\n")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Yes,
@@ -460,10 +508,13 @@ struct Pending {
     /// Created by `serve` under the state lock when it picks the request; a typed answer
     /// cancels exactly this dialog.
     cancel: Option<DialogCancel>,
-    /// A password prompt rather than a yes/no question: only the `Ui::secret` dialog answers it.
+    /// A password prompt rather than a yes/no question: only the `Ui::secret_ask` dialog
+    /// answers it.
     secret: bool,
+    /// For a password prompt: the command and process that ask.
+    origin: SecretOrigin,
     /// The owner's secret, held until the waiting connection takes it.
-    secret_value: Option<String>,
+    secret_value: Option<SecretValue>,
 }
 
 #[derive(Default)]
@@ -512,11 +563,12 @@ pub struct OwnerConfirm {
     publisher: Mutex<Option<Arc<dyn Publisher>>>,
     /// The session is in plan mode (read-only): a publish request answers `plan_mode`.
     plan_mode: AtomicBool,
-    askpass_launch: Mutex<Option<Arc<oxa_sandbox::SudoLaunch>>>,
+    /// The open password window: the launch and the exact command it was registered for.
+    askpass_launch: Mutex<Option<(Arc<oxa_sandbox::SudoLaunch>, String)>>,
     #[cfg(target_os = "linux")]
     askpass_exe: Option<std::fs::File>,
     // The in-process seam for the fake sudo integration test. No wire request can set it.
-    peer_check: Mutex<Option<PeerCheck>>,
+    peer_check: Mutex<Option<(String, PeerCheck)>>,
 }
 
 type PeerCheck = Box<dyn Fn(&UnixStream) -> bool + Send + Sync>;
@@ -527,7 +579,7 @@ pub struct AskpassWindow(Arc<OwnerConfirm>);
 
 impl Drop for AskpassWindow {
     fn drop(&mut self) {
-        if let Some(launch) = lock(&self.0.askpass_launch).take() {
+        if let Some((launch, _)) = lock(&self.0.askpass_launch).take() {
             launch.revoke();
         }
     }
@@ -548,8 +600,23 @@ enum SecretPeer {
         parent: u32,
         launch: Arc<oxa_sandbox::SudoLaunch>,
         lifetime: oxa_sandbox::PeerLifetime,
+        command: String,
     },
-    Test,
+    Test(SecretOrigin),
+}
+
+impl SecretPeer {
+    /// What the dialog is told about this peer.
+    fn origin(&self) -> SecretOrigin {
+        match self {
+            #[cfg(target_os = "linux")]
+            SecretPeer::Sudo { parent, command, .. } => SecretOrigin {
+                command: command.clone(),
+                pid: *parent,
+            },
+            SecretPeer::Test(origin) => origin.clone(),
+        }
+    }
 }
 
 /// The facts the askpass peer check decides on, read from `/proc`. Split out so the decision can
@@ -786,7 +853,7 @@ impl OwnerConfirm {
         }
         let launch = oxa_sandbox::SudoLaunch::register(self.askpass_path(), command.to_owned(), argv)?;
         let selector = launch.selector().to_owned();
-        *current = Some(launch);
+        *current = Some((launch, command.to_owned()));
         Some((selector, AskpassWindow(Arc::clone(self))))
     }
 
@@ -794,36 +861,47 @@ impl OwnerConfirm {
     #[doc(hidden)]
     pub fn test_askpass_window(
         self: &Arc<Self>,
+        command: &str,
         check: impl Fn(&UnixStream) -> bool + Send + Sync + 'static,
     ) -> TestAskpassWindow {
-        *lock(&self.peer_check) = Some(Box::new(check));
+        *lock(&self.peer_check) = Some((command.to_owned(), Box::new(check)));
         TestAskpassWindow(Arc::clone(self))
     }
 
     fn claim_askpass(&self, stream: &UnixStream) -> Option<SecretPeer> {
-        if let Some(check) = lock(&self.peer_check).as_ref() {
-            return check(stream).then_some(SecretPeer::Test);
+        if let Some((command, check)) = lock(&self.peer_check).as_ref() {
+            return check(stream).then(|| {
+                SecretPeer::Test(SecretOrigin {
+                    command: command.clone(),
+                    pid: oxa_sandbox::peer_pid_uid(stream).map_or(0, |peer| peer.0),
+                })
+            });
         }
         #[cfg(target_os = "linux")]
         {
-            let launch = lock(&self.askpass_launch).clone()?;
+            let (launch, command) = lock(&self.askpass_launch).clone()?;
             let lifetime = oxa_sandbox::PeerLifetime::from_socket(stream)?;
             let parent = askpass_parent(stream, self.askpass_exe.as_ref()?)?;
             (lifetime.is_live() && launch.claim(parent)).then_some(SecretPeer::Sudo {
                 parent,
                 launch,
                 lifetime,
+                command,
             })
         }
         #[cfg(not(target_os = "linux"))]
         None
     }
 
-    fn deliver_askpass(&self, stream: &UnixStream, peer: SecretPeer, secret: &str) -> bool {
+    /// Write the owner's answer to the peer, from the value's own buffer (no second copy).
+    fn deliver_askpass(&self, stream: &UnixStream, peer: SecretPeer, secret: &SecretValue) -> bool {
+        // The reply is one JSON line: bytes that are not UTF-8 cannot be sent.
+        if std::str::from_utf8(secret.expose()).is_err() {
+            return false;
+        }
         let send = || {
-            let reply = json!({"secret": secret});
             let mut out = stream;
-            let _ = writeln!(out, "{reply}");
+            let _ = write_secret_reply(&mut out, secret.expose());
         };
         match peer {
             #[cfg(target_os = "linux")]
@@ -831,6 +909,7 @@ impl OwnerConfirm {
                 parent,
                 launch,
                 lifetime,
+                ..
             } => {
                 self.askpass_exe
                     .as_ref()
@@ -839,7 +918,7 @@ impl OwnerConfirm {
                     && lifetime.is_live()
                     && launch.deliver(parent, send)
             }
-            SecretPeer::Test => lock(&self.peer_check).as_ref().is_some_and(|check| {
+            SecretPeer::Test(_) => lock(&self.peer_check).as_ref().is_some_and(|(_, check)| {
                 if !check(stream) {
                     return false;
                 }
@@ -874,7 +953,8 @@ impl OwnerConfirm {
                     let cancel = DialogCancel::new();
                     p.shown = true;
                     p.cancel = Some(cancel.clone());
-                    (p.id, p.title.clone(), p.body.clone(), p.publish, p.secret, cancel)
+                    let secret = p.secret.then(|| p.origin.clone());
+                    (p.id, p.title.clone(), p.body.clone(), p.publish, secret, cancel)
                 })
         };
         let Some((id, title, body, publish, secret, cancel)) = next else {
@@ -891,14 +971,17 @@ impl OwnerConfirm {
             self.answer(id, verdict, Origin::Dialog);
             return;
         }
-        if secret {
-            // The prompt is the requesting process's own text, shown as data. Only this dialog
-            // answers; the value goes straight to the waiting connection.
-            let text = format!(
-                "A process run by this session asks for a password. Its prompt follows as written; \
-                 it is not an oxa message.\n\n{body}"
-            );
-            let value = ui.secret("Password requested by a process of this session", &text);
+        if let Some(origin) = secret {
+            // The prompt is the requesting process's own text, shown as data, next to what the
+            // broker itself knows: the command and the sudo process it launched. Only this
+            // dialog answers; the value goes straight to the waiting connection.
+            let value = ui.secret_ask(&SecretAsk {
+                title: SECRET_TITLE,
+                prompt: &body,
+                command: &origin.command,
+                pid: origin.pid,
+                tool: SECRET_TOOL,
+            });
             self.answer_secret(id, value);
             return;
         }
@@ -970,7 +1053,7 @@ impl OwnerConfirm {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
-        if let Some(launch) = lock(&self.askpass_launch).take() {
+        if let Some((launch, _)) = lock(&self.askpass_launch).take() {
             launch.revoke();
         }
         self.cv.notify_all();
@@ -1000,8 +1083,8 @@ impl OwnerConfirm {
         true
     }
 
-    /// The owner's answer to a password prompt, from the session's `Ui::secret` dialog only.
-    fn answer_secret(&self, id: u64, value: Option<String>) {
+    /// The owner's answer to a password prompt, from the session's `Ui::secret_ask` dialog only.
+    fn answer_secret(&self, id: u64, value: Option<SecretValue>) {
         let mut st = lock(&self.state);
         if let Some(p) = st.pending.iter_mut().find(|p| p.id == id && p.reply.is_none()) {
             let verdict = if value.is_some() {
@@ -1017,17 +1100,20 @@ impl OwnerConfirm {
 
     fn request(&self, request: &Request) -> Reply {
         match request {
-            Request::Ask { title, body } => self.request_kind(title, body, false, false, true).0,
+            Request::Ask { title, body } => self.request_kind(title, body, false, None, true).0,
             Request::Publish(_) => Reply::nobody("bad_request"),
             // `connection` answers a password prompt itself: it needs the value, not a verdict.
-            Request::Secret { prompt } => self.request_kind(prompt, prompt, false, true, true).0,
+            Request::Secret { prompt } => {
+                self.request_kind(prompt, prompt, false, Some(SecretOrigin::default()), true)
+                    .0
+            }
         }
     }
 
-    /// A password prompt waits like a question, but only the `Ui::secret` dialog answers it and
-    /// the value goes to the waiting connection instead of a record.
-    fn request_secret(&self, prompt: String) -> Option<String> {
-        self.request_kind(&prompt, &prompt, false, true, true).1
+    /// A password prompt waits like a question, but only the `Ui::secret_ask` dialog answers it
+    /// and the value goes to the waiting connection instead of a record.
+    fn request_secret(&self, prompt: &str, origin: SecretOrigin) -> Option<SecretValue> {
+        self.request_kind(prompt, prompt, false, Some(origin), true).1
     }
 
     /// Ask the owner (or answer for yolo) about `title` and `body`. With `record` the answer is
@@ -1038,9 +1124,10 @@ impl OwnerConfirm {
         title: &str,
         body: &str,
         publish: bool,
-        secret: bool,
+        origin: Option<SecretOrigin>,
         record: bool,
-    ) -> (Reply, Option<String>) {
+    ) -> (Reply, Option<SecretValue>) {
+        let secret = origin.is_some();
         let shown = shown_text(title, body);
         let sha = sha256_hex(shown.as_bytes());
         // Yolo answers a yes/no question at once; it cannot answer a password prompt (there is no
@@ -1085,6 +1172,7 @@ impl OwnerConfirm {
             reply: None,
             cancel: None,
             secret,
+            origin: origin.unwrap_or_default(),
             secret_value: None,
         });
         let outcome = loop {
@@ -1156,7 +1244,7 @@ impl OwnerConfirm {
             }
         };
         let rendered = prepared.render();
-        let mut reply = self.request_kind(PUBLISH_TITLE, &rendered, true, false, false).0;
+        let mut reply = self.request_kind(PUBLISH_TITLE, &rendered, true, None, false).0;
         let finish = |url: Option<String>, reply: &Reply| {
             if reply.verdict == Verdict::None {
                 return;
@@ -1295,7 +1383,9 @@ impl OwnerConfirm {
                 // Reserve this launch before showing a dialog, then re-check the peer
                 // and foreground scope before releasing the owner's answer.
                 let delivered = self.claim_askpass(&stream).is_some_and(|peer| {
-                    self.request_secret(prompt).is_some_and(|secret| {
+                    // The value lives in this closure only: dropped, and so zeroed, right after
+                    // the write.
+                    self.request_secret(&prompt, peer.origin()).is_some_and(|secret| {
                         stream.set_write_timeout(Some(self.limits.read_timeout)).is_ok()
                             && self.deliver_askpass(&stream, peer, &secret)
                     })
@@ -1463,16 +1553,21 @@ mod tests {
     }
 
     /// A `Ui` whose password dialog answers `value`, after `gate` (when given) is released.
+    /// It remembers what it was told about each request.
     struct SecretDialog {
         value: Option<String>,
         gate: Option<std::sync::mpsc::Receiver<()>>,
+        asked: Arc<Mutex<Vec<String>>>,
     }
     impl Ui for SecretDialog {
-        fn secret(&mut self, _: &str, _: &str) -> Option<String> {
+        fn secret_ask(&mut self, ask: &SecretAsk<'_>) -> Option<SecretValue> {
+            lock(&self.asked).push(format!("{ask:?}"));
             if let Some(gate) = &self.gate {
                 gate.recv().ok()?;
             }
-            self.value.clone()
+            self.value
+                .as_deref()
+                .map(|v| SecretValue::from_bytes(v.as_bytes()))
         }
         fn confirm(&mut self, _: &str, _: &str, _: Option<u32>) -> Option<bool> {
             None
@@ -1503,19 +1598,46 @@ mod tests {
         let d = dir("secret");
         let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Yolo)).expect("start");
         b.set_servable(true);
-        let _window = b.test_askpass_window(|_| true);
+        let _window = b.test_askpass_window("sudo true", |_| true);
         let sock = b.sock_path().to_path_buf();
         let t = std::thread::spawn(move || ask_secret(&sock, "Password:"));
+        let asked = Arc::default();
         let mut dialog = SecretDialog {
             value: Some("opaque-example".into()),
             gate: None,
+            asked: Arc::clone(&asked),
         };
         pump(&b, &mut dialog, 25);
         assert_eq!(t.join().expect("join").as_deref(), Some("opaque-example"));
         assert!(b.take_records().is_empty(), "a secret is never recorded");
         assert!(!format!("{b:?}").contains("opaque-example"));
+        // The dialog was told what asks: the prompt as written, the command and the tool.
+        let asked = lock(&asked).join("\n");
+        assert!(asked.contains("prompt: \"Password:\""), "{asked}");
+        assert!(asked.contains("command: \"sudo true\""), "{asked}");
+        assert!(asked.contains("tool: \"bash\""), "{asked}");
+        assert!(!asked.contains("opaque-example"), "{asked}");
         b.close();
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// The reply line is written from the secret's own bytes and still parses as the same
+    /// string, whatever characters the password holds.
+    #[test]
+    fn the_secret_reply_is_valid_json_for_any_password() {
+        for secret in [
+            "opaque-example",
+            "",
+            "q\"uo\\te",
+            "tab\there\u{1}\u{1f}",
+            "blåbær-ø",
+        ] {
+            let mut line = Vec::new();
+            write_secret_reply(&mut line, secret.as_bytes()).expect("write");
+            assert_eq!(line.last(), Some(&b'\n'));
+            let reply: Value = serde_json::from_slice(&line).expect("json");
+            assert_eq!(reply, json!({ "secret": secret }));
+        }
     }
 
     /// A typed message never answers a password prompt, whatever it says.
@@ -1524,7 +1646,7 @@ mod tests {
         let d = dir("secret-typed");
         let b = OwnerConfirm::start(&d, YoloSwitch::new(Autonomy::Standard)).expect("start");
         b.set_servable(true);
-        let _window = b.test_askpass_window(|_| true);
+        let _window = b.test_askpass_window("sudo true", |_| true);
         let sock = b.sock_path().to_path_buf();
         let t = std::thread::spawn(move || ask_secret(&sock, "Password:"));
         while lock(&b.state).pending.is_empty() {
@@ -1536,6 +1658,7 @@ mod tests {
             shown.serve(&mut SecretDialog {
                 value: Some("opaque-example".into()),
                 gate: Some(gate),
+                asked: Arc::default(),
             });
         });
         while b
@@ -1659,7 +1782,7 @@ mod tests {
         assert_eq!(ask_secret(b.sock_path(), "Password:"), None);
         assert!(lock(&b.state).pending.is_empty(), "no dialog was queued");
         {
-            let _window = b.test_askpass_window(|_| true);
+            let _window = b.test_askpass_window("sudo true", |_| true);
         }
         assert_eq!(
             ask_secret(b.sock_path(), "Password:"),

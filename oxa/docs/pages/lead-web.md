@@ -213,12 +213,22 @@ Board sample (board, alarms, GitHub App quota, thread holds and the quota deferr
 owner's reserve recorded) and the runner situation named by `OXA_LEAD_SITUATION`, which
 the pages did not read before. The server no longer makes its own partial read.
 
-- **Workers** shows the Lead session's live workers first: name, lane (branch), model,
-  state and how old the worker's status file is (a Dead worker, a Stopped worker and a
-  stale status show as such), then the runner situation rows. The parent is the session
-  of the Lead owner binding, never a session list. No workers recorded and no runner
-  observation render the "Lane status unavailable" text; a corrupt registry renders
-  "Live workers refused" and is left untouched.
+- **Board** lists the observed PRs with their next action, priority, lease and attempts
+  today, under counted filter chips that narrow the list by next action. A wide screen
+  shows a table; a phone shows the same rows as cards. A stale or
+  absent board observation is named explicitly, never shown as empty healthy work.
+- **Item** names the next action and the observed state: priority, lease, attempts today
+  and the observed time. Title, checks, review state, findings and diff are not part of
+  this observation, so each is shown as "Unavailable in this snapshot" rather than guessed.
+- **Workers** shows the Lead session's live workers under "This host" first: name, lane
+  (branch), model, a state chip and how old the worker's status file is (a Dead worker, a
+  Stopped worker and a stale status show as such). The runner situation tasks are then
+  grouped by their host, each with a state chip (Stall reported, Busy at observation, or
+  Idle reported for a host with no running task); within a host the reported stalls come
+  first and the observation order is otherwise kept. The parent is the session of the Lead
+  owner binding, never a session list. No workers recorded and no runner observation render
+  the "Lane status unavailable" text; a corrupt registry renders "Live workers refused" and
+  is left untouched.
 - **Capacity** (home and Workers pages) shows the owner's user-only `oxa.lead.capacity`
   map next to observed use: one row per host as `running workers / configured capacity`,
   for example `host-a 2/6`. A host the owner did not configure shows an unknown capacity;
@@ -243,6 +253,33 @@ the pages did not read before. The server no longer makes its own partial read.
   changed digest after an update reloads the page. Streams use the existing
   16-connection pool and per-write deadline. The one-shot `/events` route and the
   polling fallback remain for listeners without the route.
+
+## Transport: one request for a repeat page
+
+The stylesheet and the script are served at URLs that name their bytes:
+`/a/<first eight hex digits of SHA-256>/style.css` and `/a/<sha8>/live.js`. The
+document links them there, so a repeat visit reuses the browser's copy without a
+request (`Cache-Control: public, max-age=31536000, immutable`); a new build changes
+the digest and therefore the URL, so a cached asset is never a stale one. These two
+files are the only shared, cacheable answers: they hold no page data, identity or
+session, and a page is still `no-store`.
+
+A page or a `?fragment=1` answer carries an `ETag` of its exact bytes. A browser that
+sends the same `ETag` back in `If-None-Match` gets `304 Not Modified` with no body and
+the same CSP, referrer, `nosniff` and `no-store` headers. An unchanged page therefore
+costs one revalidated request. The `ETag` is compared only after the request is
+authorized: a refused request never learns whether a page changed, and gets no
+validator. A `*` or a weak tag never answers `304` for a page, because the bytes, not
+the page's identity, are what the client needs to hold. Each asset representation
+(raw or gzip) has its own validator, so a `304` never names bytes the client does not
+have.
+
+Pages, fragments and assets are gzipped (`flate2`, level 6) when the request's
+`Accept-Encoding` allows it and the result is smaller; the raw bytes are served
+otherwise, and a body that would grow is never compressed. Home is about 1.7 KB on the
+wire and the two assets about 6.4 KB together, against roughly 22 KB uncompressed.
+The compression happens per response for a page and once at start for an asset. The
+one-shot `/events` route and the live stream are not compressed.
 
 ## Synthetic fixture frames
 
