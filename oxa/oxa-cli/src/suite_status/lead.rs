@@ -53,6 +53,10 @@ pub(super) fn section(user: &Settings, dirs: &Dirs, cwd: &Path, env: &Env) -> Va
         .and_then(|uid| lead_model(dirs, uid).ok())
         .flatten();
     let facts = facts(user, dirs, cwd, env);
+    // The owner's configured per-host capacity (#2369), user layer only. Display
+    // truth for the panel; observed use/Ready/stuck stay on the lead board, which
+    // alone reads the situation. Unset or unreadable is null, never a fabricated map.
+    let capacity = crate::lead::capacity::Capacity::parse(user.user_value("oxa.lead.capacity"));
     json!({
         "state": facts.state,
         "configured": facts.configured,
@@ -61,6 +65,7 @@ pub(super) fn section(user: &Settings, dirs: &Dirs, cwd: &Path, env: &Env) -> Va
         "model": model,
         "last_activity_ms": facts.last_activity_ms,
         "serve": serve(dirs, cwd),
+        "capacity": if capacity.is_empty() { Value::Null } else { capacity.to_json() },
     })
 }
 
@@ -260,6 +265,36 @@ mod tests {
         assert_eq!(
             section(&merged, &dirs, &test.work(), &Env::from_pairs(&[]))["model"],
             "owner-model"
+        );
+    }
+
+    #[test]
+    fn lead_section_capacity_is_user_only_and_drops_invalid_entries() {
+        let test = TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        // Unset capacity is null, never a fabricated map.
+        assert!(section_for(&test, &dirs)["capacity"].is_null());
+        write_settings(
+            &dirs,
+            &json!({"oxa": {"lead": {"capacity": {"host-a": 6, "host-b": 8, "bad name": 3}}}}),
+        );
+        // The invalid host entry is ignored; the valid capacities are reported.
+        assert_eq!(
+            section_for(&test, &dirs)["capacity"],
+            json!({"host-a": 6, "host-b": 8})
+        );
+        // A project file cannot change the owner's capacity.
+        let project_settings = dirs.project_settings_file(&test.work());
+        fs::create_dir_all(project_settings.parent().unwrap()).unwrap();
+        fs::write(
+            &project_settings,
+            json!({"oxa": {"lead": {"capacity": {"host-a": 99}}}}).to_string(),
+        )
+        .unwrap();
+        let merged = Settings::load(&dirs, &test.work(), true);
+        assert_eq!(
+            section(&merged, &dirs, &test.work(), &Env::from_pairs(&[]))["capacity"],
+            json!({"host-a": 6, "host-b": 8})
         );
     }
 
