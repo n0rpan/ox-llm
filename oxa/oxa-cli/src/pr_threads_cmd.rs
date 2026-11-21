@@ -124,7 +124,7 @@ fn cursor(value: Option<&str>) -> Option<String> {
     let s = value?;
     ((1..=200).contains(&s.len())
         && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'=' | b'-')))
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'=' | b'-' | b'+' | b'/')))
     .then(|| s.to_string())
 }
 
@@ -156,7 +156,9 @@ fn comment(hooks: &ProbeHooks, node: &Value) -> Comment {
         commit: valid_sha(node["commit"]["oid"].as_str()).ok(),
         original_commit: valid_sha(node["originalCommit"]["oid"].as_str()).ok(),
         body_chars: raw.chars().count(),
-        body_cut: body.ends_with(" [cut]"),
+        // `scrubbed` cuts to BODY_CHARS and appends " [cut]" only when it truncates, so an
+        // over-cap length is the reliable signal (a short body that literally ends " [cut]" is not cut).
+        body_cut: body.chars().count() > BODY_CHARS,
         body,
     }
 }
@@ -216,11 +218,18 @@ fn fetch(
         None => args.extend(["-F".into(), "after=null".into()]),
         Some(c) => args.extend(["-f".into(), format!("after={c}")]),
     }
+    // `gh api graphql` exits 1 on a GraphQL error (bad token, missing repo, rate limit) while
+    // still printing the JSON error document on stdout. Accept it so the real error is reported
+    // below instead of a generic auth hint; a non-JSON reply (e.g. an auth failure) keeps the hint.
     let out = hooks
-        .run_accepting("gh", &args, budget, READ_CAP, &[0])
+        .run_accepting("gh", &args, budget, READ_CAP, &[0, 1])
         .map_err(|e| OxaError::new(codes::IO, e))?;
-    let doc: Value = serde_json::from_str(&out)
-        .map_err(|_| OxaError::new(codes::INVALID, "gh printed output that is not JSON"))?;
+    let doc: Value = serde_json::from_str(&out).map_err(|_| {
+        OxaError::new(
+            codes::INVALID,
+            "gh printed output that is not JSON; is `gh auth status` logged in and does the repository exist?",
+        )
+    })?;
     if let Some(errors) = doc["errors"].as_array().filter(|e| !e.is_empty()) {
         let msg = errors[0]["message"].as_str().unwrap_or("unknown GraphQL error");
         return Err(OxaError::new(codes::IO, hooks.scrubbed(msg, 500)));
