@@ -120,7 +120,6 @@ pub struct Shared {
     /// W4: the frontend's hook told when a background job wakes its session (see
     /// [`Handle::set_wake_notifier`]); `None` for a headless host.
     pub wake: Mutex<Option<WakeNotify>>,
-    pub(crate) wire_evidence: std::sync::OnceLock<crate::wire_evidence::WireEvidence>,
 }
 
 /// W4: the frontend's wake for a session. Called with the session id that has queued input.
@@ -219,6 +218,8 @@ pub struct Gate {
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
+    /// Unset unless the owner terminal armed this session. Never an event-bus observer.
+    pub(crate) wire_evidence: std::sync::OnceLock<crate::wire_evidence::WireEvidence>,
     /// The owner confirm broker of this session (`Session::enable_owner_confirm`).
     pub(crate) owner_confirm: Mutex<Option<Arc<crate::owner_confirm::OwnerConfirm>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
@@ -472,7 +473,6 @@ impl Shared {
             dirty: std::sync::atomic::AtomicBool::new(false),
             gate: Gate::default(),
             wake: Mutex::new(None),
-            wire_evidence: std::sync::OnceLock::new(),
         }
     }
 

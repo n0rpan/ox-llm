@@ -285,7 +285,7 @@ fn run_inner(
         let mut retried = false;
         let mut empty_retries: u32 = 0;
         let mut replays: u32 = 0;
-        if let Some(capture) = st.shared.wire_evidence.get() {
+        if let Some(capture) = st.shared.gate.wire_evidence.get() {
             capture.new_request();
         }
         let turn = loop {

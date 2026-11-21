@@ -159,7 +159,7 @@ pub fn request(
     }
     let mut prefilled = 0;
     let mut generated = false;
-    let evidence = st.shared.wire_evidence.get().cloned();
+    let evidence = st.shared.gate.wire_evidence.get().cloned();
     let pending = evidence
         .as_ref()
         .and_then(|capture| capture.before(&req, st.transcript.rebases().len()));
@@ -1025,7 +1025,7 @@ fn start_tool_prefill(
                     );
                 }
                 let mut prefilled = 0;
-                if let Some(capture) = budget.shared.wire_evidence.get() {
+                if let Some(capture) = budget.shared.gate.wire_evidence.get() {
                     capture.gap();
                 }
                 let pre_cancelled = cancel.is_cancelled();
