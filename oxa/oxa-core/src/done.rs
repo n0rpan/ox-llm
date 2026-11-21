@@ -335,11 +335,6 @@ impl Proof {
         self.passed_any
     }
 
-    /// A passing check ran after the last change (the verified-artifact line, #2295).
-    pub(crate) fn checked(&self) -> bool {
-        self.checked
-    }
-
     /// A file changed in this run (FH-N2: a closing question after edits is not an open task).
     pub(crate) fn edited(&self) -> bool {
         self.edited
@@ -577,16 +572,11 @@ impl DoneState {
     }
 
     /// #2295: the verified-artifact line for a failed-check repair. A file is named only when a
-    /// check passed after its last write and a command of the batch failed: the batch is the
-    /// failure signal and the check is this run's verification of the files. A write after the
-    /// last passing check stays out ([`Self::note_proof`]).
-
-    /// #2295: the verified-artifact line for a failed-check repair. A file is named only when a
-    /// check passed after its last write and a command of the batch failed: the batch is the
-    /// failure signal and the check is this run's verification of the files. A write after the
-    /// last passing check stays out ([`Self::note_proof`]).
+    /// check passed after its last write and a command failed: the failure is the signal and
+    /// the check is this run's verification of the files. A write after the last passing check
+    /// stays out ([`Self::note_proof`]), so the set holds exactly the covered files.
     pub(crate) fn verified_artifacts(&self, cwd: &Path) -> Option<String> {
-        if !self.failed_command || !self.proof.checked() {
+        if !self.failed_command || self.written.is_empty() {
             return None;
         }
         artifact_line(cwd, &newest(&self.written))
@@ -1866,15 +1856,6 @@ mod tests {
         ];
         state.note_proof(&calls, &results);
         state.note_artifacts(true);
-        if state.verified_artifacts(&work).is_none() {
-            panic!(
-                "no line: failed={} checked={} written={:?} unchecked={:?}",
-                state.failed_command,
-                state.proof.checked(),
-                state.written,
-                state.unchecked_writes
-            );
-        }
         let line = state
             .verified_artifacts(&work)
             .expect("a verified result is named");
