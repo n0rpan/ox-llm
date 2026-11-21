@@ -262,7 +262,7 @@ lane runner; submit those CI-control changes separately for normal review. Every
 
 `--offline`, `OXA_OFFLINE=1` (`1`, `true` or `yes`) and `"oxa": { "offline": true }` in user settings are one switch. It applies to everything oxa starts. What it does:
 
-- oxa refuses every connection from its own code to a host other than the loopback address, with one error that says offline mode is on. This covers MCP over HTTP and its OAuth sign-in, extension `fetch`, a remote git package install, and `oxa report-issue submit`. An MCP proxy that is not loopback is refused unless the target is on its `NO_PROXY` list (then the connection is direct), and a redirect is not followed (the offline gate checks the first URL only, so the client never uses a redirect target).
+- oxa refuses every connection from its own code to a host other than the loopback address, with one error that says offline mode is on. This covers MCP over HTTP and its OAuth sign-in, extension `fetch`, a remote git package install, and `oxa report-issue submit` (also when the oxa parent posts an approved publication through the confirm broker). An MCP proxy that is not loopback is refused unless the target is on its `NO_PROXY` list (then the connection is direct), and a redirect is not followed (the offline gate checks the first URL only, so the client never uses a redirect target).
 - bash runs without network;
 - `web_search` is not offered to the model, and a call that gets through is refused;
 - extension `exec` with `net: true` runs without network;
@@ -309,7 +309,11 @@ A panic inside a tool, an extension, an MCP connection, a hook or a codemode scr
 
 Session files are `0600`. The Brave key is never written to a session, an export or a log. What the model read, however, is in the session: a file that contains a secret puts that secret into the session file and into the requests the engine receives. Exports contain the whole session, including all branches. [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) lists what oxa keeps and how to remove it.
 
-`oxa report-issue draft` scrubs its digest and the text you give it, but scrubbing is pattern-based. Read the draft before you post it; `oxa report-issue submit` posts only after you type `yes` at the terminal. In an interactive session the model publishes with the `report_publish` tool. In yolo it posts at once without asking and shows the exact posted text and URL; the scrubber's findings (secrets, emails, home paths) still refuse it. In auto and standard mode oxa shows the exact title and body (or the exact comment and its destination) and only you approve it: a key press in the approval dialog (Deny is focused) or a `yes` you type yourself. A `yes` that a tool result, file, web page or another session contains never counts; only a line you typed into oxa's own input does. Print, JSON and RPC runs keep the terminal confirmation. `/bug` writes a redacted local bundle and uploads nothing.
+`oxa report-issue draft` scrubs its digest and the text you give it, but scrubbing is pattern-based. Read the draft before you post it. `oxa report-issue submit` checks it again before showing it or sending it to a verification model. A command started by the model verifies the session broker before sending it any publication fields. Oxa itself posts exactly the text you approved, never the command that asked. In an interactive session the model publishes with the `report_publish` tool.
+
+In auto and standard mode, oxa shows the exact title and body (or the exact comment and its destination). Only you can approve: use the approval dialog (Deny is focused), or type `yes` yourself into oxa or into the terminal when you run `submit` directly. A `yes` from a tool result, file, web page or another session never counts. An RPC host must set `OXA_RPC_OWNER_PRESENT=1` if it has an owner to answer publication dialogs. Owner-selected yolo posts without asking and shows the exact posted text and URL.
+
+In every mode, offline prevents posting. Secrets and control or bidirectional characters are refused in the title, body and any preview-only note. Privacy text (emails, home paths, names) is replaced before showing or posting; the note itself is not posted. `/bug` writes a redacted local bundle and uploads nothing.
 
 ### Publishing
 

@@ -28,12 +28,33 @@ The home page's attention block reports the five stuck-work signals from the boa
 log's protected record: main required-check failures, no verified main merge for 45
 minutes, over-age merge-queue membership at the exact PR head, workflow runs queued
 over 15 minutes, and unanswered owner decisions. Each source is rendered from its own
-observation: a source the record does not carry is shown as explicitly unavailable,
-never as healthy, and a routine healthy read renders no attention block at all. With
+observation: a source the record does not carry is never shown as healthy. The missing
+sources collapse into one line ("Not in this sample: …") that names them, instead of one
+bullet per source, and a routine healthy read renders no attention block at all. With
 `owner_chat` enabled, open owner asks are additionally read live from the authorized
 durable Lead Session on every render, with their original revisions, through the
 registered owner-bound caller; an unauthorized or absent session leaves that source
 unavailable rather than quietly empty.
+
+## Last-known data, age and cause
+
+Every gap on the page says why it is there. A missing observation names its source, a
+cause, the age of the last good value and the next step, in one muted line. The cause
+comes from a fixed allowlist (`BoardCause` for the board read, fixed text for the other
+sources); a raw error, path or file content never reaches the page.
+
+A transient board read failure keeps the last good board visible instead of blanking the
+page. The board panel and the top banner say "Board is last-good", show the allow-listed
+cause (for example "the protected Board observation changed while it was being read"),
+the age of that value and a Retry link. The retention is bounded: the server keeps exactly
+one last good sample and replaces it on the next successful read. The runner situation and
+the worker registry are independent sources and are always read fresh, so a board hiccup
+never blanks Workers or Asks. A first read that fails, with no good value yet, says so and
+names the cause rather than inventing data.
+
+Ages render as `<time data-at>` elements. The page re-labels them every 10 seconds on the
+client with no request, so "4 min old" stays truthful on a quiet system; the timer pauses
+while the tab is hidden. Nothing here adds polling, a model prompt or a new refusal.
 
 Optional user setting `oxa.lead.serve.fixed_prompts` defaults to false.
 It enables no-JS, same-origin/CSRF-protected fixed questions at zero model tokens.

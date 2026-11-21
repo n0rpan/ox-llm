@@ -87,7 +87,8 @@ code, tests, CI and docs; the owner validates on hardware.
   never dismisses another dialog; a yes with no shown dialog, or for another request id, is ignored. A consumer a model-run command starts (`oxa work --publish`, `oxa report-issue`)
   trusts only the sandbox's pinned socket or a listener verified as the session's own oxa process
   (peer credentials: an ancestor, same executable, same user), whatever `OXA_CONFIRM_SOCK` and
-  `OXA_CODING_AGENT` say; a fake socket is no answer. Yolo is unchanged (the model already has the
+  `OXA_CODING_AGENT` say. This also applies to structured report publication: authenticate the
+  connection before sending any publication fields. Yolo is unchanged (the model already has the
   owner's rights). The question is shown to the owner as the process's text, marked as such. Do not add
   `/dev/tty`-only confirmations or env-marker refusals for owner actions.
 - **Lead web attach (#2075):** attached mode takes the session id from the user-only
@@ -132,12 +133,19 @@ code, tests, CI and docs; the owner validates on hardware.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
 - Publishing a drafted issue or comment (`oxa report-issue`, the `report_publish` tool): in yolo it posts
-  without asking and shows the exact posted text and URL; the scrubber's refusal (secrets, emails, home paths)
-  still applies. In auto and standard it needs the owner's own approval of the exact text shown: a key press
-  in the UI approval dialog or a `yes` typed by the owner into the interactive input (`owner_reply::typed`,
+  without asking and shows the exact posted text and URL. The oxa parent prepares, shows, holds and posts
+  the approved bytes itself (`Publication` through the owner confirm broker, `oxa-cli/src/report_cmd/publisher.rs`);
+  a tool child only hands over fields, so nothing the model can write sits between the owner's yes and `gh`.
+  The child verifies the broker before sending any publication fields. Privacy text (emails, home paths, names) is
+  replaced in the title, body and any preview-only note. Secrets and control or bidirectional characters
+  refuse in every mode, yolo included. Validate an edited draft before showing it or verifying it with a
+  model. In auto and standard, approval needs the owner's answer to the exact preview: a key press in
+  the UI approval dialog or a `yes` typed by the owner into the interactive input (`owner_reply::typed`,
   called from that input only). A `yes` from a tool result, file, web page, other session or the tool
-  arguments never counts. Print, JSON and RPC runs keep the terminal confirmation. Reports go to
-  `oxstack/ox-llm` unless `oxa.reportIssue.repo` says otherwise.
+  arguments never counts. The parent must not offer an RPC publication dialog unless the host declares
+  owner presence with `OXA_RPC_OWNER_PRESENT=1`; owner-selected yolo does not use a dialog. The parent
+  refuses offline before asking and before posting. Reports go to `oxstack/ox-llm` unless
+  `oxa.reportIssue.repo` says otherwise.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.

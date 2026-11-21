@@ -39,7 +39,7 @@ article{margin:12px 0;padding:14px;overflow-wrap:anywhere}article p{margin-top:6
 .stale-notice{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 14px;margin:0 0 12px;
   border-radius:12px;background:var(--raised);border:1px dashed var(--muted);font-size:14px}.stale-notice h2{font-size:14px;font-weight:700;color:var(--ink)}
 .stale-notice p{margin:0}.stale-notice a{margin-left:auto;display:inline-flex;align-items:center;min-height:44px;padding:0 14px;
-  border-radius:12px;border:1px solid var(--line);background:var(--surface);font-weight:600}.empty{text-align:center;padding:34px 20px;color:var(--muted)}
+  border-radius:12px;border:1px solid var(--line);background:var(--surface);font-weight:600}.say-why b{color:var(--ink)}.empty{text-align:center;padding:34px 20px;color:var(--muted)}
 .empty svg{width:40px;height:40px;color:var(--ok);margin-bottom:8px}.empty b{display:block;color:var(--ink);font-size:var(--t-lg);margin-bottom:2px}
 button,.btn{min-height:44px;padding:9px 16px;border-radius:12px;border:1px solid var(--line);background:var(--surface);
   font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-align:center}
