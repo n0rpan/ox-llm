@@ -361,7 +361,7 @@ impl DoneState {
                     self.proof.changed();
                     if let Some(path) = written_path(call) {
                         if !self.changed_paths.contains(&path) {
-                            self.changed_paths.push(path);
+                            self.changed_paths.push(path.clone());
                         }
                         self.written.push(path);
                     }
