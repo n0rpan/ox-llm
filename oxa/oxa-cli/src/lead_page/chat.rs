@@ -29,23 +29,18 @@ fn context_tokens(entries: &[Entry]) -> Option<u32> {
 /// section above the transcript. Switching sessions is a user setting, not a request.
 fn popover(html: &mut String, owner: Option<&super::OwnerChatView<'_>>, now: u64) {
     html.push_str("<details class=sessions><summary>Lead");
-    match owner {
-        Some(owner) => {
-            if let Some(entries) = owner.entries {
-                let working = entries
-                    .last()
-                    .is_some_and(|entry| entry.ts_ms / 1000 + session::RUNNING > now);
-                let _ = write!(
-                    html,
-                    "<span class=chip>{}</span>",
-                    if working { "running" } else { "idle" }
-                );
-                if let Some(tokens) = context_tokens(entries) {
-                    let _ = write!(html, "<span class=\"num muted\">{tokens} tokens</span>");
-                }
-            }
+    if let Some(entries) = owner.and_then(|owner| owner.entries) {
+        let working = entries
+            .last()
+            .is_some_and(|entry| entry.ts_ms / 1000 + session::RUNNING > now);
+        let _ = write!(
+            html,
+            "<span class=chip>{}</span>",
+            if working { "running" } else { "idle" }
+        );
+        if let Some(tokens) = context_tokens(entries) {
+            let _ = write!(html, "<span class=\"num muted\">{tokens} tokens</span>");
         }
-        None => {}
     }
     html.push_str("</summary><div class=sheet>");
     match owner {
@@ -59,9 +54,9 @@ fn popover(html: &mut String, owner: Option<&super::OwnerChatView<'_>>, now: u64
     html.push_str("</div></details>");
 }
 
-/// The chat page's one item page. The repository's owner goal lives at `/goal`, a page
-/// outside this slice, so the chip opens only when that destination is more than the
-/// one-line status Home shows. Until then it says where the goal is.
+/// The owner goal's recorded state as a header chip. The goal's detail page belongs to a
+/// later slice, so the chip states the state rather than linking to a page that is not
+/// there yet.
 fn goal_chip(html: &mut String, view: &View<'_>) {
     match view.owner_goal {
         Some((goal, _)) => {

@@ -12,31 +12,205 @@ use super::{escape, md, ItemKind};
 use crate::approve_cmd::one_line;
 use crate::report_cmd::{scrub, ScrubCtx};
 use oxa_proto::{Entry, EntryBody, Role};
+use std::fmt::Write;
 
 /// One thread page: the newest messages shown at first. Older ones stay in the session
 /// file and open with `?before=<entry id>`.
 pub(super) const PAGE: usize = 30;
+/// How long after its newest entry a turn still reads as running.
+pub(super) const RUNNING: u64 = 180;
 /// The most characters of a step's text shown.
 const MAX_STEP_TEXT: usize = 600;
-/// How long after its newest entry a turn still reads as running.
-const RUNNING_SECS: u64 = 180;
+/// The most characters of one rendered body shown; more is clipped with a note.
+const MAX_BODY: usize = 16_384;
 
 const CONFIRMED: &str = "oxa.lead.proposal_confirmed";
 
-/// One rendered thread piece: a bubble, a step or a one-line note. A step whose
-/// [`ItemKind`] is `Step` folds with its neighbours; every other row stands alone.
+/// One rendered thread piece: a bubble, a step or a one-line note. `Step` folds with its
+/// neighbours; every other row stands alone.
 pub(crate) struct Item {
     pub id: String,
     pub ts: u64,
     kind: ItemKind,
     /// Rendered markup for a bubble or note; empty for a folding step.
     body: String,
-    /// Rendered text of a step that cannot fold.
+    /// Rendered text of a row that cannot fold.
     detail: String,
     /// The tool's name for a step's label.
     name: String,
     /// A failed tool result, shown as failed rather than as ordinary output.
     failed: bool,
+}
+
+/// The last entry time of this page, so "working" is read without inventing activity.
+pub(crate) fn newest(items: &[Item]) -> u64 {
+    items.iter().map(|item| item.ts).max().unwrap_or(0)
+}
+
+/// True while the newest entry is recent enough to be a turn still in flight.
+pub(crate) fn working(items: &[Item], now: u64) -> bool {
+    let newest = newest(items);
+    newest > 0 && now.saturating_sub(newest) < RUNNING
+}
+
+fn quoted(ctx: &ScrubCtx, text: &str) -> String {
+    escape(&one_line(&scrub(text, ctx)))
+}
+
+fn snippet(ctx: &ScrubCtx, text: &str) -> String {
+    let text = one_line(&scrub(text, ctx));
+    if text.chars().count() <= MAX_STEP_TEXT {
+        return escape(&text);
+    }
+    let kept: String = text.chars().take(MAX_STEP_TEXT).collect();
+    format!("{}…", escape(&kept))
+}
+
+/// A shell command with every executable word kept and every credential masked, the same
+/// text the approval panel shows for the command the owner is about to allow.
+fn command_text(ctx: &ScrubCtx, command: &str) -> String {
+    snippet(ctx, &scrub_shell(command, ctx))
+}
+
+/// A tool's own name, kept to a plain word so it can never become markup.
+fn tool_name(name: &str) -> String {
+    let kept: String = name
+        .chars()
+        .take(24)
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        .collect();
+    if kept.is_empty() {
+        "tool".into()
+    } else {
+        kept
+    }
+}
+
+/// The shell a step runs, when its arguments are exactly that field.
+fn shell_command(args_raw: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(args_raw).ok()?;
+    value.get("command")?.as_str().map(str::to_owned)
+}
+
+/// The argument that names what a step acted on, from an allow-listed key only.
+fn argument_hint(args_raw: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(args_raw).ok()?;
+    let object = value.as_object()?;
+    for key in ["path", "file_path", "pattern", "query", "url", "description"] {
+        if let Some(text) = object.get(key).and_then(|value| value.as_str()) {
+            let first = text.lines().next().unwrap_or("").trim();
+            if !first.is_empty() {
+                return Some(first.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn markdown_body(ctx: &ScrubCtx, text: &str) -> String {
+    if text.trim().is_empty() {
+        return String::new();
+    }
+    format!("<div class=md>{}</div>", md::render(&scrub(text, ctx)))
+}
+
+/// The rendering of one session entry, or nothing when it carries no thread text (the
+/// goal, model and compaction records, and a usage row counted by its reply).
+fn item(entry: &Entry, ctx: &ScrubCtx) -> Option<Item> {
+    let mut row = Item {
+        id: entry.id.clone(),
+        ts: entry.ts_ms / 1000,
+        kind: ItemKind::Step,
+        body: String::new(),
+        detail: String::new(),
+        name: String::new(),
+        failed: false,
+    };
+    match &entry.body {
+        EntryBody::Msg { wire, tool, .. } => {
+            let text = wire.content.as_deref().unwrap_or("").trim();
+            match wire.tool_calls.first() {
+                Some(call) => {
+                    row.name = tool_name(&call.name);
+                    let more = wire.tool_calls.len().saturating_sub(1);
+                    if more > 0 {
+                        row.name = format!("{} +{more}", row.name);
+                    }
+                    match shell_command(&call.args_raw) {
+                        Some(command) if call.name == "bash" => {
+                            row.detail = command_text(ctx, &command);
+                        }
+                        _ => {
+                            row.kind = ItemKind::Tool;
+                            row.detail = argument_hint(&call.args_raw)
+                                .map_or_else(String::new, |hint| snippet(ctx, &hint));
+                        }
+                    }
+                    if !text.is_empty() {
+                        row.body = markdown_body(ctx, text);
+                        row.failed = tool.as_ref().is_some_and(|meta| meta.is_error);
+                    }
+                }
+                None => match wire.role {
+                    Role::Tool => {
+                        row.kind = ItemKind::Tool;
+                        row.detail = quoted(ctx, text);
+                        row.failed = tool.as_ref().is_some_and(|meta| meta.is_error);
+                    }
+                    Role::System => return None,
+                    role => {
+                        row.kind = if role == Role::User {
+                            ItemKind::Owner
+                        } else {
+                            ItemKind::Lead
+                        };
+                        let images = wire.images.len();
+                        let note = if images == 0 {
+                            String::new()
+                        } else {
+                            format!("<p class=by>{images} image attachment(s) not shown</p>")
+                        };
+                        row.body = format!("{note}{}", markdown_body(ctx, text));
+                    }
+                },
+            }
+        }
+        EntryBody::BashExecution {
+            command,
+            output,
+            exit,
+            ..
+        } => {
+            row.name = "bash".into();
+            row.detail = command_text(ctx, command);
+            row.body = snippet(ctx, output);
+            row.failed = exit.is_some_and(|code| code != 0);
+        }
+        EntryBody::Shown { text, why } => {
+            row.kind = ItemKind::Lead;
+            row.body = format!(
+                "<p class=muted>Shown · {}</p>{}",
+                escape(why),
+                markdown_body(ctx, text)
+            );
+        }
+        EntryBody::Custom { custom_type, data } if custom_type == CONFIRMED => {
+            if data.get("proposal_id").and_then(|id| id.as_str()).is_some() {
+                row.kind = ItemKind::Lead;
+                row.body = "<p>Confirmation recorded. Application is pending.</p>".into();
+            }
+        }
+        _ => return None,
+    }
+    // An entry that would render nothing is not a row; an empty row would fold into a
+    // neighbouring tool run and change its count.
+    let empty = row.body.is_empty() && row.detail.is_empty() && row.name.is_empty() && !row.failed;
+    (!empty).then_some(row)
+}
+
+/// Every entry of the session, in file order, at most one row each.
+pub(crate) fn items(entries: &[Entry], ctx: &ScrubCtx) -> Vec<Item> {
+    entries.iter().filter_map(|entry| item(entry, ctx)).collect()
 }
 
 /// A row that stands alone instead of folding: a bubble, or a step worth its own row
@@ -45,8 +219,7 @@ fn standalone(item: &Item) -> bool {
     item.kind != ItemKind::Step && (!item.detail.is_empty() || item.failed)
 }
 
-/// The tool run a row belongs to: consecutive folding steps, closed by a `standalone`
-/// row.
+/// The tool run a row belongs to: consecutive folding steps.
 fn fold(rows: &[Item]) -> Vec<Vec<&Item>> {
     let mut groups: Vec<Vec<&Item>> = Vec::new();
     let mut run: Vec<&Item> = Vec::new();
@@ -66,7 +239,7 @@ fn fold(rows: &[Item]) -> Vec<Vec<&Item>> {
     groups
 }
 
-/// One `steps · bash ×4, read ×2 · 38 s` label for a folded run. Names are the tools'
+/// One `N steps · bash ×4, read ×2 · 38 s` label for a folded run. Names are the tools'
 /// own; the count and the duration are exact reads of this run.
 fn tools_summary(run: &[&Item]) -> String {
     let mut counts: Vec<(String, usize)> = Vec::new();
@@ -114,15 +287,12 @@ fn step_html(html: &mut String, row: &Item) {
     if !row.body.is_empty() {
         let _ = write!(
             html,
-            "<div class=\"out\">{}<button type=button class=copy data-copy=1>Copy</button></div>",
+            "<div class=out>{}<button type=button class=copy data-copy=1>Copy</button></div>",
             row.body
         );
     }
     html.push_str("</div>");
 }
-
-/// The most characters of one rendered body shown; more is clipped with a note.
-const MAX_BODY: usize = 16_384;
 
 fn clipped(body: &str) -> String {
     if body.len() <= MAX_BODY {
@@ -136,9 +306,9 @@ fn clipped(body: &str) -> String {
     format!("{}<p class=muted>Message clipped.</p>", &body[..cut])
 }
 
-/// What the thread shows under one lead message: fact chips from this process's reply
-/// whose text is this bubble's own, and that reply's action card. A reply is matched by
-/// its text, so the chips never land under a different message.
+/// What the thread shows under one lead message: the fact chips of this process's reply
+/// and that reply's action card, when the bubble is that reply's own text. Chips never
+/// land under a different message.
 fn under_reply(
     html: &mut String,
     body: &str,
@@ -150,7 +320,7 @@ fn under_reply(
     let Some(reply) = latest.filter(|_| row_is_lead) else {
         return;
     };
-    if !body.contains(&super::md::render(&reply.text)) {
+    if !body.contains(&md::render(&reply.text)) {
         return;
     }
     if !reply.facts.is_empty() {
@@ -184,9 +354,9 @@ fn under_reply(
     html.push_str("</div>");
 }
 
-/// The thread as bubbles. A run of folding steps becomes one `<details class=tools>`; a
-/// step with its own editor text or a failure keeps its own row inside a details.
-pub(super) fn render(
+/// The thread as bubbles. A run of folding steps becomes one `<details class=tools>` that
+/// opens on tap; a step with its own editor text or a failure keeps its own row.
+pub(crate) fn render(
     html: &mut String,
     rows: &[Item],
     latest: Option<&crate::lead_chat::conversation::ConversationReply>,
@@ -203,8 +373,8 @@ pub(super) fn render(
             };
             let _ = write!(
                 html,
-                "<details class=tools{failed} data-key=\"f{}\" open><summary>{}</summary>",
-                first.id,
+                "<details class=tools{failed} data-key=\"f{}\"><summary>{}</summary>",
+                escape(&first.id),
                 escape(&tools_summary(group))
             );
             for row in group {
@@ -219,7 +389,7 @@ pub(super) fn render(
                 "<details class=\"tools step{}\"{}{}><summary><b>{}</b> {}</summary>",
                 if first.failed { " bad" } else { "" },
                 if first.failed { " data-failed=1" } else { "" },
-                format!(" data-key=\"f{}\" open", first.id),
+                format!(" data-key=\"f{}\"", escape(&first.id)),
                 escape(&first.name),
                 if first.detail.is_empty() {
                     "step".to_owned()
@@ -244,25 +414,26 @@ pub(super) fn render(
         };
         let _ = write!(html, "<div class=\"msg {class}\"{id}>{body}");
         under_reply(html, &body, class == "lead", latest, action, now);
-        let by = if class == "me" {
-            format!("you · {}", super::human_time(first.ts, now))
-        } else {
-            format!("lead · {}", super::human_time(first.ts, now))
-        };
-        let _ = write!(html, "<div class=by>{by}</div></div>");
+        let speaker = if class == "me" { "you" } else { "lead" };
+        let _ = write!(
+            html,
+            "<div class=by>{speaker} · {}</div></div>",
+            super::human_time(first.ts, now)
+        );
     }
 }
 
 /// The page of thread rows the route shows: the newest [`PAGE`] messages and the steps
 /// between them, or the page before the entry `before` names. An id the session does not
-/// hold changes nothing, so a forged bound only shows the newest page again.
-pub(super) fn page(rows: Vec<Item>, before: Option<&str>) -> (Vec<Item>, bool) {
+/// hold changes nothing, so a bound that is not this session's shows the newest page.
+pub(crate) fn page(mut rows: Vec<Item>, before: Option<&str>) -> (Vec<Item>, bool) {
     let end = before
         .and_then(|id| rows.iter().position(|row| row.id == id))
         .unwrap_or(rows.len());
+    rows.truncate(end);
     // Count messages, not steps: a page is a readable amount of conversation.
     let mut seen = 0usize;
-    let mut start = end;
+    let mut start = rows.len();
     while start > 0 {
         start -= 1;
         if rows[start].kind != ItemKind::Step && !standalone(&rows[start]) {
@@ -273,20 +444,20 @@ pub(super) fn page(rows: Vec<Item>, before: Option<&str>) -> (Vec<Item>, bool) {
         }
     }
     let older = start > 0;
-    (rows[start..end].to_vec(), older)
+    (rows.split_off(start), older)
 }
 
-/// A synthetic session fixture for the render tests: the same entry shapes a real
-/// session file holds, with no text of any real conversation.
+/// A synthetic session fixture for the render tests: the entry shapes a real session file
+/// holds, with no text of any real conversation.
 #[cfg(test)]
 pub(crate) fn fixture() -> Vec<Entry> {
     use oxa_proto::{Part, ToolCall, ToolMeta, Usage, Value, WireMsg};
     let mut entries = Vec::new();
-    let push = |entries: &mut Vec<Entry>, id: &str, parent: Option<&str>, ts_ms: u64, body: EntryBody| {
+    let push = |entries: &mut Vec<Entry>, id: &str, parent: Option<&str>, ms: u64, body: EntryBody| {
         entries.push(Entry {
             id: id.into(),
             parent: parent.map(str::to_owned),
-            ts_ms,
+            ts_ms: ms,
             body,
         });
     };
@@ -295,6 +466,7 @@ pub(crate) fn fixture() -> Vec<Entry> {
         parts: vec![Part::Text("fixture".into())],
         tool,
     };
+    // Times are Unix seconds, so the tests read them against a clock of one hour.
     push(
         &mut entries,
         "a0000000",
@@ -341,7 +513,7 @@ pub(crate) fn fixture() -> Vec<Entry> {
         }];
         push(
             &mut entries,
-            &format!("a000000{}", 3 + index),
+            &format!("a000000{}", index + 3),
             Some("a0000002"),
             (3_600_u64 - 90 + index as u64) * 1000,
             msg(call, None),
@@ -351,7 +523,7 @@ pub(crate) fn fixture() -> Vec<Entry> {
     push(
         &mut entries,
         "a0000006",
-        Some("a0000003"),
+        Some("a0000005"),
         (3_600_u64 - 80) * 1000,
         msg(WireMsg::assistant(reply), None),
     );
@@ -394,8 +566,7 @@ mod tests {
     use super::*;
 
     fn built(entries: &[Entry]) -> Vec<Item> {
-        let ctx = ScrubCtx::default();
-        items(entries, &ctx)
+        items(entries, &ScrubCtx::default())
     }
 
     fn rendered(entries: &[Entry]) -> String {
@@ -408,8 +579,7 @@ mod tests {
 
     #[test]
     fn thread_is_bubbles_with_one_folded_tool_run_and_masked_failures() {
-        let entries = fixture();
-        let html = rendered(&entries);
+        let html = rendered(&fixture());
         assert!(html.contains("class=\"msg me\""), "{html}");
         assert!(html.contains("class=\"msg lead\""), "{html}");
         assert!(html.contains("<strong>item</strong>"), "{html}");
@@ -422,13 +592,11 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<a href=\"/items/17\">#17</a>"), "{html}");
-        // bash, read, edit and the failed result are tool rows: the consecutive ones
-        // fold into one details whose label counts the tools by their own names.
-        assert!(html.contains("<details class=tools"), "{html}");
+        // The consecutive tool rows fold into one details labelled by their own names.
+        assert_eq!(html.matches("<details class=tools").count(), 2, "{html}");
         assert!(html.contains("read, bash, edit"), "{html}");
         assert!(html.contains("data-failed=1"), "{html}");
-        // A step that carries its own text shows the masked text and a Copy button: the
-        // node holds text and the button, never an attribute holding the command.
+        // A step that carries its own text shows the masked text and a Copy button.
         assert!(html.contains("oxa/src/fixture.rs</span>"), "{html}");
         assert!(html.contains("<button type=button class=copy"), "{html}");
         // A result holding a secret and a home path is masked before it is escaped.
@@ -438,6 +606,7 @@ mod tests {
         );
         assert!(!html.contains("/home/synthetic-user"), "{html}");
         assert!(html.contains("<secret>"), "{html}");
+        assert!(!html.contains("<script"), "{html}");
     }
 
     #[test]
@@ -456,7 +625,7 @@ mod tests {
     fn working_reads_only_the_newest_entry_time() {
         let items = built(&fixture());
         assert!(working(&items, 3_600));
-        assert!(!working(&items, 3_600 + RUNNING_SECS));
+        assert!(!working(&items, 3_600 + RUNNING));
         assert!(!working(&[], 3_600));
         assert_eq!(newest(&items), 3_600 - 70);
         assert_eq!(items[0].kind, ItemKind::Owner);

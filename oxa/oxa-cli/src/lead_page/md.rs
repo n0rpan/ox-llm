@@ -123,45 +123,42 @@ pub(super) fn blocks(text: &str) -> Vec<String> {
             Event::End(tag) => {
                 depth = depth.saturating_sub(1);
                 match tag {
-                    Tag::Paragraph => {
+                    TagEnd::Paragraph => {
                         current.push_str("</p>");
                         if depth == 0 {
                             blocks.push(std::mem::take(&mut current));
                         }
                         continue;
                     }
-                    _ => {}
-                }
-                match tag {
-                    Tag::Heading { level, .. } => {
-                        let _ = write!(current, "</h{}>", level as u8);
-                    }
-                    Tag::BlockQuote(_) => current.push_str("</blockquote>"),
-                    Tag::CodeBlock(_) => {
+                    TagEnd::CodeBlock => {
                         in_code = false;
                         current.push_str("</code></pre></div>");
                     }
-                    Tag::List(_) => current.push_str(lists.pop().unwrap_or("</ul>")),
-                    Tag::Item => current.push_str("</li>"),
-                    Tag::Emphasis => current.push_str("</em>"),
-                    Tag::Strong => current.push_str("</strong>"),
-                    Tag::Strikethrough => current.push_str("</del>"),
-                    Tag::Link { .. } => {
+                    TagEnd::Heading(level) => {
+                        let _ = write!(current, "</h{}>", level as u8);
+                    }
+                    TagEnd::BlockQuote(_) => current.push_str("</blockquote>"),
+                    TagEnd::List(_) => current.push_str(lists.pop().unwrap_or("</ul>")),
+                    TagEnd::Item => current.push_str("</li>"),
+                    TagEnd::Emphasis => current.push_str("</em>"),
+                    TagEnd::Strong => current.push_str("</strong>"),
+                    TagEnd::Strikethrough => current.push_str("</del>"),
+                    TagEnd::Link => {
                         current.push_str(if in_link { "</a>" } else { "</span>" });
                         in_link = false;
                     }
-                    Tag::Table(_) => current.push_str("</table></div>"),
-                    Tag::TableHead => current.push_str("</th></tr></thead>"),
-                    Tag::TableRow => current.push_str("</tr>"),
-                    Tag::TableCell => current.push_str("</td>"),
-                    Tag::FootnoteDefinition(_) => current.push_str("</div>"),
-                    Tag::Image { .. } => current.push_str("</span>"),
-                    Tag::DefinitionList => current.push_str("</dl>"),
-                    Tag::DefinitionListTitle => current.push_str("</dt>"),
-                    Tag::DefinitionListDefinition => current.push_str("</dd>"),
-                    Tag::Superscript => current.push_str("</sup>"),
-                    Tag::Subscript => current.push_str("</sub>"),
-                    Tag::HtmlBlock | Tag::MetadataBlock(_) => {}
+                    TagEnd::Table => current.push_str("</table></div>"),
+                    TagEnd::TableHead => current.push_str("</th></tr></thead>"),
+                    TagEnd::TableRow => current.push_str("</tr>"),
+                    TagEnd::TableCell => current.push_str("</td>"),
+                    TagEnd::FootnoteDefinition => current.push_str("</div>"),
+                    TagEnd::Image => current.push_str("</span>"),
+                    TagEnd::DefinitionList => current.push_str("</dl>"),
+                    TagEnd::DefinitionListTitle => current.push_str("</dt>"),
+                    TagEnd::DefinitionListDefinition => current.push_str("</dd>"),
+                    TagEnd::Superscript => current.push_str("</sup>"),
+                    TagEnd::Subscript => current.push_str("</sub>"),
+                    TagEnd::HtmlBlock | TagEnd::MetadataBlock(_) => {}
                 }
                 if depth == 0 && !current.is_empty() {
                     blocks.push(std::mem::take(&mut current));
@@ -226,8 +223,9 @@ fn local_target(dest: &str) -> Option<String> {
     }
     if let Some((scheme, rest)) = trimmed.split_once("://") {
         return matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https")
-            .then(|| trimmed.to_owned())
-            .filter(|url| rest.split('/').next().is_some_and(|host| !host.is_empty()));
+            .then_some(trimmed)
+            .filter(|_| rest.split('/').next().is_some_and(|host| !host.is_empty()))
+            .map(str::to_owned);
     }
     // Only a plain path: no scheme, no protocol-relative host, no backslash or control.
     if !trimmed.starts_with('/')

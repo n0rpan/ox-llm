@@ -120,7 +120,7 @@ impl Page {
         let _ = write!(
             html,
             "<a class=compose href=/chat aria-label=\"Chat with lead\"{}>✎ Chat</a></nav>",
-            if matches!(self, Self::Chat(_)) {
+            if matches!(self, Self::Chat(..)) {
                 " aria-current=page"
             } else {
                 ""
