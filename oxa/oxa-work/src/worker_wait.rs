@@ -198,6 +198,40 @@ mod tests {
         assert!(started.elapsed() >= Duration::from_millis(260));
     }
 
+    /// The kill grace runs from the actual TERM delivery, not the theoretical deadline:
+    /// a sender that delivers late still leaves the child its full grace to finish the
+    /// TERM trap. Before the fix the kill landed on the original deadline and cut the
+    /// trap before its write, so the term file never appeared.
+    #[test]
+    fn the_kill_grace_runs_from_the_actual_term_delivery() {
+        let fixture = Fixture::new();
+        let sender = fixture.0.path().join("late-terminate");
+        fs::write(
+            &sender,
+            "#!/bin/sh\n/usr/bin/sleep 0.25\nexec /usr/bin/kill \"$@\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&sender, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut child = fixture.child(
+            "exec 2>/dev/null\ntrap '/usr/bin/sleep 0.3\nprintf term > \"$2\"' TERM\nprintf ready > \"$1\"\nwhile :; do :; done\n",
+        );
+        let (_sender, receiver) = notices(&mut child);
+        let started = Instant::now();
+        let result = wait(
+            &mut child.0,
+            &receiver,
+            Duration::from_millis(30),
+            Duration::from_millis(30),
+            Duration::from_millis(400),
+            &sender,
+        )
+        .unwrap();
+        assert!(result.deadline);
+        assert_eq!(result.status.signal(), Some(9));
+        assert_eq!(fs::read_to_string(fixture.0.path().join("term")).unwrap(), "term");
+        assert!(started.elapsed() >= Duration::from_millis(460));
+    }
+
     #[test]
     fn a_checkpoint_failure_terminates_the_current_child_without_waiting_for_the_deadline() {
         let fixture = Fixture::new();
