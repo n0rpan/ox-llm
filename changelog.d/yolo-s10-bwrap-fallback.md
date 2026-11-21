@@ -1,0 +1,1 @@
+- An interactive session without a usable `bwrap` now runs bash unsandboxed with a start warning instead of disabling bash, and an unenforceable `oxa.sandbox.net: off` keeps bash with a "network is NOT restricted" warning (offline still disables it). Unattended runs keep "bash is disabled" (#1512). Part of the yolo power plan (S10).

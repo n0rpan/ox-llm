@@ -215,36 +215,19 @@ pub(crate) fn verify_commit_with(
         return Err(crate::HOSTED_TEST_EVIDENCE_REQUIRED.into());
     }
     if lane_evidence {
-        // A green lane run only counts for what it actually ran, and the lane runs the
-        // suites of the crates the diff selects (its reverse-dependency expansion only
-        // widens that set) — except the engine workspace, whose nonportable suites ride
-        // the self-hosted route, so no engine change is ever covered by the lane.
-        let engine = derived::committed_engine_packages(policy, &export.tree, base, head)
+        // A green lane run only counts for what it actually ran. The lane coverage data
+        // (`tools/ci/lane_coverage.json`, read from the trusted base, the same file
+        // `tools/ci/lane_select.py` selects from) says which changed paths that is: engine
+        // suites outside the portable crates, engine fixtures and shared inputs, `fuzz/` and
+        // any crate the lane does not know have no lane evidence.
+        let coverage = crate::lane::coverage::Coverage::load(policy, &export.tree, base);
+        let changed = derived::committed_changed_paths(policy, &export.tree, base, head)
             .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
-        if !engine.is_empty() {
-            return Err(format!(
-                "the lane run does not run the engine suites: {}; engine work needs the hosted route",
-                engine.join(", ")
-            ));
-        }
-        // Shared engine inputs (engine/Cargo.toml, engine/Cargo.lock, engine/.cargo/)
-        // select no crate, so the packages gate above would miss them.
-        if derived::committed_engine_inputs(policy, &export.tree, base, head)
-            .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?
-        {
-            return Err(
-                "the lane run does not run the engine suites: shared engine inputs changed; \
-                 engine work needs the hosted route"
-                    .into(),
-            );
-        }
-        // Anything else the lane workflow never runs (engine fixtures, `fuzz/`) has no lane evidence either.
-        let uncovered = derived::committed_uncovered_paths(policy, &export.tree, base, head)
-            .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
+        let uncovered = coverage.uncovered(&changed, |path| {
+            derived::has_cargo_ancestor(policy, &export.tree, base, path)
+        });
         if let Some(path) = uncovered.first() {
-            return Err(format!(
-                "the lane run does not test {path}; that change needs the hosted route"
-            ));
+            return Err(coverage.refusal(path));
         }
         if !declared.is_empty() {
             let selected = derived::committed_packages(policy, &export.tree, base, head)
@@ -362,7 +345,13 @@ impl Drop for Export {
     }
 }
 impl Export {
-    fn create(policy: &RunPolicy, source: &Path, head: &str, tree: &str, base: &str) -> Result<Self> {
+    pub(crate) fn create(
+        policy: &RunPolicy,
+        source: &Path,
+        head: &str,
+        tree: &str,
+        base: &str,
+    ) -> Result<Self> {
         for oid in [head, tree, base] {
             if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err("acceptance requires full object identities".into());
@@ -617,6 +606,8 @@ mod tests {
                 push_approved: false,
                 content_scan: None,
                 runner_owns_github: false,
+                github_token_command: Vec::new(),
+                github_token_write_paths: Vec::new(),
                 autonomy: Default::default(),
                 worker_github: Default::default(),
                 authority_now: None,

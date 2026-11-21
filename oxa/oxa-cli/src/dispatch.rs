@@ -1,6 +1,6 @@
 //! D13: mode choice and wiring.
 // ported from pi packages/coding-agent/src/main.ts
-mod lead_owner;
+pub(crate) mod lead_owner;
 mod mode;
 
 pub(crate) use lead_owner::lead_model;
@@ -126,7 +126,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         return 0;
     }
     if a.version {
-        let _ = writeln!(stdout, "oxa {}", env!("CARGO_PKG_VERSION"));
+        let _ = writeln!(stdout, "oxa {}", oxa_proto::BUILD_VERSION);
         return 0;
     }
     let headless = a.subcommand.is_none()
@@ -326,39 +326,16 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Memory(words) => crate::run_memory(&words, &dirs, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
-            // #1512 S5: an owner answer to an approval request or the request list; a plain
-            // follow-up takes the inbox path below.
-            Subcommand::Send(words) if words.iter().any(|w| w == "--approve" || w == "--approvals") => {
-                crate::approve_cmd::run(&words, &dirs, &cwd, env, &mut *stdout)
-            }
             Subcommand::Local(_) if is_agent(env) => Err(OxaError::new(
                 codes::INVALID,
                 "Local model setup requires the owner outside an agent tool",
             )),
             Subcommand::Local(words) => run_local(&words, &dirs, &cwd, &mut *stdout),
-            Subcommand::Send(words) => match words.as_slice() {
-                [id, text] if oxa_session::valid_inbox_id(id) => {
-                    let mut piped = String::new();
-                    let read = if text == "-" {
-                        stdin
-                            .read_to_string(&mut piped)
-                            .map(|_| ())
-                            .map_err(|e| OxaError::io("cannot read session message from stdin", &e))
-                    } else {
-                        Ok(())
-                    };
-                    read.and_then(|()| {
-                        let message = if text == "-" { &piped } else { text };
-                        oxa_session::send_inbox(&dirs.agent_dir, id, message)
-                            .map(|_| 0)
-                            .map_err(|e| OxaError::io("cannot send session message", &e))
-                    })
-                }
-                _ => Err(OxaError::new(
-                    codes::USAGE,
-                    "Usage: oxa send <session-id> <text|->",
-                )),
-            },
+            // #1512 S5: a follow-up (with its delivery receipt), an owner answer to an approval
+            // request, or the request list; `approve_cmd` parses every form.
+            Subcommand::Send(words) => {
+                crate::approve_cmd::run(&words, &dirs, &cwd, env, &mut *stdout, &mut *stdin)
+            }
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
             Subcommand::ReportIssue(words) => crate::run_report_issue(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Wipe(words) => crate::run_wipe(
@@ -778,9 +755,10 @@ impl Built {
         // Issue #127 (b): one background-job registry per session, sharing the session's
         // sandbox. The session kills its jobs on close/shutdown.
         // `oxa.bash.maxJobs` (16 unless the owner set it).
-        let jobs = Arc::new(oxa_tools::JobRegistry::with_max_jobs(
-            self.settings.bash_max_jobs(),
-        ));
+        let jobs = Arc::new(
+            oxa_tools::JobRegistry::with_max_jobs(self.settings.bash_max_jobs())
+                .enforcing(self.settings.on_exceed(oxa_config::Budget::BashJobs).enforces()),
+        );
         let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
         jobs.set_sandbox(bash_sandbox.clone());
         // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
@@ -903,11 +881,20 @@ fn goal_first_prompt(start: String, first: Option<String>) -> String {
 }
 
 /// The sandbox bash and the exec hooks use, plus a start notice when it had to be replaced. A
-/// refused bash network (`oxa.sandbox.net: off`, offline) that this platform cannot enforce must
-/// not run: without an OS sandbox the command would keep the network the owner turned off, so
-/// bash is disabled instead of running.
-fn bash_sandbox(sandbox: Arc<dyn Sandbox>) -> (Arc<dyn Sandbox>, Option<String>) {
+/// refused bash network (`oxa.sandbox.net: off`, offline) that this platform cannot enforce
+/// cannot be honoured. Unattended runs and offline mode keep bash disabled, because the command
+/// would keep the network the owner turned off. An interactive session with only the
+/// `oxa.sandbox.net` setting keeps bash and warns that the network is not restricted: the owner
+/// is there to see it (yolo plan, S10).
+fn bash_sandbox(
+    sandbox: Arc<dyn Sandbox>,
+    interactive: bool,
+    offline: bool,
+) -> (Arc<dyn Sandbox>, Option<String>) {
     if !sandbox.network() && !sandbox.network_enforced() {
+        if interactive && !offline {
+            return (sandbox, Some(oxa_proto::NET_NOT_RESTRICTED_NOTICE.to_string()));
+        }
         let notice = format!(
             "{}; bash is disabled while the bash network is off",
             oxa_proto::NET_NOT_RESTRICTED_NOTICE
@@ -915,6 +902,48 @@ fn bash_sandbox(sandbox: Arc<dyn Sandbox>) -> (Arc<dyn Sandbox>, Option<String>)
         return (Arc::new(NoSandbox), Some(notice));
     }
     (sandbox, None)
+}
+
+/// Keep the refusing inner executor on Linux. Only FullAccess may run model bash
+/// with host rights; plan commands, extensions and project hooks still use the inner sandbox.
+fn no_bwrap_sandbox(
+    interactive: bool,
+    os_sandbox: bool,
+    reason: &str,
+    env: &Env,
+    dirs: &Dirs,
+) -> (Arc<dyn Sandbox>, Option<(Level, String)>) {
+    if cfg!(target_os = "linux") {
+        return (
+            Arc::new(NoSandbox),
+            if interactive && !os_sandbox {
+                Some((Level::Warning, format!("bwrap is missing or unusable ({reason}); bash runs with no isolation; exec hooks requiring bwrap are disabled")))
+            } else {
+                crate::run_kind::bwrap_missing_notice(os_sandbox, reason).map(|text| (Level::Warning, text))
+            },
+        );
+    }
+    // The same cleared base environment bwrap gives: credential variables stay out.
+    let mut layout = oxa_sandbox::Layout::build(&oxa_sandbox::LayoutInputs {
+        home: dirs.home.clone(),
+        agent_dir: Some(dirs.agent_dir.clone()),
+        path_var: env.get("PATH").unwrap_or("").to_string(),
+        env: env.pairs().to_vec(),
+        ..Default::default()
+    });
+    // Toolchain locations only: the sandbox's /tmp redirections do not apply here.
+    layout.env = oxa_sandbox::toolchain_env(env.pairs());
+    let why = oxa_sandbox::NO_OS_SANDBOX_NOTICE;
+    (
+        Arc::new(oxa_sandbox::Unsandboxed {
+            layout,
+            home: dirs.home.clone(),
+        }),
+        Some((
+            Level::Warning,
+            format!("{why}; bash and hooks run with no isolation"),
+        )),
+    )
 }
 
 /// Settings, trust, resources, engine, sandbox and the open mode. Notices are printed by the
@@ -987,6 +1016,7 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
+
     if !crate::in_process::cloud_enabled(&user_settings, dirs) {
         notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
     }
@@ -995,16 +1025,17 @@ fn prepare(
     let inherited_source = env
         .get(oxa_work::WORKTREE_TRUST_SOURCE_ENV)
         .filter(|_| mode == RunMode::Json);
-    let trusted = if let Some(source) = inherited_source.filter(|_| a.approve.is_none()) {
-        let source = Path::new(source);
-        let store = TrustStore::load(&dirs.trust_file());
+    let managed_source = inherited_source.map(Path::new).filter(|source| {
         let path = std::ffi::OsStr::new(env.get("PATH").unwrap_or(""));
-        let trusted = store.lookup(source) == Some(true)
-            && crate::netguard::trusted_executable_for("git", Some(path), Some(cwd), Some(&dirs.home))
-                .is_some_and(|git| oxa_work::verify_managed_worktree(&git, path, source, cwd).is_ok())
-            && store.approved_worktree_resources(source, cwd);
+        crate::netguard::trusted_executable_for("git", Some(path), Some(cwd), Some(&dirs.home))
+            .is_some_and(|git| oxa_work::verify_managed_worktree(&git, path, source, cwd).is_ok())
+    });
+    let trusted = if inherited_source.is_some() && a.approve.is_none() {
+        let trusted = managed_source.is_some_and(|source| {
+            TrustStore::load(&dirs.trust_file()).approved_worktree_resources(source, cwd)
+        });
         if !trusted {
-            report_untrusted_project(dirs, cwd, &gated, &mut notices);
+            report_untrusted_project(&gated, &mut notices);
         }
         trusted
     } else {
@@ -1021,6 +1052,23 @@ fn prepare(
     // Inherited trust covers verified resources. Project settings, MCP and
     // agent definitions need direct approval.
     let direct_project_trust = trusted && inherited_source.is_none();
+    if !trusted && Settings::project_declares_done(dirs, cwd) {
+        if managed_source.is_some() {
+            notices.push((
+                Level::Info,
+                "Managed worktree: the work runner handles project done checks".into(),
+            ));
+        } else {
+            let fix = format!(
+                "{}, or pass --approve for this run",
+                crate::approval::approval_fix(cwd)
+            );
+            if mode != RunMode::Interactive || !stdin_is_tty || !stdout_is_tty {
+                return Err(OxaError::new(codes::DENIED, UNTRUSTED_DONE).with_hint(fix));
+            }
+            notices.push((Level::Warning, format!("{UNTRUSTED_DONE}\nFix: {fix}")));
+        }
+    }
     let mut settings = child.apply(if direct_project_trust {
         Settings::load(dirs, cwd, true)
     } else {
@@ -1031,6 +1079,21 @@ fn prepare(
         // local done round just because trusted project resources were loaded.
         settings = settings.with_override("done", Value::Array(Vec::new()));
     }
+    // A custom shell or prefix can change the argv after classification. Named root actions
+    // are for the interactive owner with the default shell, never delegated runs.
+    let danger = if mode == RunMode::Interactive
+        && !child.nested()
+        && !a.lead
+        && settings.shell_path(&dirs.home).is_none()
+        && settings.shell_command_prefix().is_none()
+    {
+        let (rules, warnings) =
+            danger.with_root_actions(&user_settings.user_list(oxa_perm::SETTING_ROOT_ACTIONS));
+        notices.extend(warnings.into_iter().map(|w| (Level::Warning, w)));
+        rules
+    } else {
+        danger
+    };
     // CLI-045 (pi cli.md): `--verbose` overrides `quietStartup` for this run (in memory only).
     if a.verbose {
         settings = settings.with_override("quietStartup", Value::Bool(false));
@@ -1251,6 +1314,9 @@ fn prepare(
         notices.push((Level::Info, text.to_string()));
     }
     let layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
+    let interactive = mode == RunMode::Interactive
+        && kind == crate::run_kind::RunKind::Attended
+        && level != oxa_proto::PermissionMode::Plan;
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
             b.layout = layout.clone();
@@ -1267,43 +1333,39 @@ fn prepare(
             notices.extend(b.layout.git.notes.iter().map(|n| (Level::Warning, n.clone())));
             Arc::new(b)
         }
-        // No bubblewrap on this platform: run unsandboxed and say so, never claim isolation.
-        #[cfg(not(target_os = "linux"))]
-        Err(_) => {
-            notices.push((
-                Level::Warning,
-                format!(
-                    "{}; bash and hooks run with no isolation",
-                    oxa_sandbox::NO_OS_SANDBOX_NOTICE
-                ),
-            ));
-            // The same cleared base environment bwrap gives: credential variables stay out.
-            let mut layout = oxa_sandbox::Layout::build(&oxa_sandbox::LayoutInputs {
-                home: dirs.home.clone(),
-                agent_dir: Some(dirs.agent_dir.clone()),
-                path_var: env.get("PATH").unwrap_or("").to_string(),
-                env: env.pairs().to_vec(),
-                ..Default::default()
-            });
-            // Toolchain locations only: the sandbox's /tmp redirections do not apply here.
-            layout.env = oxa_sandbox::toolchain_env(env.pairs());
-            Arc::new(oxa_sandbox::Unsandboxed {
-                layout,
-                home: dirs.home.clone(),
-            })
-        }
-        #[cfg(target_os = "linux")]
+        // No usable bubblewrap: interactive sessions run unsandboxed and say so, never claim
+        // isolation; unattended runs on Linux disable bash.
         Err(e) => {
-            // Fail closed only where the OS sandbox is wanted; an attended run works without it.
-            if let Some(text) = crate::run_kind::bwrap_missing_notice(os_sandbox, &e.message) {
-                notices.push((Level::Warning, text));
+            let (sb, notice) = no_bwrap_sandbox(interactive, os_sandbox, &e.message, env, dirs);
+            if let Some(notice) = notice {
+                notices.push(notice);
             }
-            Arc::new(NoSandbox)
+            sb
         }
     };
-    let host_net = crate::netguard::with_net(sandbox, &settings);
+    // Where model bash, plan commands and hooks run is decided once (`ExecPolicy`): the pinned
+    // bwrap for network-less host commands is found here, before any model command, and shared
+    // with the credential discovery of the network guard.
+    let net_off = env.get(oxa_work::RUNNER_GITHUB_ENV) == Some("1")
+        || crate::run_kind::sandbox_net_off(&settings, &user_settings);
+    let mut policy = oxa_sandbox::ExecPolicy::new(
+        env.get("PATH").unwrap_or(""),
+        &dirs.home,
+        oxa_proto::offline(),
+        net_off,
+    );
+    policy.os_sandbox = os_sandbox;
+    policy.attended_tui = interactive;
+    let host_net = crate::netguard::with_net_policy(
+        sandbox,
+        &settings,
+        &policy,
+        env,
+        endpoint.api_key.as_deref(),
+        crate::netguard::TokenWorkspace::new(cwd, &dirs.home, &layout),
+    );
     let sandbox: Arc<dyn Sandbox> = host_net.clone();
-    let (sandbox, net_notice) = bash_sandbox(sandbox);
+    let (sandbox, net_notice) = bash_sandbox(sandbox, interactive && !os_sandbox, oxa_proto::offline());
     if let Some(notice) = net_notice {
         notices.push((Level::Warning, notice));
     }
@@ -1361,21 +1423,18 @@ fn prepare(
             format!("permission mode {}: {}", level.as_str(), level.describe()),
         ));
     }
-    // The owner's `oxa.sandbox.net = off` (or a runner that owns GitHub) holds for unsandboxed
-    // commands too (#1512 S3).
-    let net_off = env.get(oxa_work::RUNNER_GITHUB_ENV) == Some("1")
-        || crate::run_kind::sandbox_net_off(&settings, &user_settings);
+    // Only the attended TUI may keep network access when the configured network restriction
+    // cannot be enforced; the policy says so and the owner is told. Never offline, plan mode or
+    // a requested OS sandbox.
+    for text in policy.start_notices() {
+        if !notices.iter().any(|(_, t)| *t == text) {
+            notices.push((Level::Warning, text));
+        }
+    }
     let bash_sandbox = Arc::new(
-        oxa_sandbox::FullAccess::new(
-            sandbox.clone(),
-            yolo.clone(),
-            env.get("PATH").unwrap_or(""),
-            dirs.home.clone(),
-            oxa_proto::offline(),
-            net_off,
-        )
-        .with_os_sandbox(os_sandbox)
-        .with_host_controls(layout, host_net),
+        oxa_sandbox::FullAccess::with_policy(sandbox.clone(), yolo.clone(), dirs.home.clone(), policy)
+            .with_os_sandbox(os_sandbox)
+            .with_host_controls(layout, host_net),
     );
     // Exec hooks keep their dedicated sandbox independently of interactive bash.
     let hook_sandbox = oxa_sandbox::FullAccess::hook_sandbox(&bash_sandbox);
@@ -1559,7 +1618,7 @@ pub(crate) fn project_trusted(
             }
         }
     };
-    // B4: what runs outside the sandbox loads only as the user approved it (content hashes).
+    // Apply the owner's folder or content policy only after resolving trust.
     let trusted = if trusted && !gated.is_empty() {
         crate::approval::check(crate::approval::Check {
             env,
@@ -1569,6 +1628,7 @@ pub(crate) fn project_trusted(
             via_flag: approve == Some(true),
             via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
             asked_now,
+            content: user_settings.project_trust_requires_content(),
             interactive,
             notices,
         })?
@@ -1582,12 +1642,14 @@ pub(crate) fn project_trusted(
         trust_store.record_baseline(&dirs.trust_file(), cwd)?;
     }
     if !trusted {
-        report_untrusted_project(dirs, cwd, gated, notices);
+        report_untrusted_project(gated, notices);
     }
     Ok(trusted)
 }
 
-fn report_untrusted_project(dirs: &Dirs, cwd: &Path, gated: &[String], notices: &mut Vec<(Level, String)>) {
+const UNTRUSTED_DONE: &str = "done checks in .oxa/settings.json were not run: project is not trusted";
+
+fn report_untrusted_project(gated: &[String], notices: &mut Vec<(Level, String)>) {
     if !gated.is_empty() {
         notices.push((
             Level::Warning,
@@ -1595,14 +1657,6 @@ fn report_untrusted_project(dirs: &Dirs, cwd: &Path, gated: &[String], notices: 
                 "project resources were skipped (not trusted): {}",
                 gated.join(", ")
             ),
-        ));
-    }
-    // `done` is a project-only key in practice: an untrusted project's list is never merged,
-    // so say that its checks will not run.
-    if Settings::project_declares_done(dirs, cwd) {
-        notices.push((
-            Level::Warning,
-            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
         ));
     }
 }
@@ -1654,15 +1708,30 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
         Some("never") => DefaultTrust::Untrusted,
         _ => DefaultTrust::Ask,
     };
+    let store = TrustStore::load(&dirs.trust_file());
+    let saved = store.lookup(cwd);
     let gated = gated_resources(cwd);
     let trusted = resolve_trust(&TrustInputs {
         flag: a.approve,
         extension: None,
-        saved: TrustStore::load(&dirs.trust_file()).lookup(cwd),
+        saved,
         default,
         interactive: false,
         has_gated: !gated.is_empty(),
     }) == TrustOutcome::Trusted;
+    let trusted = if trusted && !gated.is_empty() {
+        if user.project_trust_requires_content() {
+            let blanket = a.approve == Some(true) || (saved.is_none() && default == DefaultTrust::Trust);
+            blanket || !matches!(store.approval(cwd), oxa_perm::Approval::Changed(_))
+        } else {
+            if let Some(text) = store.folder_changes_notice(cwd) {
+                write_diagnostics(err, [(Level::Warning, text)].into_iter());
+            }
+            true
+        }
+    } else {
+        trusted
+    };
     let settings = Settings::load(&dirs, cwd, trusted);
     let opts = match discover_opts(a, &dirs, cwd, trusted) {
         Ok(o) => o,
@@ -1977,12 +2046,13 @@ fn run_headless(
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
-    let _limit = match crate::limits::LimitWatcher::start(
+    let _limit = match crate::limits::Run::start(
         session.handle(),
         max_time,
         max_tokens,
         built.supervised_child,
-        built.hook_sets.subagent.as_deref(),
+        built.hook_sets.subagent.clone(),
+        crate::limits::SigtermOwner::Signal,
     ) {
         Ok(limit) => limit,
         Err(error) => {
@@ -2040,7 +2110,9 @@ fn run_headless(
             headless_inbox_enabled(&built.settings),
         ),
     };
+    built.result_facts.ci_polls(session.stats().ci_polls);
     built.result_facts.goal(session.goal());
+    built.result_facts.finish(session.stats());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
@@ -2100,12 +2172,13 @@ fn run_rpc(
     };
     notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
-    let _limit = match crate::limits::LimitWatcher::start(
+    let _limit = match crate::limits::Run::start(
         session.handle(),
         max_time,
         max_tokens,
         built.supervised_child,
-        built.hook_sets.subagent.as_deref(),
+        built.hook_sets.subagent.clone(),
+        crate::limits::SigtermOwner::Signal,
     ) {
         Ok(limit) => limit,
         Err(error) => {
@@ -2218,6 +2291,8 @@ fn run_tui(
     let store = built.store.clone();
     let base = built.clone();
     let pinned = owner.is_some();
+    let run_slot: Arc<std::sync::OnceLock<Arc<crate::limits::Run>>> = Arc::default();
+    let reopen_run = run_slot.clone();
     let reopen: ReopenFn = Box::new(move |request, carry| {
         if let Some(binding) = &owner {
             if !matches!(&request, Reopen::Resume(session) if session == binding.session_ref()) {
@@ -2259,18 +2334,29 @@ fn run_tui(
         }
         base.result_facts.attach(&mut session)?;
         session.set_output_schema(base.output_schema.clone());
+        if let Some(run) = reopen_run.get() {
+            run.attach(session.handle());
+        }
         Ok(session)
     });
-    // S11: the interactive startup session has the same soft wrap-up as a headless run.
+    // The limits belong to this invocation: the run follows every session swap.
     if a.max_time.is_some() || a.max_tokens.is_some() {
-        match crate::limits::StartupLimit::start(
+        let sigterm = if built.supervised_child {
+            crate::limits::SigtermOwner::Signal
+        } else {
+            crate::limits::SigtermOwner::Terminal(oxa_tui::cooperative_sigterm())
+        };
+        match crate::limits::Run::start(
             session.handle(),
             a.max_time,
             a.max_tokens,
             built.supervised_child,
             built.hook_sets.subagent.clone(),
+            sigterm,
         ) {
-            Ok(limit) => session.hold_startup_limit(limit),
+            Ok(run) => {
+                let _ = run_slot.set(Arc::new(run));
+            }
             Err(error) => return report(stderr, &error),
         }
     }
@@ -2502,23 +2588,44 @@ pub(crate) fn list_models(
             None => true,
         })
         .collect();
-    let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
     if rows.is_empty() {
-        match search {
-            Some(s) => writeln!(out, "No models matching \"{s}\"").map_err(write_err)?,
-            None => writeln!(out, "No models available").map_err(write_err)?,
-        }
-        return Ok(0);
+        return empty_list(search, out);
     }
-    let headers = ["provider", "model", "context", "max-out", "thinking", "images"];
+    let rows: Vec<Vec<String>> = rows.into_iter().map(Vec::from).collect();
+    render_table(
+        &["provider", "model", "context", "max-out", "thinking", "images"],
+        &rows,
+        out,
+    )?;
+    Ok(0)
+}
+
+/// The empty listing: the search word when one was given, else the plain fact.
+pub(crate) fn empty_list(search: Option<&str>, out: &mut dyn Write) -> Result<i32, OxaError> {
+    let text = match search {
+        Some(s) => format!("No models matching \"{s}\""),
+        None => "No models available".to_string(),
+    };
+    let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
+    writeln!(out, "{text}").map_err(write_err)?;
+    Ok(0)
+}
+
+/// One padded table, shared by `--list-models` and `oxa models`: every row carries exactly the
+/// header count of cells; every column but the last is padded, so the lines carry no trailing
+/// spaces.
+pub(crate) fn render_table(
+    headers: &[&str],
+    rows: &[Vec<String>],
+    out: &mut dyn Write,
+) -> Result<(), OxaError> {
     let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-    for row in &rows {
+    for row in rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.len());
         }
     }
     let line = |cells: &[&str]| -> String {
-        // Every column but the last is padded, so the lines carry no trailing spaces.
         let mut s = String::new();
         for (i, cell) in cells.iter().enumerate() {
             if i + 1 == cells.len() {
@@ -2529,16 +2636,19 @@ pub(crate) fn list_models(
         }
         s
     };
-    writeln!(out, "{}", line(&headers)).map_err(write_err)?;
-    for row in &rows {
+    let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
+    let header_line = line(headers);
+    writeln!(out, "{header_line}").map_err(write_err)?;
+    for row in rows {
         let cells: Vec<&str> = row.iter().map(String::as_str).collect();
         writeln!(out, "{}", line(&cells)).map_err(write_err)?;
     }
-    Ok(0)
+    Ok(())
 }
 
-/// `true` -> `yes`, `false` -> `no` for the `thinking`/`images` columns of `--list-models`.
-fn bool_word(b: bool) -> String {
+/// `true` -> `yes`, `false` -> `no` for the `thinking`/`images` columns of `--list-models`
+/// and `oxa models`.
+pub(crate) fn bool_word(b: bool) -> String {
     if b {
         "yes".to_string()
     } else {
@@ -2546,8 +2656,9 @@ fn bool_word(b: bool) -> String {
     }
 }
 
-/// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number.
-fn format_tokens(count: u64) -> String {
+/// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number. Shared with
+/// `oxa models`.
+pub(crate) fn format_tokens(count: u64) -> String {
     let scaled = |div: f64, unit: &str| {
         let v = count as f64 / div;
         if v.fract() == 0.0 {
@@ -3639,7 +3750,7 @@ mod bash_sandbox_tests {
     /// a command with the network the owner turned off.
     #[test]
     fn a_refused_network_that_cannot_be_enforced_disables_bash() {
-        let (sandbox, notice) = bash_sandbox(Arc::new(NoNetworkIsolation));
+        let (sandbox, notice) = bash_sandbox(Arc::new(NoNetworkIsolation), false, false);
         assert!(notice.unwrap_or_default().contains("bash is disabled"));
         assert_eq!(
             sandbox.check().unwrap_err().code,
@@ -3674,8 +3785,79 @@ mod bash_sandbox_tests {
                 oxa_proto::ExecResult::default()
             }
         }
-        let (sandbox, notice) = bash_sandbox(Arc::new(NetOn));
+        let (sandbox, notice) = bash_sandbox(Arc::new(NetOn), false, false);
         assert!(notice.is_none());
         assert!(sandbox.check().is_ok());
+    }
+
+    /// Interactive: the unenforceable network setting keeps bash and warns.
+    #[test]
+    fn interactive_unenforced_network_keeps_bash_with_warning() {
+        let (sandbox, notice) = bash_sandbox(Arc::new(NoNetworkIsolation), true, false);
+        assert!(notice.unwrap_or_default().contains("NOT restricted"));
+        assert!(sandbox.check().is_ok());
+    }
+
+    /// Offline is the owner's promise of no network: it still disables bash interactively.
+    #[test]
+    fn interactive_offline_still_disables_bash() {
+        let (sandbox, notice) = bash_sandbox(Arc::new(NoNetworkIsolation), true, true);
+        assert!(notice.unwrap_or_default().contains("bash is disabled"));
+        assert!(sandbox.check().is_err());
+    }
+
+    /// S10: model bash can fall back without giving the inner executor host rights.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interactive_without_bwrap_runs_with_warning() {
+        let test = oxa_fake::TestEnv::new();
+        let env = Env::from_pairs(&[("PATH", "/usr/bin")]);
+        let dirs = Dirs::under(test.root());
+        let (sandbox, notice) = no_bwrap_sandbox(true, false, "no userns", &env, &dirs);
+        let (level, msg) = notice.expect("a warning");
+        assert_eq!(level, Level::Warning);
+        assert!(msg.contains("no isolation"), "{msg}");
+        let executor = Arc::new(
+            oxa_sandbox::FullAccess::new(
+                sandbox,
+                oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard),
+                "",
+                dirs.home,
+                false,
+                false,
+            )
+            .with_os_sandbox(false),
+        );
+        let cancel = oxa_proto::CancelToken::new();
+        let mut spec = oxa_proto::ExecSpec {
+            command: "printf model-bash".into(),
+            cwd: test.work(),
+            writable: true,
+            net: false,
+            timeout_s: Some(5),
+            env: Vec::new(),
+        };
+        let result = executor.run(&spec, &cancel, &mut |_| {});
+        assert_eq!(result.exit, Some(0));
+        assert_eq!(result.output, b"model-bash");
+        assert!(result.unsandboxed);
+        spec.writable = false;
+        assert_eq!(executor.run(&spec, &cancel, &mut |_| {}).exit, None);
+        assert!(oxa_sandbox::FullAccess::hook_sandbox(&executor).check().is_err());
+    }
+
+    /// Unattended runs keep "bash is disabled" on Linux (#1512).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn print_without_bwrap_disables_bash() {
+        let test = oxa_fake::TestEnv::new();
+        let env = Env::from_pairs(&[("PATH", "/usr/bin")]);
+        let dirs = Dirs::under(test.root());
+        for interactive in [false, true] {
+            let (sandbox, notice) = no_bwrap_sandbox(interactive, true, "no userns", &env, &dirs);
+            let (_, msg) = notice.expect("a warning");
+            assert!(msg.contains("bash is disabled"), "{msg}");
+            assert_eq!(sandbox.check().unwrap_err().code, oxa_proto::codes::NO_SANDBOX);
+        }
     }
 }

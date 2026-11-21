@@ -264,6 +264,25 @@ mod tests {
         assert_eq!(out.ui["state"], "not_file");
     }
 
+    /// #2293 A: the declaration is one more entry in the frozen tool list, so its cost is part
+    /// of the session's prompt budget on every task, relevant or not. Keep it small and print
+    /// the measured bytes (a budget, not a descriptor count).
+    #[test]
+    fn the_declaration_stays_inside_its_prompt_budget() {
+        let spec = DeliverableTool::new().spec().clone();
+        let bytes = spec.name.len() + spec.description.len() + spec.schema_json.len();
+        eprintln!(
+            "deliverable declaration: {bytes} bytes (name {}, description {}, schema {})",
+            spec.name.len(),
+            spec.description.len(),
+            spec.schema_json.len()
+        );
+        assert!(
+            bytes <= 640,
+            "the declaration grew past its prompt budget: {bytes} bytes"
+        );
+    }
+
     #[test]
     fn invalid_arguments_are_an_error_and_no_record() {
         let env = TestEnv::new();

@@ -1,0 +1,1 @@
+- The lead web chat page lists your running sessions (id, project name, last activity) and lets you switch the attached one with a button (#1469); it shows running or not, working or idle, and the newest request's prompt tokens. `oxa.lead.attachSessionId` stays the start-up default.

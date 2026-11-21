@@ -135,23 +135,22 @@ pub const TOOLCHAIN_ENV: &[&str] = &[
 /// Prefixes of variables passed through when set (the same secret rule applies).
 pub const TOOLCHAIN_ENV_PREFIXES: &[&str] = &["MISE_"];
 
+/// Names whose exact values are masked in host shell output.
+pub fn is_host_secret_name(name: &str) -> bool {
+    let up = name.to_ascii_uppercase();
+    HOST_SECRET_NAMES.iter().any(|word| up.contains(word))
+}
+
+const HOST_SECRET_NAMES: [&str; 4] = ["TOKEN", "SECRET", "KEY", "PASSWORD"];
+
 /// A variable name that looks like a secret (token, key, password, credential, auth, cookie,
 /// session): never passed into the sandbox, whatever list it is on.
 pub fn is_secret_name(name: &str) -> bool {
     let up = name.to_ascii_uppercase();
-    [
-        "TOKEN",
-        "SECRET",
-        "KEY",
-        "PASSWORD",
-        "PASSWD",
-        "CREDENTIAL",
-        "AUTH",
-        "COOKIE",
-        "SESSION",
-    ]
-    .iter()
-    .any(|w| up.contains(w))
+    HOST_SECRET_NAMES
+        .iter()
+        .chain(["PASSWD", "CREDENTIAL", "AUTH", "COOKIE", "SESSION"].iter())
+        .any(|w| up.contains(w))
 }
 
 /// The variables of `env` that may reach a command: toolchain locations ([`TOOLCHAIN_ENV`],
@@ -203,6 +202,17 @@ pub struct Layout {
     /// #457: the user's cache home ([`crate::user_cache_home`]), whose read-write bound caches
     /// are linked from `/tmp/.cache`. Empty = none.
     pub cache_home: PathBuf,
+    /// #486: warn (never block) once the session directory holds more than this many bytes
+    /// (`oxa.sandbox.scratchWarnSize`). `None` = no warning.
+    pub scratch_warn: Option<u64>,
+    /// #639: the git config keys a sandboxed command may change (patterns such as
+    /// `branch.*`, `remote.*.fetch`). `Some` turns the config guard on: an existing plain
+    /// `config` is left writable and verified after each command, every other change is
+    /// restored. `None` keeps `config` read-only. Needs [`Layout::markers`].
+    pub git_config_allow: Option<Vec<String>>,
+    /// #276, #639: the session's marker ledger and config guard state (`markers.rs`), created
+    /// with the session directory.
+    pub markers: Option<std::sync::Arc<crate::markers::Markers>>,
 }
 
 /// The inputs of [`Layout::build`].
@@ -411,6 +421,9 @@ impl Layout {
             scratch: None,
             scratch_root: None,
             cache_home: crate::scratch::user_cache_home(&i.home, &i.env),
+            scratch_warn: None,
+            git_config_allow: None,
+            markers: None,
         }
     }
 

@@ -239,14 +239,24 @@ impl Budget {
         model: &Model,
         output: u64,
     ) -> Result<Hold, Refusal> {
+        self.reserve_subscription_route(limits, ledger_enabled, model, output, false)
+    }
+
+    pub(crate) fn reserve_subscription_route(
+        &self,
+        limits: Option<SubscriptionLimits>,
+        ledger_enabled: bool,
+        model: &Model,
+        output: u64,
+        configured: bool,
+    ) -> Result<Hold, Refusal> {
         // Subscription limits are advisory for every subscription route: crossing them warns and
         // records, and unset limits warn nothing. They never refuse a request.
-        let go = model.provider == "opencode";
         if !ledger_enabled {
             return Err(Refusal::ledger());
         }
         if !matches!(model.billing, Billing::Subscription)
-            || !matches!(model.provider.as_str(), "chatgpt" | "opencode")
+            || !(configured || matches!(model.provider.as_str(), "chatgpt" | "opencode"))
         {
             return Err(invalid_billing());
         }
@@ -276,7 +286,7 @@ impl Budget {
         let held = shared.subscription_reserved().map_err(|_| Refusal::ledger())?;
         let used = state.reader.subscription();
         let total = used.add(held)?.add(required)?;
-        let budget_warning = limits.and_then(|limits| limits.advisory_warning(total, go));
+        let budget_warning = limits.and_then(|limits| limits.advisory_warning(total, &model.provider));
         let id = shared
             .insert_subscription(tokens)
             .map_err(|_| Refusal::ledger())?;

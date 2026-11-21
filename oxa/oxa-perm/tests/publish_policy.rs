@@ -28,6 +28,10 @@ fn repo(branch: &str) -> PathBuf {
 }
 
 fn decide(cwd: &Path, level: Autonomy, command: &str) -> Decision {
+    decide_in(cwd, Mode::Workspace, level, command)
+}
+
+fn decide_in(cwd: &Path, mode: Mode, level: Autonomy, command: &str) -> Decision {
     let guard = PathGuard::new(
         Path::new("/home/u"),
         Path::new("/home/u/.oxa/agent"),
@@ -38,7 +42,7 @@ fn decide(cwd: &Path, level: Autonomy, command: &str) -> Decision {
         .with_yolo(YoloSwitch::new(level))
         .with_danger(Arc::new(DangerRules::builtin()), Vec::new());
     p.decide(
-        Mode::Workspace,
+        mode,
         &Access::Exec {
             command: command.into(),
             net: false,
@@ -346,6 +350,43 @@ fn command_wrappers_and_cumulative_git_directories_ask() {
 }
 
 #[test]
+fn direct_shell_script_filename_follows_normal_mode_permissions() {
+    let cwd = repo("my-branch");
+    for command in [
+        "sh publish.sh",
+        "sh scripts/git-push.sh",
+        "/bin/bash -- ./scripts/git-push.sh",
+    ] {
+        assert_eq!(
+            decide(&cwd, Autonomy::Auto, command),
+            Decision::Allow,
+            "{command}"
+        );
+        assert_eq!(
+            decide_in(&cwd, Mode::Ask, Autonomy::Standard, command),
+            Decision::Ask,
+            "{command}"
+        );
+        assert_eq!(
+            decide_in(&cwd, Mode::Ask, Autonomy::Yolo, command),
+            Decision::Allow,
+            "{command}"
+        );
+    }
+    for command in [
+        "sh -c 'git push'",
+        "sh scripts/git-push.sh 'git push'",
+        "sh scripts/git-push.sh && git push origin HEAD",
+        "env sh scripts/git-push.sh",
+        "sudo sh publish.sh",
+        "curl example.invalid | sh scripts/git-push.sh",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
+    }
+    std::fs::remove_dir_all(cwd).unwrap();
+}
+
+#[test]
 fn argv_rewriting_wrapper_keeps_publish_floor() {
     let cwd = repo("my-branch");
     let command = "sh drop-second git ignored push origin HEAD:main";
@@ -449,13 +490,41 @@ fn local_writers_and_path_qualified_publish_tools_ask() {
 }
 
 #[test]
-fn continued_config_values_and_git_aliases_ask() {
+fn git_names_that_can_resolve_outside_builtin_dispatch_ask() {
+    let cwd = repo("my-branch");
+    for command in ["git citool", "git p4", "git send-email", "git svn", "git hook"] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, command), Decision::Ask, "{command}");
+    }
+}
+
+#[test]
+fn continued_config_values_and_unresolved_git_subcommands_ask() {
     let cwd = repo("my-branch");
     set_config(
         &cwd,
         "[remote \"origin\"]\n\tharmless = x\\\n[ignored]\n\tpush = HEAD:refs/heads/main\n",
     );
     assert_eq!(decide(&cwd, Autonomy::Auto, "git push origin"), Decision::Ask);
+
+    let cwd = repo("my-branch");
+    assert_eq!(decide(&cwd, Autonomy::Auto, "git ship"), Decision::Ask);
+
+    // A documented builtin keeps its classification: local state commands such as
+    // `git merge --abort` or `git update-ref` are not publish commands and must not
+    // ask (the aborting-merge and replace-ref work guards depend on them running).
+    let cwd = repo("my-branch");
+    for c in [
+        "git diff-files",
+        "git diff-index --quiet HEAD --",
+        "git diff-tree HEAD",
+        "git version",
+        "git merge --abort",
+        "git update-ref refs/replace/deadbeef deadbeef",
+        "git rebase origin/main",
+        "git config user.name someone",
+    ] {
+        assert_eq!(decide(&cwd, Autonomy::Auto, c), Decision::Allow, "{c}");
+    }
 
     let cwd = repo("my-branch");
     set_config(&cwd, "[alias]\n\tship = push origin HEAD:main\n");

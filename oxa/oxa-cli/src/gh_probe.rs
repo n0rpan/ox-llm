@@ -11,7 +11,8 @@
 //! * `{"kind":"issue_view","issue":<n>}`: title, state, labels and body.
 //!
 //! SECURITY. Read only, no GitHub write. The numbers are positive integers; the repository is
-//! the `origin` remote of the session cwd (github.com only) and never comes from the call;
+//! the call's optional `"repo":"OWNER/NAME"` (validated shape, github.com only) or else the
+//! `origin` remote of the session cwd;
 //! `gh` is started with an argument vector (never a shell), found with
 //! `netguard::trusted_executable_for` (a project shim never runs), pinned to github.com, with a
 //! deadline and a read cap. The job log is cut to its tail and scrubbed of credentials before
@@ -75,10 +76,10 @@ impl ProbeHooks {
     /// Answer one read probe; the evidence text is final (a read has no pending state).
     pub(crate) fn read_probe(&self, kind: &str, args: &Value, budget: Duration) -> Result<String, String> {
         match kind {
-            "pr_view" => self.pr_view(number(args, "pr")?, budget),
-            "pr_checks" => self.pr_checks(number(args, "pr")?, budget),
-            "run_log_failed" => self.run_log_failed(number(args, "run")?, budget),
-            "issue_view" => self.issue_view(number(args, "issue")?, budget),
+            "pr_view" => self.pr_view(args, number(args, "pr")?, budget),
+            "pr_checks" => self.pr_checks(args, number(args, "pr")?, budget),
+            "run_log_failed" => self.run_log_failed(args, number(args, "run")?, budget),
+            "issue_view" => self.issue_view(args, number(args, "issue")?, budget),
             _ => Err(format!("unknown GitHub read probe: {kind}")),
         }
     }
@@ -95,12 +96,12 @@ impl ProbeHooks {
     }
 
     /// Scrub, then cut: a credential a cut could separate from its marker stays recognisable.
-    fn scrubbed(&self, text: &str, max: usize) -> String {
+    pub(crate) fn scrubbed(&self, text: &str, max: usize) -> String {
         cut_chars(&scrub(text, &self.scrub_ctx()), max)
     }
 
-    fn pr_view(&self, pr: u64, budget: Duration) -> Result<String, String> {
-        let repo = self.repo(budget)?;
+    fn pr_view(&self, args: &Value, pr: u64, budget: Duration) -> Result<String, String> {
+        let repo = self.repo_for(args, budget)?;
         let n = pr.to_string();
         let v = self.gh(
             &[
@@ -139,8 +140,8 @@ impl ProbeHooks {
         ))
     }
 
-    fn pr_checks(&self, pr: u64, budget: Duration) -> Result<String, String> {
-        let repo = self.repo(budget)?;
+    fn pr_checks(&self, args: &Value, pr: u64, budget: Duration) -> Result<String, String> {
+        let repo = self.repo_for(args, budget)?;
         let n = pr.to_string();
         // `gh pr checks` exits 1 for a failing and 8 for a pending check but still prints the JSON.
         let out = self.run_accepting(
@@ -200,8 +201,8 @@ impl ProbeHooks {
         Ok(text)
     }
 
-    fn run_log_failed(&self, run: u64, budget: Duration) -> Result<String, String> {
-        let repo = self.repo(budget)?;
+    fn run_log_failed(&self, args: &Value, run: u64, budget: Duration) -> Result<String, String> {
+        let repo = self.repo_for(args, budget)?;
         let log = self.run_accepting(
             "gh",
             &[
@@ -237,8 +238,8 @@ impl ProbeHooks {
         ))
     }
 
-    fn issue_view(&self, issue: u64, budget: Duration) -> Result<String, String> {
-        let repo = self.repo(budget)?;
+    fn issue_view(&self, args: &Value, issue: u64, budget: Duration) -> Result<String, String> {
+        let repo = self.repo_for(args, budget)?;
         let n = issue.to_string();
         let v = self.gh(
             &[
@@ -399,21 +400,29 @@ mod tests {
     }
 
     #[test]
-    fn probe_repo_comes_from_origin_only() {
+    fn probe_repo_is_the_origin_unless_the_call_names_a_valid_one() {
         let f = Fake::new("repo");
         f.answer(
             "issue_view.json",
             r#"{"number":5,"title":"t","state":"OPEN","labels":[{"name":"bug"}],"url":"u","body":"b"}"#,
         );
-        // A repository named in the call is ignored: the repo is the origin remote.
         let out = f
-            .poll(json!({"kind": "issue_view", "issue": 5, "repo": "evil/other", "R": "evil/other"}))
+            .poll(json!({"kind": "issue_view", "issue": 5}))
             .unwrap()
             .unwrap();
         assert!(out.contains("Issue #5") && out.contains("labels bug"), "{out}");
-        let calls = f.calls().unwrap();
-        assert!(calls.contains("issue view 5 -R acme/widgets"), "{calls}");
-        assert!(!calls.contains("evil"), "{calls}");
+        assert!(f.calls().unwrap().contains("issue view 5 -R acme/widgets"));
+        // A valid repository in the call wins; a malformed one is refused before any process starts.
+        f.poll(json!({"kind": "issue_view", "issue": 5, "repo": "other/repo"}))
+            .unwrap();
+        assert!(f.calls().unwrap().contains("issue view 5 -R other/repo"));
+        let before = f.calls().unwrap();
+        for bad in ["evil", "a/b/c", "-x/y", "a/..", "a/b c", ""] {
+            assert!(f
+                .poll(json!({"kind": "issue_view", "issue": 5, "repo": bad}))
+                .is_err());
+        }
+        assert_eq!(f.calls().unwrap(), before);
         for bad in [json!(0), json!(-1), json!("5"), json!(2.5), Value::Null] {
             assert!(f.poll(json!({"kind": "pr_view", "pr": bad})).is_err());
         }
@@ -534,5 +543,35 @@ mod tests {
         let e = e.unwrap_err();
         assert!(e.contains("offline") || e.contains("network"), "{e}");
         assert_eq!(f.calls(), None, "no gh call while offline");
+    }
+
+    /// #1919: a wait on a gh probe declares network access; a runner-owned session runs no gh and
+    /// declares nothing, and neither does a kind this set does not answer.
+    #[test]
+    fn probes_declare_their_network_access() {
+        let f = Fake::new("access");
+        let net = vec![oxa_proto::Access::Net {
+            host: "github.com".to_string(),
+        }];
+        for kind in [
+            "ci",
+            "pr_merged",
+            "pr_view",
+            "pr_checks",
+            "run_log_failed",
+            "issue_view",
+        ] {
+            assert_eq!(f.hooks.poll_access(&json!({"kind": kind})), net, "{kind}");
+        }
+        assert!(f.hooks.poll_access(&json!({"kind": "job_done"})).is_empty());
+        let owned = ProbeHooks::for_test_runner_owned_paths(
+            &f.bin.parent().unwrap().join("work"),
+            &f.bin.parent().unwrap().join("home"),
+            &f.bin,
+            "acme/widgets",
+        );
+        assert!(owned
+            .poll_access(&json!({"kind": "issue_view", "issue": 5}))
+            .is_empty());
     }
 }

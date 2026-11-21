@@ -21,7 +21,6 @@ fn unsandboxed_flag_is_false_on_linux_and_true_elsewhere() {
 }
 
 #[test]
-#[cfg(not(target_os = "linux"))]
 fn unsandboxed_run_sets_the_flag_and_runs_the_command() {
     let env = oxa_fake::TestEnv::new();
     let marker = env.root().join("ran");
@@ -40,6 +39,29 @@ fn unsandboxed_run_sets_the_flag_and_runs_the_command() {
     let r = sb.run_with_stdin(&spec(&env, "cat".into()), b"piped", &cancel, &mut |_| {});
     assert!(r.unsandboxed);
     assert_eq!(String::from_utf8_lossy(&r.output), "piped");
+}
+
+#[test]
+fn portable_hook_stdin_masks_known_values_in_capture_and_live_output() {
+    use oxa_proto::Sandbox;
+    use oxa_sandbox::{NetSandbox, Unsandboxed};
+    use std::sync::Arc;
+
+    let env = oxa_fake::TestEnv::new();
+    let sb = NetSandbox::new(Arc::new(Unsandboxed::default()), false, false)
+        .with_host_secrets_lazy(|| vec!["known-worker-value".into()]);
+    let mut s = spec(&env, "cat".into());
+    s.env.push(("API_KEY".into(), "hook-fixture-value".into()));
+    let mut live = Vec::new();
+    let r = sb.run_with_stdin(
+        &s,
+        b"before known-worker-value hook-fixture-value after",
+        &CancelToken::new(),
+        &mut |bytes| live.extend_from_slice(bytes),
+    );
+    assert_eq!(r.exit, Some(0));
+    assert_eq!(live, b"before [redacted] [redacted] after");
+    assert_eq!(r.output, live);
 }
 
 #[test]
@@ -137,4 +159,34 @@ fn unsandboxed_does_not_enforce_the_network() {
         true,
     );
     assert!(!ns.network() && !ns.network_enforced());
+}
+
+/// #2130: a command with the user's rights (no OS sandbox) gets the host credentials scrubbed
+/// from its output at the one sink, in every run path, for a read-only spec too.
+#[test]
+fn host_credentials_are_scrubbed_on_every_unsandboxed_path() {
+    use oxa_proto::Sandbox;
+    let env = oxa_fake::TestEnv::new();
+    let secret = "SYNTHETIC-HOST-CREDENTIAL-2130";
+    let ns = oxa_sandbox::NetSandbox::new(
+        std::sync::Arc::new(oxa_sandbox::Unsandboxed::default()),
+        true,
+        false,
+    )
+    .with_host_secrets_lazy(|| vec!["SYNTHETIC-HOST-CREDENTIAL-2130".to_string()]);
+    let mut read_only = spec(&env, format!("printf '%s' {secret}"));
+    read_only.writable = false;
+    let cancel = CancelToken::new();
+    let mut live = Vec::new();
+    let r = ns.run(&read_only, &cancel, &mut |b| live.extend_from_slice(b));
+    assert_eq!(String::from_utf8_lossy(&r.output), "[redacted]", "{r:?}");
+    assert_eq!(String::from_utf8_lossy(&live), "[redacted]");
+    live.clear();
+    let r = ns.run_streaming(&read_only, &cancel, &mut |b| live.extend_from_slice(b));
+    assert!(r.output.is_empty());
+    assert_eq!(String::from_utf8_lossy(&live), "[redacted]");
+    let mut cat = spec(&env, "cat".into());
+    cat.writable = false;
+    let r = ns.run_with_stdin(&cat, secret.as_bytes(), &cancel, &mut |_| {});
+    assert_eq!(String::from_utf8_lossy(&r.output), "[redacted]");
 }

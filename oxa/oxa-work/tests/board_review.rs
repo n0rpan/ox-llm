@@ -38,6 +38,7 @@ fn facts<'a>(changes: &'a [Change<'static>]) -> Facts<'a> {
         owner_approval_predecessors: &[],
         requested: &[],
         approvals: &[],
+        requester_rejected: false,
     }
 }
 

@@ -12,6 +12,10 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Tools on by default",
         "Tools the model gets in a new session.",
     )
+    .key(
+        Kind::StringList,
+        "[\"read\",\"bash\",\"edit\",\"write\",\"grep\",\"find\",\"ls\"]",
+    )
     .control(Control::MultiSelect(Options::Tools))
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -22,10 +26,13 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Tool output cap",
         "Most bytes of one tool result sent to the model.",
     )
+    .key(Kind::Number, "16384")
     .number(Unit::Bytes)
     .advise_from(2048, 1024, "under 2048 bytes a tool result is cut short")
     .apply(Apply::Reload)
-    .web(WebEdit::Edit),
+    .web(WebEdit::Confirm)
+    .user_only()
+    .widens("Changes how many bytes of one tool result are sent to the model."),
     d(
         "oxa.toolRepair",
         Group::Tools,
@@ -33,6 +40,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Repair bad tool calls",
         "One extra turn to repair a malformed tool call.",
     )
+    .key(Kind::Bool, "true")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -43,6 +51,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Repeat guard",
         "Note, then stop, when a tool call repeats with the same result.",
     )
+    .key(Kind::Bool, "true")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -53,6 +62,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Concise answers",
         "Prompt rules for short final answers.",
     )
+    .key(Kind::Bool, "null")
     .toggle()
     .eff("true")
     .apply(Apply::Reload)
@@ -64,6 +74,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Shorter tool output",
         "Compact grep and bash output.",
     )
+    .key(Kind::Bool, "null")
     .toggle()
     .eff("true")
     .apply(Apply::Reload)
@@ -75,6 +86,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Environment note",
         "Add date, time and runtime facts to prompts.",
     )
+    .key(Kind::Bool, "null")
     .toggle()
     .eff("true")
     .apply(Apply::Reload)
@@ -86,6 +98,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Bash timeout",
         "Timeout of a bash call that names none.",
     )
+    .key(Kind::Number, "null")
     .number(Unit::Seconds)
     .eff("120")
     .zero("no timeout")
@@ -99,6 +112,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Shell",
         "Shell for bash and `!cmd`.",
     )
+    .key(Kind::String, "null")
     .control(Control::Path)
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
@@ -110,6 +124,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Command prefix",
         "Text put before each bash command.",
     )
+    .key(Kind::String, "null")
     .text()
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
@@ -121,6 +136,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Web search",
         "The web_search tool, when a key exists.",
     )
+    .key(Kind::Bool, "true")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -131,6 +147,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Search provider",
         "Search provider; none turns the tool off.",
     )
+    .key(Kind::Enum(&["brave", "none"]), "\"brave\"")
     .choice(&[
         ("brave", "Brave Search, needs a key"),
         ("none", "turns the tool off"),
@@ -144,6 +161,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Search result size",
         "Size of the result the provider returns.",
     )
+    .key(Kind::Number, "2048")
     .number(Unit::Tokens)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -154,6 +172,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Done checks",
         "Commands oxa runs when a run that edited files is about to finish.",
     )
+    .key(Kind::StringList, "[]")
     .control(Control::List(Item::Text))
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
@@ -165,6 +184,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Exec hooks",
         "A program to run on an event.",
     )
+    .key(Kind::Object, "{}")
     // Hook values may be strings, command objects, or arrays containing either shape. A typed
     // string map cannot round-trip every form accepted by `oxa_ext::parse_exec_hooks`.
     .control(Control::Raw)
@@ -178,6 +198,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Built-in skills",
         "Include the skills built into oxa.",
     )
+    .key(Kind::Bool, "true")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -188,6 +209,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Synced skills",
         "Also list skills another product synced into ~/.agents/skills.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -198,6 +220,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Extra skill folders",
         "Skill files and folders to load.",
     )
+    .key(Kind::StringList, "[]")
     .control(Control::List(Item::Path))
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
@@ -209,6 +232,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Prompt template folders",
         "Prompt template files and folders to load.",
     )
+    .key(Kind::StringList, "[]")
     .control(Control::List(Item::Path))
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
@@ -220,6 +244,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Extensions",
         "Extension files and folders to load.",
     )
+    .key(Kind::StringList, "[]")
     .control(Control::List(Item::Path))
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
@@ -231,6 +256,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Issue report repository",
         "Repository for `oxa report-issue submit`, as OWNER/NAME.",
     )
+    .key(Kind::String, "null")
     .text()
     .apply(Apply::Reload)
     .web(WebEdit::Confirm)
@@ -242,6 +268,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Dedupe issue reports",
         "Search open and recent issues before posting a report.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -252,6 +279,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Subagents",
         "The subagent tool. Auto: on, except on small models.",
     )
+    .key(Kind::Bool, "null")
     .control(Control::TriState)
     .eff("\"auto\"")
     .apply(Apply::Reload)
@@ -263,6 +291,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Subagents on small models",
         "Offer subagents on a model with a window below 32K.",
     )
+    .key(Kind::Bool, "false")
     .toggle()
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -273,6 +302,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Cloud subagents at once",
         "Children of one call that run at once on cloud models.",
     )
+    .key(Kind::Number, "8")
     .number(Unit::Count)
     .advise(1, 16, 1, "more than 16 children at once is unusual")
     .apply(Apply::Reload)
@@ -284,6 +314,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Subagent compaction point",
         "Context size at which a child compacts.",
     )
+    .key(Kind::Number, "24000")
     .number(Unit::Tokens)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),
@@ -294,6 +325,7 @@ pub(super) const ENTRIES: &[Descriptor] = &[
         "Subagent result cap",
         "Most bytes a child returns.",
     )
+    .key(Kind::Number, "6144")
     .number(Unit::Bytes)
     .apply(Apply::Reload)
     .web(WebEdit::Edit),

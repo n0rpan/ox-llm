@@ -23,7 +23,7 @@ mod rig;
 #[path = "support/tree_pty.rs"]
 mod tree_pty;
 
-use oxa_fake::{FakeOpts, ScriptTurn, TestEnv};
+use oxa_fake::{FakeCaps, FakeModel, FakeOpts, ScriptTurn, TestEnv};
 use oxa_parity::fixture;
 use oxa_parity::pty::{KeyEncoding, Screen, TermProfile};
 use rig::{editor_text, replies, user_texts, Rig, RigOpts, WAIT};
@@ -870,7 +870,7 @@ fn tui_006() {
         &[
             "oxa-tui/src/highlight.rs",
             "oxa-tui/src/markdown.rs",
-            "oxa-config/src/schema.rs",
+            "oxa-config/src/descriptor/display.rs",
         ],
         &["syntect", "table", "markdown.codeBlockIndent"],
     );
@@ -1370,6 +1370,67 @@ fn tui_019() {
             .unwrap();
         rig.pty.wait_stable(150, WAIT).unwrap();
     }
+}
+
+/// #2256: the model-location badge follows the active model. Switching from a cloud model
+/// (`cloud · <provider>`) to a local one shows `local`, and back.
+#[test]
+fn model_switch_route_badge_follows_the_active_model() {
+    let cloud = FakeModel {
+        alias: "cloud-model".to_string(),
+        cap: 1 << 20,
+        max_output: None,
+        caps: Some(FakeCaps {
+            remote_provider: Some("openai"),
+            ..FakeCaps::rust_moe()
+        }),
+    };
+    let rig = Rig::start(
+        replies(1),
+        RigOpts {
+            size: (30, 120),
+            fake: FakeOpts {
+                model: "cloud-model".to_string(),
+                models: vec![cloud, FakeModel::moe("local-model", 1 << 20)],
+                ..FakeOpts::default()
+            },
+            ..RigOpts::default()
+        },
+    );
+    let s = rig.pty.wait_for_text("cloud · openai · cloud-model").unwrap();
+    assert!(
+        footer(&s).1.contains("cloud · openai · cloud-model"),
+        "the footer names the cloud provider and the model: {:?}",
+        footer(&s).1
+    );
+    rig.slash("/model local-model");
+    let s = rig
+        .pty
+        .wait_for_named(
+            "the footer follows the switch",
+            |s| footer(s).1.contains("local · local-model"),
+            WAIT,
+        )
+        .unwrap();
+    assert!(
+        !footer(&s).1.contains("cloud"),
+        "the cloud badge is gone after the switch to a local model: {:?}",
+        footer(&s).1
+    );
+    rig.slash("/model cloud-model");
+    let s = rig
+        .pty
+        .wait_for_named(
+            "the footer follows the switch back",
+            |s| footer(s).1.contains("cloud · openai · cloud-model"),
+            WAIT,
+        )
+        .unwrap();
+    assert!(
+        !footer(&s).1.contains("local ·"),
+        "a cloud model is not shown as local: {:?}",
+        footer(&s).1
+    );
 }
 
 /// Keyboard: kitty protocol, legacy sequences, ESC timeout
